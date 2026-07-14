@@ -1,6 +1,6 @@
 
 import { z } from "zod";
-import { defineTool } from "../utils/tools";
+import { defineTool } from "../core/tools";
 
 export const weatherTool = defineTool({
   name: "get_weather",

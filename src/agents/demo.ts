@@ -1,5 +1,5 @@
 
-import { Agent } from "../utils/raw_agent";
+import { Agent } from "../core/raw_agent";
 import { weatherTool, calculateTool } from "../tools/demo";
 import { Ollama } from "ollama";
 

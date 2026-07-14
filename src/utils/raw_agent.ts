@@ -16,7 +16,7 @@ interface AgentOptions {
   model: string;
   systemPrompt?: string;
   tools?: AgentTool[];
-  maxIterations?: number;
+  maxIterations?: number | undefined;
   think?: ThinkLevel;
 }
 
@@ -25,14 +25,14 @@ export class Agent {
   private readonly model: string;
   private readonly systemPrompt: string;
   private readonly tools = new Map<string, AgentTool>();
-  private readonly maxIterations: number;
+  private readonly maxIterations: number | undefined;
   private readonly think: ThinkLevel;
 
   constructor(opts: AgentOptions) {
     this.client = opts.client instanceof Ollama ? new OllamaProvider(opts.client) : opts.client;
     this.model = opts.model;
     this.systemPrompt = opts.systemPrompt ?? "You are a helpful assistant. Use tools when needed.";
-    this.maxIterations = opts.maxIterations ?? 10;
+    this.maxIterations = opts.maxIterations;
     this.think = opts.think ?? true;
     for (const t of opts.tools ?? []) this.addTool(t);
   }
@@ -55,8 +55,8 @@ export class Agent {
 
   private async loop(messages: ChatMessage[]): Promise<string> {
     const toolDefs = [...this.tools.values()].map((t) => t.definition);
-
-    for (let i = 0; i < this.maxIterations; i++) {
+    let i = 0;
+    while(true) {
       const msg = await this.client.chat(messages, {
         model: this.model,
         tools: toolDefs,
@@ -78,8 +78,9 @@ export class Agent {
           content: output,
         });
       }
+      i++;
+      if (this.maxIterations && i >= this.maxIterations) return "Stopped: hit max iterations.";
     }
-    return "Stopped: hit max iterations.";
   }
 
   private async invokeTool(name: string, rawArgs: unknown): Promise<string> {

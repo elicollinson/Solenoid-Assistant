@@ -1,0 +1,24 @@
+{
+  "name": "manual-personal-assistant",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^6"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
+    "@elysiajs/openapi": "^1.4.15",
+    "elysia": "^1.4.29",
+    "ollama": "^0.6.3",
+    "openai": "^6.47.0",
+    "zod": "^4.4.3"
+  }
+}

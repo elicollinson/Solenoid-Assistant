@@ -4,6 +4,7 @@
 import { Ollama, type Message as OllamaMessage, type Tool } from "ollama";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
+import { tracedChat } from "./tracing/tracedProvider";
 
 export type ThinkLevel = boolean | "low" | "medium" | "high";
 
@@ -24,6 +25,15 @@ export interface ChatMessage {
   // Anthropic requires its content blocks (incl. thinking) to be resent
   // unmodified; OpenAI needs the original tool_calls array. Never edit this.
   raw?: unknown;
+  // Token counts for this call, normalized across providers (assistant
+  // messages only). Surfaced onto LLM spans as llm.token_count.*.
+  usage?: TokenUsage;
+}
+
+export interface TokenUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
 }
 
 // A provider-agnostic structured-output request. `schema` is plain JSON schema
@@ -46,19 +56,57 @@ export interface ChatOptions {
 
 export interface ChatProvider {
   chat(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage>;
+  // Backend label surfaced on LLM spans as llm.provider.
+  readonly providerName?: string;
+  // True when the provider already emits its own LLM spans (BaseChatProvider
+  // subclasses). Prevents double-wrapping by traceProvider().
+  readonly traced?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Tracing lives at the client level: `chat` is the final traced entry and
+// every adapter implements `chatInner`, so EVERY model call — from any agent
+// loop, any subclass method, or a provider used standalone — produces an
+// OpenInference LLM span. New providers get tracing for free by extending
+// this class.
+// ---------------------------------------------------------------------------
+
+export abstract class BaseChatProvider implements ChatProvider {
+  abstract readonly providerName: string;
+  readonly traced = true;
+
+  chat(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage> {
+    return tracedChat(this.providerName, messages, opts, () => this.chatInner(messages, opts));
+  }
+
+  protected abstract chatInner(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage>;
 }
 
 // ---------------------------------------------------------------------------
 // Ollama (default)
 // ---------------------------------------------------------------------------
 
-export class OllamaProvider implements ChatProvider {
-  constructor(private readonly client: Ollama) {}
+export class OllamaProvider extends BaseChatProvider {
+  readonly providerName = "ollama";
 
-  async chat(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage> {
+  constructor(private readonly client: Ollama) {
+    super();
+  }
+
+  protected async chatInner(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage> {
+    const ollamaMessages = messages.map((m) => this.toOllama(m));
+    // Belt and braces: local Ollama enforces `format` via constrained decoding,
+    // but Ollama Cloud silently ignores it (docs: "Ollama's Cloud platform does
+    // not currently support structured outputs"), so also instruct the model.
+    if (opts.format) {
+      ollamaMessages.push({
+        role: "system",
+        content: `Respond with a single JSON object matching this JSON schema, and nothing else — no markdown, no code fences, no commentary:\n${JSON.stringify(opts.format.schema)}`,
+      });
+    }
     const res = await this.client.chat({
       model: opts.model,
-      messages: messages.map((m) => this.toOllama(m)),
+      messages: ollamaMessages,
       tools: opts.tools,
       think: opts.think,
       format: opts.format?.schema, // ollama constrains decoding to the schema
@@ -75,6 +123,11 @@ export class OllamaProvider implements ChatProvider {
         arguments: c.function.arguments,
       })),
       raw: msg,
+      usage: {
+        promptTokens: res.prompt_eval_count,
+        completionTokens: res.eval_count,
+        totalTokens: (res.prompt_eval_count ?? 0) + (res.eval_count ?? 0),
+      },
     };
   }
 
@@ -89,13 +142,26 @@ export class OllamaProvider implements ChatProvider {
 // OpenAI (Chat Completions)
 // ---------------------------------------------------------------------------
 
-export class OpenAIProvider implements ChatProvider {
-  constructor(private readonly client: OpenAI) {}
+export class OpenAIProvider extends BaseChatProvider {
+  readonly providerName = "openai";
 
-  async chat(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage> {
+  constructor(private readonly client: OpenAI) {
+    super();
+  }
+
+  protected async chatInner(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage> {
+    const openaiMessages = messages.map((m) => this.toOpenAI(m));
+    // Real OpenAI enforces response_format server-side, but OpenAI-compatible
+    // backends (e.g. Ollama Cloud's /v1) may silently ignore it — instruct too.
+    if (opts.format) {
+      openaiMessages.push({
+        role: "system",
+        content: `Respond with a single JSON object matching this JSON schema, and nothing else — no markdown, no code fences, no commentary:\n${JSON.stringify(opts.format.schema)}`,
+      });
+    }
     const res = await this.client.chat.completions.create({
       model: opts.model,
-      messages: messages.map((m) => this.toOpenAI(m)),
+      messages: openaiMessages,
       tools: opts.tools.length
         ? (opts.tools as OpenAI.Chat.Completions.ChatCompletionTool[])
         : undefined,
@@ -128,6 +194,11 @@ export class OpenAIProvider implements ChatProvider {
           arguments: JSON.parse(c.function.arguments || "{}"),
         })),
       raw: msg,
+      usage: {
+        promptTokens: res.usage?.prompt_tokens,
+        completionTokens: res.usage?.completion_tokens,
+        totalTokens: res.usage?.total_tokens,
+      },
     };
   }
 
@@ -146,17 +217,19 @@ export class OpenAIProvider implements ChatProvider {
 // Anthropic (Messages API)
 // ---------------------------------------------------------------------------
 
-export class AnthropicProvider implements ChatProvider {
+export class AnthropicProvider extends BaseChatProvider {
+  readonly providerName = "anthropic";
   private readonly maxTokens: number;
 
   constructor(
     private readonly client: Anthropic,
     options?: { maxTokens?: number },
   ) {
+    super();
     this.maxTokens = options?.maxTokens ?? 16000;
   }
 
-  async chat(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage> {
+  protected async chatInner(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage> {
     const system = messages
       .filter((m) => m.role === "system")
       .map((m) => m.content)
@@ -190,11 +263,18 @@ export class AnthropicProvider implements ChatProvider {
         : {}),
     });
 
+    const usage: TokenUsage = {
+      promptTokens: res.usage.input_tokens,
+      completionTokens: res.usage.output_tokens,
+      totalTokens: res.usage.input_tokens + res.usage.output_tokens,
+    };
+
     if (res.stop_reason === "refusal") {
       return {
         role: "assistant",
         content: "The request was declined by the model's safety system.",
         raw: res.content,
+        usage,
       };
     }
 
@@ -216,6 +296,7 @@ export class AnthropicProvider implements ChatProvider {
       thinking: thinking || undefined,
       toolCalls: toolCalls.length ? toolCalls : undefined,
       raw: res.content, // must be echoed back unchanged (thinking blocks included)
+      usage,
     };
   }
 

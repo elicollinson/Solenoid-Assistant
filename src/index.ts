@@ -1,6 +1,12 @@
+// Register the tracer provider before any agent handles a request. (ESM
+// hoists imports, so agent modules load first — fine, since spans are only
+// created at call time and the tracer is resolved lazily.)
+import { initTracing, shutdownTracing } from "./core/tracing";
+initTracing();
+
 import { Elysia, t } from "elysia";
 import { openapi } from "@elysiajs/openapi";
-import { demoAgent } from "./agents/demo";
+import { demoAgent, demoAgentGG } from "./agents/demo";
 import { weatherPrompt } from "./prompts";
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -30,7 +36,7 @@ const app = new Elysia()
       }
 
       try {
-        const response = await demoAgent.run(weatherPrompt, { city });
+        const response = await demoAgentGG.run(weatherPrompt, { city });
         return { city, response };
       } catch (err) {
         set.status = 502;
@@ -58,3 +64,11 @@ const app = new Elysia()
 
 console.log(`Service listening on http://localhost:${app.server?.port}`);
 console.log(`API docs at http://localhost:${app.server?.port}/openapi`);
+
+// Flush queued spans (batch exporter) before the process exits.
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, async () => {
+    await shutdownTracing();
+    process.exit(0);
+  });
+}

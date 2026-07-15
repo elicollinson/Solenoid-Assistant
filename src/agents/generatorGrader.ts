@@ -1,12 +1,14 @@
 import { z } from "zod";
-import { Agent, toOutputFormat, type AgentOptions } from "../core/rawAgent";
+import { Agent, extractJson, toOutputFormat, type AgentOptions } from "../core/rawAgent";
 import { type ChatMessage, type OutputFormat } from "../core/providers";
-import { graderPrompt } from "../prompts";
+import { graderPrompt, type PromptTemplate } from "../prompts";
+import { log } from "../core/logger";
+import { SemanticConventions, safeJson, type Attributes } from "../core/tracing";
 
 
 // Extends AgentOptions with a second system prompt for the grader stage.
 export interface GeneratorGraderOptions extends AgentOptions {
-  graderPrompt: string;
+  graderPrompt?: string | PromptTemplate<{ output: string; messages: ChatMessage[]; }>;
 }
 
 // Structured verdict returned by the grader stage — one score per criterion in
@@ -29,33 +31,49 @@ export type GradeResult = z.infer<typeof gradeSchema>;
  * `loop` (adding a console log) without touching the parent's behavior.
  */
 export class GeneratorGrader extends Agent {
-  private readonly graderPrompt: string;
+  private readonly graderPrompt: string | PromptTemplate<{ output: string; messages: ChatMessage[]; }>;
 
   constructor(opts: GeneratorGraderOptions) {
     super(opts);
-    this.graderPrompt = opts.graderPrompt;
+    this.graderPrompt = opts.graderPrompt ?? graderPrompt;
   }
 
-
+  // Extra attributes on this agent's AGENT root span — demonstrates the
+  // base-class extension hook.
+  protected override getTraceAttributes(): Attributes {
+    return { [SemanticConventions.METADATA]: safeJson({ agentKind: "generator-grader" }) };
+  }
 
   protected async grade(messages: ChatMessage[]): Promise<GradeResult> {
 
     let gPrompt = graderPrompt({ output: messages[messages.length - 1]?.content ?? "", messages: messages });
 
-    const msg = await this.client.chat([{ role: "system", content: gPrompt },], {
-      model: this.model,
-      tools: [],
-      think: this.think,
-      format: toOutputFormat("grade", gradeSchema),
-    });
+    // Custom child span via the base-class hook: the grading stage shows up
+    // as an EVALUATOR span in the trace, with its LLM call nested under it
+    // (traced automatically by the provider).
+    return this.withChildSpan(
+      "EVALUATOR",
+      "grade",
+      { [SemanticConventions.INPUT_VALUE]: messages[messages.length - 1]?.content ?? "" },
+      async (span) => {
+        const msg = await this.client.chat([{ role: "system", content: gPrompt },], {
+          model: this.model,
+          tools: [],
+          think: this.think,
+          format: toOutputFormat("grade", gradeSchema),
+        });
 
-    try {
-      return gradeSchema.parse(JSON.parse(msg.content));
-    } catch (err) {
-      throw new Error(
-        `Grade output failed validation: ${err instanceof Error ? err.message : String(err)}\nModel output: ${msg.content}`,
-      );
-    }
+        try {
+          const grade = gradeSchema.parse(JSON.parse(extractJson(msg.content)));
+          span.setAttribute(SemanticConventions.OUTPUT_VALUE, safeJson(grade));
+          return grade;
+        } catch (err) {
+          throw new Error(
+            `Grade output failed validation: ${err instanceof Error ? err.message : String(err)}\nModel output: ${msg.content}`,
+          );
+        }
+      },
+    );
   }
 
   protected override async loop(messages: ChatMessage[], format?: OutputFormat): Promise<string> {
@@ -72,27 +90,28 @@ export class GeneratorGrader extends Agent {
         format,
       });
 
-      if (msg.thinking) console.log(`\n[thinking] ${msg.thinking.slice(0, 200)}...`);
+      if (msg.thinking) log.info(`\n[thinking] ${msg.thinking.slice(0, 200)}...`);
 
       messages.push(msg); // keep the assistant turn (incl. its reasoning) in history
 
       if (!msg.toolCalls?.length) {
+        // no tools requested => candidate answer; grade it before returning
         const grade = await this.grade(messages);
         if (grade.passed) {
           return msg.content;
         } else {
           messages.push({role: "system", content: `Grader Feedback: ${grade.feedback}`})
         }
-      } // no tools requested => done
-
-      for (const call of msg.toolCalls) {
-        const output = await this.invokeTool(call.name, call.arguments);
-        messages.push({
-          role: "tool",
-          toolCallId: call.id,
-          toolName: call.name,
-          content: output,
-        });
+      } else {
+        for (const call of msg.toolCalls) {
+          const output = await this.invokeTool(call.name, call.arguments);
+          messages.push({
+            role: "tool",
+            toolCallId: call.id,
+            toolName: call.name,
+            content: output,
+          });
+        }
       }
       i++;
       if (this.maxIterations && i >= this.maxIterations) return "Stopped: hit max iterations.";

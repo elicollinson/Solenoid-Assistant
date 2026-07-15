@@ -1,0 +1,14 @@
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: phoenix
+    ports:
+      - "6006:6006" # UI + OTLP HTTP collector
+      - "4317:4317" # OTLP gRPC collector
+    environment:
+      - PHOENIX_WORKING_DIR=/mnt/data
+    volumes:
+      # Bind mount so trace data lives on the host and survives
+      # container stop/delete (and even `docker compose down -v`).
+      - ./phoenix_data:/mnt/data
+    restart: unless-stopped

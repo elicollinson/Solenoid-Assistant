@@ -29,6 +29,31 @@ export const weatherPrompt: PromptTemplate<{ city: string }> = ({ city }) => ded
   What's the weather in ${city}?
 `;
 
+/**
+ * Renders a conversation as a readable transcript, one line per turn: role,
+ * message content, tool calls with their arguments, and tool results with the
+ * tool's name. Use this whenever messages need to go INTO a prompt — plain
+ * interpolation of ChatMessage[] produces "[object Object],...".
+ */
+export function formatTranscript(messages: ChatMessage[]): string {
+  return messages
+    .map((m) => {
+      if (m.role === "tool") {
+        return `[tool result: ${m.toolName ?? "unknown"}] ${m.content}`;
+      }
+      if (m.role === "assistant") {
+        const parts: string[] = [];
+        if (m.content) parts.push(`[assistant] ${m.content}`);
+        for (const c of m.toolCalls ?? []) {
+          parts.push(`[assistant tool call] ${c.name}(${JSON.stringify(c.arguments)})`);
+        }
+        return parts.length ? parts.join("\n") : "[assistant] (empty)";
+      }
+      return `[${m.role}] ${m.content}`;
+    })
+    .join("\n");
+}
+
 export const graderPrompt: PromptTemplate<{ output: string; messages: ChatMessage[]; }> = ({ output, messages }) => dedent`
   You are a strict grader evaluating a model's output. Grade the following output on three criteria from 1 to 10:
 
@@ -37,7 +62,9 @@ export const graderPrompt: PromptTemplate<{ output: string; messages: ChatMessag
   3. Adherence to given constraints: Does the output follow all provided constraints are requirements mentioned in the prompt?
 
   Output: ${output}
-  Conversation: ${messages}
+
+  Conversation:
+  ${formatTranscript(messages)}
 
   Use the calculate tool to calculate the average of the three scores. If the average is above 7, pass the output. Otherwise, fail it.
 `;

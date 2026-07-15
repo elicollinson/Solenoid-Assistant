@@ -124,3 +124,16 @@ The ax demo (signature + provider config) is isolated in `src/agent.ts`; `src/in
 ```bash
 bun run typecheck
 ```
+## Observability (Phoenix tracing)
+
+Every `agent.run()` invocation produces one trace in [Arize Phoenix](https://docs.arize.com/phoenix): an AGENT root span, an LLM span per model call (with messages, token counts, and tool schemas), and a TOOL span per tool call. Log lines written with `log` from `src/core/logger.ts` inside tool logic appear as events on the tool's span. Tracing is built into the base classes (`Agent`, `BaseChatProvider`), so new agents, tools, and providers are traced automatically.
+
+```bash
+# Start local Phoenix (data persists on the host in ./phoenix_data)
+docker compose up -d
+
+# Run the service and make a request, then open the UI
+open http://localhost:6006   # project: solenoid-assistant
+```
+
+Configuration (see `.env.example`): `PHOENIX_COLLECTOR_ENDPOINT`, `PHOENIX_PROJECT_NAME`, and `PHOENIX_TRACING_ENABLED=false` to disable tracing entirely.

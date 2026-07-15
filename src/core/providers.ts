@@ -26,10 +26,22 @@ export interface ChatMessage {
   raw?: unknown;
 }
 
+// A provider-agnostic structured-output request. `schema` is plain JSON schema
+// (derive it from Zod with z.toJSONSchema); each adapter maps it to its wire
+// format: Ollama `format`, OpenAI `response_format`, Anthropic `output_config`.
+export interface OutputFormat {
+  name: string; // identifier for backends that require one (OpenAI); [a-zA-Z0-9_-]
+  schema: Record<string, unknown>;
+  // OpenAI-only: guaranteed schema adherence. Requires every property to be
+  // `required` and additionalProperties:false, so optional fields break it.
+  strict?: boolean;
+}
+
 export interface ChatOptions {
   model: string;
   tools: Tool[];
   think?: ThinkLevel;
+  format?: OutputFormat;
 }
 
 export interface ChatProvider {
@@ -49,6 +61,7 @@ export class OllamaProvider implements ChatProvider {
       messages: messages.map((m) => this.toOllama(m)),
       tools: opts.tools,
       think: opts.think,
+      format: opts.format?.schema, // ollama constrains decoding to the schema
     });
 
     const msg = res.message;
@@ -88,6 +101,18 @@ export class OpenAIProvider implements ChatProvider {
         : undefined,
       // Reasoning models accept an effort hint; a bare `true` uses the default.
       ...(typeof opts.think === "string" ? { reasoning_effort: opts.think } : {}),
+      ...(opts.format
+        ? {
+            response_format: {
+              type: "json_schema" as const,
+              json_schema: {
+                name: opts.format.name,
+                schema: opts.format.schema,
+                ...(opts.format.strict !== undefined ? { strict: opts.format.strict } : {}),
+              },
+            },
+          }
+        : {}),
     });
 
     const msg = res.choices[0]?.message;
@@ -150,9 +175,17 @@ export class AnthropicProvider implements ChatProvider {
       ...(opts.think
         ? {
             thinking: { type: "adaptive" as const, display: "summarized" as const },
-            ...(typeof opts.think === "string"
-              ? { output_config: { effort: opts.think } }
-              : {}),
+          }
+        : {}),
+      // effort and format share the single output_config param.
+      ...(typeof opts.think === "string" || opts.format
+        ? {
+            output_config: {
+              ...(typeof opts.think === "string" ? { effort: opts.think } : {}),
+              ...(opts.format
+                ? { format: { type: "json_schema" as const, schema: opts.format.schema } }
+                : {}),
+            },
           }
         : {}),
     });

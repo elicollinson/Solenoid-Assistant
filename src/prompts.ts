@@ -3,7 +3,7 @@
 // of hand-rolled string interpolation. Feed one (plus its vars) to
 // `Agent.run(template, vars)` instead of a literal string.
 import dedent from "dedent";
-import { type ChatMessage } from "./core/providers"
+import { type ChatMessage} from "./core/providers"
 
 /**
  * A prompt template: a pure function from a typed `vars` object to a prompt

@@ -1,14 +1,24 @@
 // A no-framework Agent class, generic over providers (Ollama by default;
 // OpenAI and Anthropic via the adapters in ./providers).
 import { Ollama } from "ollama";
+import { z } from "zod";
 import { type AgentTool } from "./tools";
 import {
   OllamaProvider,
   type ChatMessage,
   type ChatProvider,
+  type OutputFormat,
   type ThinkLevel,
 } from "./providers";
 import { type PromptTemplate, defaultSystemPrompt } from "../prompts";
+
+// Zod is the single source of truth for output structures, mirroring tools.ts:
+// the same schema drives the provider-side constraint AND client-side validation.
+export function toOutputFormat(name: string, schema: z.ZodType): OutputFormat {
+  const json = z.toJSONSchema(schema) as Record<string, unknown>;
+  delete json.$schema; // backends don't want the meta-schema pointer
+  return { name, schema: json };
+}
 
 export interface AgentOptions {
   // A ChatProvider (OllamaProvider | OpenAIProvider | AnthropicProvider), or a
@@ -49,11 +59,21 @@ export class Agent {
   }
 
   // Overloaded entry point: a plain string, or a `PromptTemplate<V>` plus its
-  // vars. Either way the prompt is resolved to a string here, before entering
-  // the loop — the loop itself is unchanged.
+  // vars — with an optional Zod schema as the last argument. Without a schema
+  // the final answer is returned as a string; with one, the provider is
+  // constrained to the schema and the answer comes back validated and typed.
   run(prompt: string): Promise<string>;
+  run<S extends z.ZodType>(prompt: string, schema: S): Promise<z.infer<S>>;
   run<V>(template: PromptTemplate<V>, vars: V): Promise<string>;
-  run(promptOrTemplate: string | PromptTemplate<any>, vars?: unknown): Promise<string> {
+  run<V, S extends z.ZodType>(template: PromptTemplate<V>, vars: V, schema: S): Promise<z.infer<S>>;
+  async run(
+    promptOrTemplate: string | PromptTemplate<any>,
+    varsOrSchema?: unknown,
+    maybeSchema?: z.ZodType,
+  ): Promise<unknown> {
+    const schema =
+      maybeSchema ?? (varsOrSchema instanceof z.ZodType ? varsOrSchema : undefined);
+    const vars = varsOrSchema instanceof z.ZodType ? undefined : varsOrSchema;
     const prompt =
       typeof promptOrTemplate === "function"
         ? (promptOrTemplate as PromptTemplate<any>)(vars)
@@ -62,10 +82,19 @@ export class Agent {
       { role: "system", content: this.systemPrompt },
       { role: "user", content: prompt },
     ];
-    return this.loop(messages);
+    if (!schema) return this.loop(messages);
+
+    const raw = await this.loop(messages, toOutputFormat("agent_output", schema));
+    try {
+      return schema.parse(JSON.parse(raw));
+    } catch (err) {
+      throw new Error(
+        `Structured output failed validation: ${err instanceof Error ? err.message : String(err)}\nModel output: ${raw}`,
+      );
+    }
   }
 
-  protected async loop(messages: ChatMessage[]): Promise<string> {
+  protected async loop(messages: ChatMessage[], format?: OutputFormat): Promise<string> {
     const toolDefs = [...this.tools.values()].map((t) => t.definition);
     let i = 0;
     while(true) {
@@ -73,6 +102,7 @@ export class Agent {
         model: this.model,
         tools: toolDefs,
         think: this.think,
+        format,
       });
 
       if (msg.thinking) console.log(`\n[thinking] ${msg.thinking.slice(0, 200)}...`);

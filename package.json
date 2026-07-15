@@ -16,6 +16,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.111.0",
     "@elysiajs/openapi": "^1.4.15",
+    "dedent": "^1.7.2",
     "elysia": "^1.4.29",
     "ollama": "^0.6.3",
     "openai": "^6.47.0",

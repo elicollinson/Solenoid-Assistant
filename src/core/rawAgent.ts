@@ -8,8 +8,9 @@ import {
   type ChatProvider,
   type ThinkLevel,
 } from "./providers";
+import { type PromptTemplate, defaultSystemPrompt } from "../prompts";
 
-interface AgentOptions {
+export interface AgentOptions {
   // A ChatProvider (OllamaProvider | OpenAIProvider | AnthropicProvider), or a
   // bare Ollama client which gets wrapped in OllamaProvider automatically.
   client: ChatProvider | Ollama;
@@ -21,20 +22,24 @@ interface AgentOptions {
 }
 
 export class Agent {
-  private readonly client: ChatProvider;
-  private readonly model: string;
-  private readonly systemPrompt: string;
-  private readonly tools = new Map<string, AgentTool>();
-  private readonly maxIterations: number | undefined;
-  private readonly think: ThinkLevel;
+  protected readonly client: ChatProvider;
+  protected readonly model: string;
+  protected readonly systemPrompt: string;
+  protected readonly tools = new Map<string, AgentTool>();
+  protected readonly maxIterations: number | undefined;
+  protected readonly think: ThinkLevel;
 
   constructor(opts: AgentOptions) {
     this.client = opts.client instanceof Ollama ? new OllamaProvider(opts.client) : opts.client;
     this.model = opts.model;
-    this.systemPrompt = opts.systemPrompt ?? "You are a helpful assistant. Use tools when needed.";
+    this.systemPrompt = opts.systemPrompt ?? defaultSystemPrompt();
     this.maxIterations = opts.maxIterations;
     this.think = opts.think ?? true;
     for (const t of opts.tools ?? []) this.addTool(t);
+    // Bind once so `agent.run` stays passable as a bare callback (the previous
+    // arrow-function-field behavior) despite `run` now being an overloaded
+    // method with a generic signature.
+    this.run = this.run.bind(this);
   }
 
   // Chainable registration. `this` return type lets you do agent.addTool(a).addTool(b).
@@ -43,17 +48,24 @@ export class Agent {
     return this;
   }
 
-  // Arrow-function field, not a method: it captures `this` permanently, so you
-  // can safely pass `agent.run` as a bare callback without it losing `this`.
-  run = async (prompt: string): Promise<string> => {
+  // Overloaded entry point: a plain string, or a `PromptTemplate<V>` plus its
+  // vars. Either way the prompt is resolved to a string here, before entering
+  // the loop — the loop itself is unchanged.
+  run(prompt: string): Promise<string>;
+  run<V>(template: PromptTemplate<V>, vars: V): Promise<string>;
+  run(promptOrTemplate: string | PromptTemplate<any>, vars?: unknown): Promise<string> {
+    const prompt =
+      typeof promptOrTemplate === "function"
+        ? (promptOrTemplate as PromptTemplate<any>)(vars)
+        : promptOrTemplate;
     const messages: ChatMessage[] = [
       { role: "system", content: this.systemPrompt },
       { role: "user", content: prompt },
     ];
     return this.loop(messages);
-  };
+  }
 
-  private async loop(messages: ChatMessage[]): Promise<string> {
+  protected async loop(messages: ChatMessage[]): Promise<string> {
     const toolDefs = [...this.tools.values()].map((t) => t.definition);
     let i = 0;
     while(true) {
@@ -83,7 +95,7 @@ export class Agent {
     }
   }
 
-  private async invokeTool(name: string, rawArgs: unknown): Promise<string> {
+  protected async invokeTool(name: string, rawArgs: unknown): Promise<string> {
     const tool = this.tools.get(name);
     if (!tool) return `Error: unknown tool "${name}"`;
     try {

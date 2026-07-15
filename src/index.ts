@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { openapi } from "@elysiajs/openapi";
 import { demoAgent } from "./agents/demo";
+import { weatherPrompt } from "./prompts";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -29,7 +30,7 @@ const app = new Elysia()
       }
 
       try {
-        const response = await demoAgent.run(`What's the weather in ${city}?`);
+        const response = await demoAgent.run(weatherPrompt, { city });
         return { city, response };
       } catch (err) {
         set.status = 502;

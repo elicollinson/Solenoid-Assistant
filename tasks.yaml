@@ -1,0 +1,16 @@
+# Scheduled task configuration, consumed by the cron worker (src/worker.ts).
+# Each entry binds a registered task (src/tasks/index.ts) to a cron schedule.
+#   name:     unique schedule name (shows up in logs and trace spans)
+#   task:     registry key of the task to run
+#   cron:     five-field cron expression (croner syntax)
+#   timezone: optional IANA timezone for the cron expression
+#   enabled:  optional, defaults to true
+#   args:     arguments passed to the task (validated by the task's schema)
+tasks:
+  - name: daily-weather
+    task: weather
+    cron: "0 7 * * *"
+    timezone: America/Los_Angeles
+    enabled: true
+    args:
+      city: San Francisco

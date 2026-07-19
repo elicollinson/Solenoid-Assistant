@@ -8,8 +8,14 @@ import { Elysia, t } from "elysia";
 import { openapi } from "@elysiajs/openapi";
 import { demoAgent, demoAgentGG } from "./agents/demo";
 import { weatherPrompt } from "./prompts";
+import { tasks, getTask, runTask, TaskArgsError, loadTasksConfig } from "./tasks";
 
 const PORT = Number(process.env.PORT ?? 3000);
+
+// Schedule config is display/default-args only here — the worker process
+// (src/worker.ts) owns actual scheduling and re-reads the file on its own
+// startup.
+const tasksConfig = await loadTasksConfig();
 
 const app = new Elysia()
   .use(
@@ -56,6 +62,96 @@ const app = new Elysia()
           response: t.String(),
         }),
         400: t.Object({ error: t.String() }),
+        502: t.Object({ error: t.String() }),
+      },
+    },
+  )
+  .get(
+    "/tasks",
+    () =>
+      [...tasks.values()].map((task) => ({
+        task: task.name,
+        description: task.description,
+        schedules: tasksConfig.tasks
+          .filter((s) => s.task === task.name)
+          .map(({ name, cron, timezone, enabled, args }) => ({
+            name,
+            cron,
+            timezone,
+            enabled,
+            args,
+          })),
+      })),
+    {
+      detail: { summary: "List registered tasks and their cron schedules" },
+      response: t.Array(
+        t.Object({
+          task: t.String(),
+          description: t.String(),
+          schedules: t.Array(
+            t.Object({
+              name: t.String(),
+              cron: t.String(),
+              timezone: t.Optional(t.String()),
+              enabled: t.Boolean(),
+              args: t.Record(t.String(), t.Unknown()),
+            }),
+          ),
+        }),
+      ),
+    },
+  )
+  .post(
+    "/tasks/:name/run",
+    async ({ params, body, set }) => {
+      const name = params.name;
+      if (!getTask(name)) {
+        set.status = 404;
+        return { error: `Unknown task "${name}"` };
+      }
+
+      // Explicit args win; otherwise fall back to the first enabled schedule
+      // for this task in tasks.yaml, so a bare POST tests the cron config.
+      const args =
+        body?.args ??
+        tasksConfig.tasks.find((s) => s.task === name && s.enabled)?.args ??
+        {};
+
+      try {
+        const result = await runTask(name, args);
+        return { task: name, ...result };
+      } catch (err) {
+        if (err instanceof TaskArgsError) {
+          set.status = 400;
+          return { error: err.message };
+        }
+        set.status = 502;
+        return {
+          error: err instanceof Error ? err.message : "Task run failed",
+        };
+      }
+    },
+    {
+      detail: { summary: "Run a scheduled task by name and return its output" },
+      params: t.Object({
+        name: t.String({ description: "Registered task name, e.g. \"weather\"" }),
+      }),
+      body: t.Optional(
+        t.Object({
+          args: t.Optional(
+            t.Unknown({ description: "Overrides the args from tasks.yaml" }),
+          ),
+        }),
+      ),
+      response: {
+        200: t.Object({
+          task: t.String(),
+          startedAt: t.String(),
+          durationMs: t.Number(),
+          output: t.Unknown(),
+        }),
+        400: t.Object({ error: t.String() }),
+        404: t.Object({ error: t.String() }),
         502: t.Object({ error: t.String() }),
       },
     },

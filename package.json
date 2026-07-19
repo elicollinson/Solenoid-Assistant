@@ -4,7 +4,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "bun run src/index.ts",
+    "start": "bun run scripts/start-all.ts",
+    "start:server": "bun run src/index.ts",
+    "start:worker": "bun run src/worker.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
@@ -20,6 +22,7 @@
     "@arizeai/phoenix-otel": "^1.2.0",
     "@elysiajs/openapi": "^1.4.15",
     "@opentelemetry/api": "^1.9.1",
+    "croner": "^10.0.1",
     "dedent": "^1.7.2",
     "elysia": "^1.4.29",
     "ollama": "^0.6.3",

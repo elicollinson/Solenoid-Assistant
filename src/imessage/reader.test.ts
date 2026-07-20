@@ -96,6 +96,16 @@ describe("fetchMessages", () => {
     expect(messages.map((m) => m.sourceId)).toEqual(["g-2", "g-5", "g-6"]);
   });
 
+  test("untilAppleNs bounds the window inclusively", () => {
+    const { messages, newCursor } = fetchMessages(0n, {
+      dbPath,
+      overlapSeconds: 0,
+      untilAppleNs: at(240),
+    });
+    expect(messages.map((m) => m.sourceId)).toEqual(["g-1", "g-2", "g-5"]); // g-5 at the bound stays
+    expect(newCursor).toBe(at(240)); // cursor never advances past the bound
+  });
+
   test("overlap window re-reads late-arriving rows without moving the cursor back", () => {
     const { messages, newCursor } = fetchMessages(at(300), { dbPath, overlapSeconds: 60 });
     expect(messages.map((m) => m.sourceId)).toEqual(["g-6"]); // at(300) itself, caught by overlap

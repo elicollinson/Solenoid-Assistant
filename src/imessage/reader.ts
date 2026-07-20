@@ -23,6 +23,9 @@ export interface FetchOptions {
   // sync), so the query window overlaps the cursor by this much; consumers
   // dedupe on sourceId (§10). The returned cursor is NOT affected by overlap.
   overlapSeconds?: number;
+  // Inclusive upper bound on message.date, for bounded historical windows.
+  // Unbounded (cursor semantics, §10) when omitted.
+  untilAppleNs?: bigint;
 }
 
 export interface FetchResult {
@@ -65,10 +68,15 @@ LEFT JOIN handle h            ON h.ROWID = m.handle_id
 LEFT JOIN chat_message_join j ON j.message_id = m.ROWID
 LEFT JOIN chat c              ON c.ROWID = j.chat_id
 WHERE m.date > $cursor
+  AND m.date <= $until
   AND m.associated_message_type = 0
   AND m.item_type = 0
   AND m.balloon_bundle_id IS NULL
 ORDER BY m.date ASC`;
+
+// Effectively-unbounded default for $until (max int64), keeping one prepared
+// query for both the cursor and the bounded-window call paths.
+const NO_UPPER_BOUND = 9_223_372_036_854_775_807n;
 
 interface Row {
   guid: string;
@@ -83,11 +91,11 @@ interface Row {
 }
 
 export function fetchMessages(sinceAppleNs: bigint, options: FetchOptions = {}): FetchResult {
-  const { dbPath = DEFAULT_DB_PATH, overlapSeconds = 60 } = options;
+  const { dbPath = DEFAULT_DB_PATH, overlapSeconds = 60, untilAppleNs = NO_UPPER_BOUND } = options;
   const db = openReadOnly(dbPath);
   try {
     const windowStart = sinceAppleNs - BigInt(overlapSeconds) * NS_PER_SECOND;
-    const rows = db.query(QUERY).all({ $cursor: windowStart }) as Row[];
+    const rows = db.query(QUERY).all({ $cursor: windowStart, $until: untilAppleNs }) as Row[];
 
     const seen = new Set<string>();
     const messages: Message[] = [];

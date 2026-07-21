@@ -21,8 +21,8 @@ export const readImessagesTool = defineTool({
       .number()
       .int()
       .positive()
-      .max(200)
-      .default(50)
+      .max(500)
+      .default(200)
       .describe("Maximum messages to return; keeps the most recent when the window has more (default 50)"),
   }),
   execute: ({ hoursBack, limit }) => {

@@ -3,12 +3,29 @@
 // created at call time and the tracer is resolved lazily.)
 import { initTracing, shutdownTracing } from "./core/tracing";
 initTracing();
-
+import { Ollama } from "ollama";
 import { Elysia, t } from "elysia";
 import { openapi } from "@elysiajs/openapi";
-import { demoAgent, demoAgentGG } from "./agents/demo";
-import { weatherPrompt } from "./prompts";
-import { tasks, getTask, runTask, TaskArgsError, loadTasksConfig } from "./tasks";
+import { demoAgentGG } from "./agents/demo";
+import { imessageIntakeAgent } from "./agents/imessageIntake";
+import { Agent } from "./core/rawAgent";
+import { calculateTool } from "./tools/demo";
+import pLimit from "p-limit";
+
+
+import {
+  weatherPrompt,
+  imessageIntakePrompt,
+  memoryGraderPrompt,
+} from "./prompts";
+import {
+  tasks,
+  getTask,
+  runTask,
+  TaskArgsError,
+  loadTasksConfig,
+} from "./tasks";
+import { imessageIntakeSchema, memoryGraderSchema } from "./prompts";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -17,7 +34,12 @@ const PORT = Number(process.env.PORT ?? 3000);
 // startup.
 const tasksConfig = await loadTasksConfig();
 
-const app = new Elysia()
+const app = new Elysia({
+  // Agent endpoints run 30-50s before writing any response bytes, which trips
+  // Elysia's default 30s idleTimeout (Bun closes the socket and clients
+  // silently retry the GET, re-running the whole agent). 0 disables it.
+  serve: { idleTimeout: 255 },
+})
   .use(
     openapi({
       documentation: {
@@ -54,7 +76,10 @@ const app = new Elysia()
     {
       detail: { summary: "Get weather for a city via the demo agent" },
       body: t.Object({
-        city: t.String({ minLength: 1, description: "City to get weather for" }),
+        city: t.String({
+          minLength: 1,
+          description: "City to get weather for",
+        }),
       }),
       response: {
         200: t.Object({
@@ -134,7 +159,7 @@ const app = new Elysia()
     {
       detail: { summary: "Run a scheduled task by name and return its output" },
       params: t.Object({
-        name: t.String({ description: "Registered task name, e.g. \"weather\"" }),
+        name: t.String({ description: 'Registered task name, e.g. "weather"' }),
       }),
       body: t.Optional(
         t.Object({
@@ -152,6 +177,59 @@ const app = new Elysia()
         }),
         400: t.Object({ error: t.String() }),
         404: t.Object({ error: t.String() }),
+        502: t.Object({ error: t.String() }),
+      },
+    },
+  )
+  .get(
+    "/messageExtraction",
+    async ({ set }) => {
+      try {
+        const extractedResponse = await imessageIntakeAgent.run(
+          imessageIntakePrompt(),
+          imessageIntakeSchema,
+        );
+        const limit = pLimit(8);
+
+        const gradedMemories = await Promise.all(
+          extractedResponse.memoryContext.map((memory: string) =>
+            limit(async () => {
+              const memoryEval = await new Agent({
+                client: new Ollama({
+                  host: process.env.OLLAMA_API_URL || "https://ollama.com",
+                  headers: {
+                    Authorization: `Bearer ${process.env.OLLAMA_API_KEY || ""}`,
+                  },
+                }),
+                model: process.env.MODEL || "glm-5.2",
+                tools: [calculateTool],
+              }).run(memoryGraderPrompt({ output: memory }), memoryGraderSchema);
+              return { memory, pass: memoryEval.pass };
+            }),
+          ),
+        );
+        const validatedMemories = gradedMemories
+          .filter((graded) => graded.pass)
+          .map((graded) => graded.memory);
+
+        return { ...extractedResponse, memoryContext: validatedMemories };
+      } catch (err) {
+        set.status = 502;
+        return {
+          error: err instanceof Error ? err.message : "Agent call failed",
+        };
+      }
+    },
+    {
+      detail: {
+        summary: "Extract action items from recent iMessage conversations",
+      },
+      response: {
+        200: t.Object({
+          actionItems: t.Array(t.String()),
+          conversationSummaries: t.Array(t.String()),
+          memoryContext: t.Array(t.String()),
+        }),
         502: t.Object({ error: t.String() }),
       },
     },

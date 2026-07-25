@@ -1,0 +1,14 @@
+
+import { Agent } from "../core/rawAgent";
+import { weatherTool, calculateTool } from "../tools/demo";
+import { Ollama } from "ollama";
+
+export const injectionRiskClassifier = new Agent({
+  client: new Ollama({
+    host: process.env.OLLAMA_API_URL || "https://ollama.com",
+    headers: { Authorization: `Bearer ${process.env.OLLAMA_API_KEY || ""}` },
+  }),
+  model: process.env.MODEL || "glm-5.2",
+  tools: [],
+});
+

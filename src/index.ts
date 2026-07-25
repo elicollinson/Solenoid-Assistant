@@ -10,13 +10,14 @@ import { demoAgentGG } from "./agents/demo";
 import { imessageIntakeAgent } from "./agents/imessageIntake";
 import { Agent } from "./core/rawAgent";
 import { calculateTool } from "./tools/demo";
-import pLimit from "p-limit";
-
+import { fanout } from "./utils/fanout";
+import { chunkWords } from "./utils/chunkWords";
 
 import {
   weatherPrompt,
   imessageIntakePrompt,
   memoryGraderPrompt,
+  injectionRiskPrompt,
 } from "./prompts";
 import {
   tasks,
@@ -25,9 +26,18 @@ import {
   TaskArgsError,
   loadTasksConfig,
 } from "./tasks";
-import { imessageIntakeSchema, memoryGraderSchema } from "./prompts";
+import {
+  imessageIntakeSchema,
+  memoryGraderSchema,
+  injectionRiskSchema,
+} from "./prompts";
+import { injectionRiskClassifier } from "./agents/safetyClassifier";
 
 const PORT = Number(process.env.PORT ?? 3000);
+
+// Average concern score above which the input is flagged as a likely prompt
+// injection attack. The per-chunk score is 0–1, so 0.5 is the midpoint.
+const INJECTION_FLAG_THRESHOLD = 0.5;
 
 // Schedule config is display/default-args only here — the worker process
 // (src/worker.ts) owns actual scheduling and re-reads the file on its own
@@ -189,28 +199,26 @@ const app = new Elysia({
           imessageIntakePrompt(),
           imessageIntakeSchema,
         );
-        const limit = pLimit(8);
+        const memoryGraderAgent = new Agent({
+          client: new Ollama({
+            host: process.env.OLLAMA_API_URL || "https://ollama.com",
+            headers: {
+              Authorization: `Bearer ${process.env.OLLAMA_API_KEY || ""}`,
+            },
+          }),
+          model: process.env.MODEL || "glm-5.2",
+          tools: [calculateTool],
+        });
 
-        const gradedMemories = await Promise.all(
-          extractedResponse.memoryContext.map((memory: string) =>
-            limit(async () => {
-              const memoryEval = await new Agent({
-                client: new Ollama({
-                  host: process.env.OLLAMA_API_URL || "https://ollama.com",
-                  headers: {
-                    Authorization: `Bearer ${process.env.OLLAMA_API_KEY || ""}`,
-                  },
-                }),
-                model: process.env.MODEL || "glm-5.2",
-                tools: [calculateTool],
-              }).run(memoryGraderPrompt({ output: memory }), memoryGraderSchema);
-              return { memory, pass: memoryEval.pass };
-            }),
-          ),
+        const gradedMemories = await fanout(
+          extractedResponse.memoryContext.map((memory) => ({ output: memory })),
+          memoryGraderAgent,
+          memoryGraderPrompt,
+          memoryGraderSchema,
+          8,
         );
-        const validatedMemories = gradedMemories
-          .filter((graded) => graded.pass)
-          .map((graded) => graded.memory);
+        const validatedMemories = extractedResponse.memoryContext
+          .filter((_, i) => gradedMemories[i]?.pass);
 
         return { ...extractedResponse, memoryContext: validatedMemories };
       } catch (err) {
@@ -229,6 +237,65 @@ const app = new Elysia({
           actionItems: t.Array(t.String()),
           conversationSummaries: t.Array(t.String()),
           memoryContext: t.Array(t.String()),
+        }),
+        502: t.Object({ error: t.String() }),
+      },
+    },
+  )
+  .post(
+    "/safetyClassifier",
+    async ({ body, set }) => {
+      try {
+        const fullInput = body.input;
+
+        const chunks = chunkWords(fullInput, body.maxLength);
+        console.log("safetyClassifier chunks:", chunks);
+
+        const evaluations = await fanout(
+          chunks.map((text) => ({ text })),
+          injectionRiskClassifier,
+          injectionRiskPrompt,
+          injectionRiskSchema,
+          8,
+        );
+
+        // Use the single highest-scoring chunk as the representative
+        // result — it's the strongest injection signal in the input.
+        const highestConfidence = evaluations.reduce((best, e) =>
+          e.concernScore > best.concernScore ? e : best,
+        );
+
+        const flagged = highestConfidence.concernScore > INJECTION_FLAG_THRESHOLD;
+
+        return {
+          flagged,
+          concern: highestConfidence.rationale,
+          score: highestConfidence.concernScore,
+        };
+      } catch (err) {
+        set.status = 502;
+        return {
+          error: err instanceof Error ? err.message : "Agent call failed",
+        };
+      }
+    },
+    {
+      detail: { summary: "Classify input text for safety concerns" },
+      body: t.Object({
+        input: t.String({
+          minLength: 1,
+          description: "Input text to classify",
+        }),
+        maxLength: t.Number({
+          minimum: 2,
+          description: "Maximum number of words per random-length chunk",
+        }),
+      }),
+      response: {
+        200: t.Object({
+          flagged: t.Boolean(),
+          concern: t.String(),
+          score: t.Number(),
         }),
         502: t.Object({ error: t.String() }),
       },

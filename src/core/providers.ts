@@ -98,6 +98,11 @@ export class OllamaProvider extends BaseChatProvider {
     // Belt and braces: local Ollama enforces `format` via constrained decoding,
     // but Ollama Cloud silently ignores it (docs: "Ollama's Cloud platform does
     // not currently support structured outputs"), so also instruct the model.
+    // The appended message is a request, not a constraint, so on Cloud the model
+    // can still return prose, fenced JSON, or nothing at all. Blank replies are
+    // retried in Agent.loop, prose/fences are recovered by extractJson, and
+    // Agent.effectiveThink sends think:false on schema-constrained calls so the
+    // reasoning channel (where the JSON was disappearing to) never opens.
     if (opts.format) {
       ollamaMessages.push({
         role: "system",

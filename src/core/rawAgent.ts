@@ -34,8 +34,14 @@ export function toOutputFormat(name: string, schema: z.ZodType): OutputFormat {
 // Lenient JSON recovery for backends that don't enforce the schema server-side
 // (e.g. Ollama Cloud): peel off code fences or surrounding prose before
 // parsing. Validation still happens via zod, so bad output fails loudly.
+//
+// Returns "" when there is nothing at all to parse (empty or whitespace-only
+// input). Callers must treat that as its own failure — "the model said
+// nothing" — rather than handing it to JSON.parse, which reports a misleading
+// "Unexpected EOF" as though the JSON were merely malformed.
 export function extractJson(raw: string): string {
   const trimmed = raw.trim();
+  if (!trimmed) return "";
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) return trimmed;
   const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fence?.[1]) return fence[1].trim();
@@ -44,6 +50,12 @@ export function extractJson(raw: string): string {
   if (start !== -1 && end > start) return trimmed.slice(start, end + 1);
   return trimmed;
 }
+
+// How many times a schema-constrained turn may come back with no content
+// before the agent gives up. Tracked separately from `maxIterations`, which
+// bounds tool-calling rounds — a blank turn does no work, so it should not
+// consume that budget.
+export const MAX_BLANK_RETRIES = 2;
 
 export interface AgentOptions {
   // A ChatProvider (OllamaProvider | OpenAIProvider | AnthropicProvider), or a
@@ -54,6 +66,12 @@ export interface AgentOptions {
   tools?: AgentTool[];
   maxIterations?: number | undefined;
   think?: ThinkLevel;
+  // Keep `think` on for schema-constrained calls too. Default off: on backends
+  // that don't enforce `format` (Ollama Cloud), reasoning models route the
+  // final JSON into the thinking channel and return empty content — with no
+  // reasoning channel open, the answer has nowhere to go but content. Opt in
+  // only for structured tasks that genuinely need extended reasoning.
+  thinkOnStructured?: boolean;
   // Name shown on the AGENT root span; defaults to the (sub)class name.
   name?: string;
 }
@@ -65,6 +83,7 @@ export class Agent {
   protected readonly tools = new Map<string, AgentTool>();
   protected readonly maxIterations: number | undefined;
   protected readonly think: ThinkLevel;
+  protected readonly thinkOnStructured: boolean;
   protected readonly name: string;
 
   constructor(opts: AgentOptions) {
@@ -79,6 +98,7 @@ export class Agent {
     this.systemPrompt = opts.systemPrompt ?? defaultSystemPrompt();
     this.maxIterations = opts.maxIterations;
     this.think = opts.think ?? true;
+    this.thinkOnStructured = opts.thinkOnStructured ?? false;
     for (const t of opts.tools ?? []) this.addTool(t);
     // Bind once so `agent.run` stays passable as a bare callback (the previous
     // arrow-function-field behavior) despite `run` now being an overloaded
@@ -142,9 +162,21 @@ export class Agent {
     ];
     if (!schema) return this.loop(messages);
 
-    const raw = await this.loop(messages, toOutputFormat("agent_output", schema));
+    const format = toOutputFormat("agent_output", schema);
+    const raw = await this.loop(messages, format);
+    const json = extractJson(raw);
+    // Distinct from a validation failure: there is no candidate JSON at all.
+    // Reported separately so the symptom points at the cause (a turn that
+    // produced no content) instead of at the parser.
+    if (!json) {
+      throw new Error(
+        `Structured output missing: the model ended its turn without any content to parse ` +
+          `after ${MAX_BLANK_RETRIES} retries. This usually means it spent the turn on reasoning ` +
+          `instead of answering — check the message.reasoning attribute on the LLM span.`,
+      );
+    }
     try {
-      return schema.parse(JSON.parse(extractJson(raw)));
+      return schema.parse(JSON.parse(json));
     } catch (err) {
       throw new Error(
         `Structured output failed validation: ${err instanceof Error ? err.message : String(err)}\nModel output: ${raw}`,
@@ -170,14 +202,23 @@ export class Agent {
     return withSpanKind(kind, name, attributes, fn);
   }
 
+  // The think level actually sent for a call: schema-constrained calls drop to
+  // `false` unless the agent opted in via `thinkOnStructured` (see AgentOptions).
+  // Shared so subclasses that override `loop` (or call `chat` directly with a
+  // format) apply the same rule instead of re-deriving it.
+  protected effectiveThink(format?: OutputFormat): ThinkLevel {
+    return format && !this.thinkOnStructured ? false : this.think;
+  }
+
   protected async loop(messages: ChatMessage[], format?: OutputFormat): Promise<string> {
     const toolDefs = [...this.tools.values()].map((t) => t.definition);
     let i = 0;
+    let blankRetries = 0;
     while(true) {
       const msg = await this.client.chat(messages, {
         model: this.model,
         tools: toolDefs,
-        think: this.think,
+        think: this.effectiveThink(format),
         format,
       });
 
@@ -185,7 +226,31 @@ export class Agent {
 
       messages.push(msg); // keep the assistant turn (incl. its reasoning) in history
 
-      if (!msg.toolCalls?.length) return msg.content; // no tools requested => done
+      if (!msg.toolCalls?.length) {
+        // No tools requested => the model considers itself done. On a
+        // schema-constrained call that only counts if it actually produced
+        // content: backends that ignore `format` (Ollama Cloud) let a reasoning
+        // model spend the whole post-tool-result turn on `thinking` and return
+        // content: "". Re-prompt for the JSON rather than returning the empty
+        // string as a valid answer.
+        if (format && !msg.content.trim() && blankRetries < MAX_BLANK_RETRIES) {
+          blankRetries++;
+          log.warn(
+            `[retry] empty structured response, re-prompting for ${format.name} (${blankRetries}/${MAX_BLANK_RETRIES})`,
+          );
+          // Positive-only phrasing: an earlier nudge listed what to avoid
+          // ("no reasoning, no prose, no code fences") and models kept
+          // reproducing the named failure modes. State only the target shape.
+          messages.push({
+            role: "user",
+            content:
+              "Reply now with the JSON object matching the schema. Your entire " +
+              "reply is that raw JSON object, starting with { and ending with }.",
+          });
+          continue;
+        }
+        return msg.content;
+      }
 
       for (const call of msg.toolCalls) {
         const output = await this.invokeTool(call.name, call.arguments);

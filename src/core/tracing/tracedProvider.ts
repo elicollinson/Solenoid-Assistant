@@ -30,6 +30,9 @@ export function tracedChat(
     },
     async (span) => {
       const msg = await inner();
+      // outputMessageAttributes records `msg.thinking` as message.reasoning, so
+      // a turn that spends all its completion tokens on reasoning is readable
+      // from the trace instead of appearing as unexplained empty output.
       span.setAttributes({
         ...outputMessageAttributes(msg),
         [SemanticConventions.OUTPUT_VALUE]: msg.content,

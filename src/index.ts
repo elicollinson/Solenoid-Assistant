@@ -7,16 +7,18 @@ import { Ollama } from "ollama";
 import { Elysia, t } from "elysia";
 import { openapi } from "@elysiajs/openapi";
 import { demoAgentGG } from "./agents/demo";
-import { imessageIntakeAgent } from "./agents/imessageIntake";
+import { createImessageIntakeAgent } from "./agents/imessageIntake";
+import { okfManagerAgent } from "./agents/okfManager";
 import { Agent } from "./core/rawAgent";
-import { calculateTool } from "./tools/demo";
-import { fanout } from "./utils/fanout";
+import { fanout, fulfilled, rejected } from "./utils/fanout";
 import { chunkWords } from "./utils/chunkWords";
+import { log } from "./core/logger";
 
 import {
   weatherPrompt,
   imessageIntakePrompt,
   memoryGraderPrompt,
+  memoryGraderSystemPrompt,
   injectionRiskPrompt,
 } from "./prompts";
 import {
@@ -30,6 +32,7 @@ import {
   imessageIntakeSchema,
   memoryGraderSchema,
   injectionRiskSchema,
+  okfManagerResultSchema,
 } from "./prompts";
 import { injectionRiskClassifier } from "./agents/safetyClassifier";
 
@@ -38,6 +41,11 @@ const PORT = Number(process.env.PORT ?? 3000);
 // Average concern score above which the input is flagged as a likely prompt
 // injection attack. The per-chunk score is 0–1, so 0.5 is the midpoint.
 const INJECTION_FLAG_THRESHOLD = 0.5;
+
+// A memory passes grading when the average of its relevance and actionability
+// scores (each 0–10) exceeds this. Matches the "above 7" rule the grader
+// prompt used to delegate to the model via the calculate tool.
+const MEMORY_PASS_THRESHOLD = 7;
 
 // Schedule config is display/default-args only here — the worker process
 // (src/worker.ts) owns actual scheduling and re-reads the file on its own
@@ -193,10 +201,37 @@ const app = new Elysia({
   )
   .get(
     "/messageExtraction",
-    async ({ set }) => {
+    async ({ query, set }) => {
+      // Optional extraction window. Anything Date.parse accepts is allowed
+      // (date-only strings included) and normalized to ISO UTC before being
+      // handed to the agent, so the model always sees unambiguous timestamps.
+      // Omitted bounds keep the default behavior (last 24 hours, ending now).
+      const start = query.start ? new Date(query.start) : undefined;
+      const end = query.end ? new Date(query.end) : undefined;
+      if (start && Number.isNaN(start.getTime())) {
+        set.status = 400;
+        return { error: `Invalid start: "${query.start}" is not a parseable date/time` };
+      }
+      if (end && Number.isNaN(end.getTime())) {
+        set.status = 400;
+        return { error: `Invalid end: "${query.end}" is not a parseable date/time` };
+      }
+      if (start && end && start >= end) {
+        set.status = 400;
+        return {
+          error: `Invalid range: start (${start.toISOString()}) must be before end (${end.toISOString()})`,
+        };
+      }
       try {
-        const extractedResponse = await imessageIntakeAgent.run(
-          imessageIntakePrompt(),
+        // Per-request agent: with a range, the read tool is constructed with
+        // the window baked into its closure and exposes no time parameters —
+        // the range is enforced structurally, not requested via the prompt.
+        // Without one, the tool is the model-driven default (last 24 hours).
+        const intakeAgent = createImessageIntakeAgent(
+          start || end ? { start, end } : undefined,
+        );
+        const extractedResponse = await intakeAgent.run(
+          imessageIntakePrompt({ start: start?.toISOString(), end: end?.toISOString() }),
           imessageIntakeSchema,
         );
         const memoryGraderAgent = new Agent({
@@ -207,7 +242,11 @@ const app = new Elysia({
             },
           }),
           model: process.env.MODEL || "glm-5.2",
-          tools: [calculateTool],
+          systemPrompt: memoryGraderSystemPrompt,
+          // Deliberately toolless: giving the grader `calculate` for the
+          // average created a post-tool-result turn, which is exactly where
+          // glm-5.2:cloud emitted its verdict into the reasoning channel and
+          // returned empty content. The average is computed below instead.
         });
 
         const gradedMemories = await fanout(
@@ -217,10 +256,47 @@ const app = new Elysia({
           memoryGraderSchema,
           8,
         );
-        const validatedMemories = extractedResponse.memoryContext
-          .filter((_, i) => gradedMemories[i]?.pass);
+        // A grade that failed is not a pass: an ungradeable memory is withheld
+        // rather than trusted, but it no longer takes the whole request down.
+        const gradeFailures = rejected(gradedMemories);
+        if (gradeFailures.length > 0) {
+          log.warn(
+            `memoryExtraction: ${gradeFailures.length}/${gradedMemories.length} memory grades failed; ` +
+              `withholding those memories. First error: ${gradeFailures[0]?.message}`,
+          );
+        }
+        const validatedMemories = extractedResponse.memoryContext.filter((_, i) => {
+          const graded = gradedMemories[i];
+          if (graded?.status !== "fulfilled") return false;
+          // Pass/fail lives here, not in the model: averaging two numbers is
+          // deterministic work, and asking the model for it (via a calculate
+          // tool) was both slower and the trigger for blank structured replies.
+          const { memoryRelevance, memoryActionability } = graded.value;
+          return (memoryRelevance + memoryActionability) / 2 > MEMORY_PASS_THRESHOLD;
+        });
 
-        return { ...extractedResponse, memoryContext: validatedMemories };
+        let memString = "";
+
+        validatedMemories.forEach((mem) => {
+          memString += `- ${mem}\n`;
+        });
+
+        let okfUpdate;
+        if (validatedMemories.length > 0) {
+          // Awaited so the resolved value (not a pending Promise) is serialized
+          // and so a rejection is caught below as a 502 rather than escaping as
+          // an unhandled rejection.
+          okfUpdate = await okfManagerAgent.run(
+            `Update the okf with these memories: ${memString}`,
+            okfManagerResultSchema,
+          );
+        }
+
+        return {
+          ...extractedResponse,
+          memoryContext: validatedMemories,
+          okfUpdate: okfUpdate || "none",
+        };
       } catch (err) {
         set.status = 502;
         return {
@@ -230,14 +306,32 @@ const app = new Elysia({
     },
     {
       detail: {
-        summary: "Extract action items from recent iMessage conversations",
+        summary:
+          "Extract action items from iMessage conversations, optionally within a date/time range (default: last 24 hours)",
       },
+      query: t.Object({
+        start: t.Optional(
+          t.String({
+            description:
+              "Window start (inclusive), any parseable date/time, e.g. 2026-07-20 or 2026-07-20T09:00:00Z. Default: 24 hours before end.",
+          }),
+        ),
+        end: t.Optional(
+          t.String({
+            description: "Window end (inclusive), any parseable date/time. Default: now.",
+          }),
+        ),
+      }),
       response: {
         200: t.Object({
           actionItems: t.Array(t.String()),
           conversationSummaries: t.Array(t.String()),
           memoryContext: t.Array(t.String()),
+          // The awaited okfManager result, or the string "none" when no memory
+          // passed grading and no update was attempted.
+          okfUpdate: t.Unknown(),
         }),
+        400: t.Object({ error: t.String() }),
         502: t.Object({ error: t.String() }),
       },
     },
@@ -259,13 +353,32 @@ const app = new Elysia({
           8,
         );
 
+        const scored = fulfilled(evaluations);
+        const failures = rejected(evaluations);
+        if (failures.length > 0) {
+          log.warn(
+            `safetyClassifier: ${failures.length}/${evaluations.length} chunk classifications failed; ` +
+              `scoring on the remainder. First error: ${failures[0]?.message}`,
+          );
+        }
+        // Never report "not flagged" off the back of zero successful
+        // classifications — an unscored chunk is an unknown, not a safe one, so
+        // total failure has to surface as an error rather than a clean verdict.
+        if (scored.length === 0) {
+          set.status = 502;
+          return {
+            error: `All ${evaluations.length} chunk classifications failed: ${failures[0]?.message ?? "unknown error"}`,
+          };
+        }
+
         // Use the single highest-scoring chunk as the representative
         // result — it's the strongest injection signal in the input.
-        const highestConfidence = evaluations.reduce((best, e) =>
+        const highestConfidence = scored.reduce((best, e) =>
           e.concernScore > best.concernScore ? e : best,
         );
 
-        const flagged = highestConfidence.concernScore > INJECTION_FLAG_THRESHOLD;
+        const flagged =
+          highestConfidence.concernScore > INJECTION_FLAG_THRESHOLD;
 
         return {
           flagged,

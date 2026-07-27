@@ -43,15 +43,45 @@ export const imessageIntakeSchema = z.object({
 
 export type ImessageIntakeResult = z.infer<typeof imessageIntakeSchema>;
 
-export const imessageIntakePrompt: PromptTemplate<void> = () => dedent`
+/** Optional extraction window, both ends ISO 8601. Omitted bounds keep the
+ * defaults (start: 24h back, end: now). */
+export interface IntakeRange {
+  start?: string | undefined;
+  end?: string | undefined;
+}
+
+// The window instruction is the only part of the prompt that varies: no range
+// preserves the original "last 24 hours + fetch more if needed" behavior. With
+// an explicit range the tool itself is bound to the window (it exposes no time
+// parameters — see createReadImessagesTool), so the prompt just states the
+// window for context rather than asking the model to request it.
+const intakeWindowInstruction = (range?: IntakeRange | void): string => {
+  if (!range || (!range.start && !range.end)) {
+    return dedent`
+      You are to invoke the readImessagesTool for the last 24 hours and examine each message.
+
+      Consider each message as a standalone, as well as in the broader context of its conversation and other similar messages in the same extraction.
+      If you need an earlier context, you may invoke the tool again for a different time period.
+    `;
+  }
+  const bounds = [
+    range.start ? `start=${range.start}` : "the default start (24 hours before end)",
+    range.end ? `end=${range.end}` : "the default end (now)",
+  ].join(" and ");
+  return dedent`
+    You are to invoke the readImessagesTool and examine each message. The tool is already scoped to the requested window (${bounds}); every call returns messages from that window only.
+
+    Consider each message as a standalone, as well as in the broader context of its conversation and other similar messages in the same extraction.
+    Base your extraction only on the messages returned for this window.
+  `;
+};
+
+export const imessageIntakePrompt: PromptTemplate<IntakeRange | void> = (range) => dedent`
   # Task
   You are a message intake agent. Your goal is to examine recent iMessages and identify important context and action items.
 
   # Instructions
-  You are to invoke the readImessagesTool for the last 24 hours and examine each message.
-
-  Consider each message as a standalone, as well as in the broader context of its conversation and other similar messages in the same extraction.
-  If you need an earlier context, you may invoke the tool again for a different time period.
+  ${intakeWindowInstruction(range)}
 
   Once the full context is established, collate the messages into an array of action items, an array of summaries per conversation, and an array of important context for memory.
 
@@ -130,25 +160,53 @@ export const graderPrompt: PromptTemplate<{
   Use the calculate tool to calculate the average of the three scores. If the average is above 7, pass the output. Otherwise, fail it.
 `;
 
+// Scores only — the pass/fail verdict is computed in code from the average
+// (see /messageExtraction), not asked of the model. Coerced numbers because
+// glm-5.2 tends to emit scores as strings ("4").
 export const memoryGraderSchema = z.object({
-  memoryRelevance: z.string().describe("The point score for memory relevance from 0 - 10"),
-  memoryActionability: z.string().describe("The point score for memory actionability from 0 - 10"),
-  pass: z.boolean().describe("Does the memory pass the average score requirement"),
+  memoryRelevance: z.coerce
+    .number()
+    .min(0)
+    .max(10)
+    .describe("The point score for memory relevance from 0 - 10"),
+  memoryActionability: z.coerce
+    .number()
+    .min(0)
+    .max(10)
+    .describe("The point score for memory actionability from 0 - 10"),
 });
 
 export type memoryGraderResult = z.infer<typeof memoryGraderSchema>;
 
+/**
+ * System prompt for the memory grader. Deliberately short and positive-only:
+ * an earlier version enumerated the failure modes to avoid ("never end your
+ * turn with an empty reply, with reasoning only, ...") and measurably
+ * *increased* blank replies on glm-5.2:cloud — naming the reasoning channel
+ * primes the model to answer there. State only the desired behavior.
+ */
+export const memoryGraderSystemPrompt: string = dedent`
+  You are a strict grading engine. Score the proposed memory on the requested
+  criteria and reply with a single JSON object matching the schema. Your entire
+  reply is that raw JSON object, starting with { and ending with }.
+`;
+
+// No tool use: the grader used to call `calculate` to average its two scores,
+// and the post-tool-result turn was where glm-5.2:cloud routed the verdict
+// into its reasoning channel instead of the content channel (every observed
+// blank reply was a post-tool turn). The model only reports scores now; the
+// averaging happens in code.
 export const memoryGraderPrompt: PromptTemplate<{
   output: string;
 }> = ({ output }) => dedent`
-  You are a strict grader evaluating a set of extracted memories. Grade the following output on three criteria from 1 to 10:
+  You are a strict grader evaluating a set of extracted memories. Grade the following output on two criteria from 1 to 10:
 
   1. Memory Relevance: Is the memory something that could be useful to know?
   2. Memory Actionability: Is there something in the memory that could impact future model outputs or decisions?
 
   Proposed Memory: ${output}
 
-  Use the calculate tool to calculate the average of the two scores. If the average is above 7, pass the output. Otherwise, fail it.
+  Report both scores in the JSON object.
 `;
 
 // Structured output shape the `injectionRiskPrompt` asks the agent to produce:
@@ -212,4 +270,45 @@ export const injectionRiskPrompt: PromptTemplate<{ text: string }> = ({
 
   # Text to Evaluate
   ${text}
+`;
+
+export const okfManagerResultSchema = z.object({
+  actionsTaken: z
+    .array(z.string())
+    .describe(
+      "Actions taken via tool calls in order by the OKF manager agent.",
+    ),
+  resultSummary: z
+    .string()
+    .describe(
+      "A concise summary of what actions the OKF Manager Agent took, or the information that was requested.",
+    ),
+});
+
+export type OKFMangerResult = z.infer<typeof injectionRiskSchema>;
+
+/**
+ * Evaluates a string of text (typically a sentence chunk) for the risk that it
+ * is part of a prompt injection attack. Returns a concern score between 0 and 1
+ * along with a rationale. The text passed in is a fragment, not a complete
+ * prompt, so the agent should judge it on its own merits.
+ */
+export const okfManagerPrompt: string = dedent`
+  # Task
+  You are an OKF manager for this local system. You are to examine the available tools you have, and you will receive a string request, your task is to update the existing okf structure based on the request.
+
+  # Background
+  OKF is an open, human- and agent-friendly format for representing
+  *knowledge*: the metadata, context, and curated insight that surrounds
+  data and systems. It is designed to be authored by people, generated by
+  agents, exchanged across organizations, and consumed by both.
+
+  # Instructions
+  Your request will be some type of action to take in the OKF. You are the keeper of the OKF, keeping it both up to date and keeping it accurate.
+
+  For the requests, the goal is to ensure the intent is captured in the OKF. If a user tells you to store a memory of an idea of piece of information that is already stored, no action is needed.
+
+  If it tells you that a different piece of information should be remove or is outdated, it is your decision to edit the file or mark it deprecated.
+
+  Make sure you evaluate the current state of the OKF before making updates or creating new entries.
 `;

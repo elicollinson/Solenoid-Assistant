@@ -61,11 +61,30 @@ export async function withSpanKind<T>(
 
 // --- LLM attribute builders (flattened per the OpenInference spec) ----------
 
+// OpenInference has no constant for reasoning text on a message (only for
+// reasoning *token counts*), so this is a local extension. It deliberately
+// sits alongside `message.content` rather than inside `message.contents`,
+// which Phoenix renders in place of content — reasoning must never displace
+// the answer in the UI.
+const MESSAGE_REASONING = "message.reasoning";
+
+// Reasoning traces can run to thousands of tokens; enough to diagnose a turn
+// is enough to store.
+const MAX_REASONING_CHARS = 2000;
+
 function messageAttributes(prefix: string, m: ChatMessage): Attributes {
   const attrs: Attributes = {
     [`${prefix}.${SemanticConventions.MESSAGE_ROLE}`]: m.role,
     [`${prefix}.${SemanticConventions.MESSAGE_CONTENT}`]: m.content,
   };
+  // Without this, a turn that spends all its completion tokens on reasoning
+  // shows up as empty output with a non-zero token count and no explanation.
+  if (m.thinking) {
+    attrs[`${prefix}.${MESSAGE_REASONING}`] =
+      m.thinking.length > MAX_REASONING_CHARS
+        ? `${m.thinking.slice(0, MAX_REASONING_CHARS)}… [truncated ${m.thinking.length - MAX_REASONING_CHARS} chars]`
+        : m.thinking;
+  }
   m.toolCalls?.forEach((c, j) => {
     const t = `${prefix}.${SemanticConventions.MESSAGE_TOOL_CALLS}.${j}`;
     attrs[`${t}.${SemanticConventions.TOOL_CALL_ID}`] = c.id;

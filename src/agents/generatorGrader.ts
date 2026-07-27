@@ -56,11 +56,12 @@ export class GeneratorGrader extends Agent {
       "grade",
       { [SemanticConventions.INPUT_VALUE]: messages[messages.length - 1]?.content ?? "" },
       async (span) => {
+        const gradeFormat = toOutputFormat("grade", gradeSchema);
         const msg = await this.client.chat([{ role: "system", content: gPrompt },], {
           model: this.model,
           tools: [],
-          think: this.think,
-          format: toOutputFormat("grade", gradeSchema),
+          think: this.effectiveThink(gradeFormat),
+          format: gradeFormat,
         });
 
         try {
@@ -86,7 +87,7 @@ export class GeneratorGrader extends Agent {
       const msg = await this.client.chat(messages, {
         model: this.model,
         tools: toolDefs,
-        think: this.think,
+        think: this.effectiveThink(format),
         format,
       });
 

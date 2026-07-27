@@ -7,6 +7,8 @@
     "start": "bun run scripts/start-all.ts",
     "start:server": "bun run src/index.ts",
     "start:worker": "bun run src/worker.ts",
+    "backfill": "bun run scripts/backfill-extraction.ts",
+    "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

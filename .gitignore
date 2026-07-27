@@ -35,3 +35,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Phoenix trace data (bind-mounted from docker-compose.yml)
 phoenix_data/
+
+# OKF store (contains personal data — contacts, addresses)
+/okf/

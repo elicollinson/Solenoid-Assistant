@@ -38,3 +38,5 @@ phoenix_data/
 
 # OKF store (contains personal data — contacts, addresses)
 /okf/
+.pi-memory/
+.screenshots/

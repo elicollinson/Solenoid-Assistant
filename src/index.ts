@@ -35,6 +35,8 @@ import {
   okfManagerResultSchema,
 } from "./prompts";
 import { injectionRiskClassifier } from "./agents/safetyClassifier";
+import { getRecentScreenshots, describeScreenshots } from "./tools/photos";
+import { OsxPhotosError } from "./utils/osxPhotos";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -72,6 +74,183 @@ const app = new Elysia({
     detail: { summary: "Health check" },
     response: t.Object({ status: t.Literal("ok") }),
   })
+  .get(
+    "/screenshots",
+    async ({ query, set }) => {
+      const hoursBack = query.hoursBack;
+      const fromTime = query.fromTime;
+
+      if (fromTime) {
+        const parsed = new Date(fromTime);
+        if (Number.isNaN(parsed.getTime())) {
+          set.status = 400;
+          return { error: `Invalid fromTime: "${fromTime}" is not a parseable date/time` };
+        }
+      }
+
+      try {
+        const result = await getRecentScreenshots({
+          hoursBack,
+          fromTime,
+        });
+        return result;
+      } catch (err) {
+        log.error(`GET /screenshots failed`, {
+          hoursBack: hoursBack ?? "unset",
+          fromTime: fromTime ?? "unset",
+          error: err instanceof Error ? err.message : String(err),
+          ...(err instanceof OsxPhotosError ? { stderr: err.stderr } : {}),
+        });
+        set.status = 502;
+        if (err instanceof OsxPhotosError) {
+          return { error: err.message };
+        }
+        return {
+          error: err instanceof Error ? err.message : "Screenshot query failed",
+        };
+      }
+    },
+    {
+      detail: {
+        summary:
+          "List screenshots from the local macOS Photos library (default: last 24 hours)",
+      },
+      query: t.Object({
+        hoursBack: t.Optional(
+          t.Number({
+            minimum: 1,
+            maximum: 24 * 30,
+            description:
+              "How far back to look, in hours (default 24, max 720). Ignored when fromTime is set.",
+          }),
+        ),
+        fromTime: t.Optional(
+          t.String({
+            description:
+              "Window start (inclusive), any parseable ISO 8601 date/time, e.g. 2026-07-20T14:30:00Z. Overrides hoursBack.",
+          }),
+        ),
+      }),
+      response: {
+        200: t.Object({
+          windowStart: t.String(),
+          windowEnd: t.String(),
+          returned: t.Number(),
+          totalInWindow: t.Number(),
+          screenshots: t.Array(
+            t.Object({
+              uuid: t.String(),
+              filename: t.String(),
+              date: t.String(),
+              width: t.Number(),
+              height: t.Number(),
+              path: t.Nullable(t.String()),
+              isMissing: t.Boolean(),
+            }),
+          ),
+        }),
+        400: t.Object({ error: t.String() }),
+        502: t.Object({ error: t.String() }),
+      },
+    },
+  )
+  .get(
+    "/screenshots/describe",
+    async ({ query, set }) => {
+      const hoursBack = query.hoursBack;
+      const fromTime = query.fromTime;
+      const limit = query.limit;
+
+      if (fromTime) {
+        const parsed = new Date(fromTime);
+        if (Number.isNaN(parsed.getTime())) {
+          set.status = 400;
+          return { error: `Invalid fromTime: "${fromTime}" is not a parseable date/time` };
+        }
+      }
+
+      try {
+        const result = await describeScreenshots({
+          hoursBack,
+          fromTime,
+          limit,
+        });
+        return result;
+      } catch (err) {
+        log.error(`GET /screenshots/describe failed`, {
+          hoursBack: hoursBack ?? "unset",
+          fromTime: fromTime ?? "unset",
+          limit: limit ?? "unset",
+          error: err instanceof Error ? err.message : String(err),
+          ...(err instanceof OsxPhotosError ? { stderr: err.stderr } : {}),
+        });
+        set.status = 502;
+        if (err instanceof OsxPhotosError) {
+          return { error: err.message };
+        }
+        return {
+          error: err instanceof Error ? err.message : "Screenshot description failed",
+        };
+      }
+    },
+    {
+      detail: {
+        summary:
+          "Retrieve recent screenshots and describe each with a vision model. Returns structured descriptions (app, summary, prominent text) per screenshot.",
+      },
+      query: t.Object({
+        hoursBack: t.Optional(
+          t.Number({
+            minimum: 1,
+            maximum: 24 * 30,
+            description:
+              "How far back to look, in hours (default 24, max 720). Ignored when fromTime is set.",
+          }),
+        ),
+        fromTime: t.Optional(
+          t.String({
+            description:
+              "Window start (inclusive), any parseable ISO 8601 date/time, e.g. 2026-07-20T14:30:00Z. Overrides hoursBack.",
+          }),
+        ),
+        limit: t.Optional(
+          t.Number({
+            minimum: 1,
+            maximum: 500,
+            description:
+              "Maximum screenshots to process (default 50 — vision calls are expensive).",
+          }),
+        ),
+      }),
+      response: {
+        200: t.Object({
+          windowStart: t.String(),
+          windowEnd: t.String(),
+          returned: t.Number(),
+          totalInWindow: t.Number(),
+          failed: t.Number(),
+          screenshots: t.Array(
+            t.Object({
+              uuid: t.String(),
+              filename: t.String(),
+              date: t.String(),
+              path: t.String(),
+              description: t.Nullable(
+                t.Object({
+                  app: t.String(),
+                  summary: t.String(),
+                  prominentText: t.Array(t.String()),
+                }),
+              ),
+              error: t.Optional(t.String()),
+            }),
+          ),
+        }),
+        400: t.Object({ error: t.String() }),
+        502: t.Object({ error: t.String() }),
+      },
+    },
+  )
   .post(
     "/agent",
     async ({ body, set }) => {

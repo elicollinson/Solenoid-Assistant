@@ -8,8 +8,14 @@ import { trace } from "@opentelemetry/api";
 type Level = "debug" | "info" | "warn" | "error";
 type LogAttributes = Record<string, string | number | boolean>;
 
+function formatAttrs(attrs?: LogAttributes): string {
+  if (!attrs || Object.keys(attrs).length === 0) return "";
+  const parts = Object.entries(attrs).map(([k, v]) => `${k}=${v}`);
+  return ` {${parts.join(", ")}}`;
+}
+
 function emit(level: Level, message: string, attrs?: LogAttributes): void {
-  console[level === "debug" ? "log" : level](message);
+  console[level === "debug" ? "log" : level](message + formatAttrs(attrs));
   trace.getActiveSpan()?.addEvent(message, { "log.severity": level, ...attrs });
 }
 

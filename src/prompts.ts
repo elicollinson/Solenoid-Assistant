@@ -293,6 +293,56 @@ export type OKFMangerResult = z.infer<typeof injectionRiskSchema>;
  * along with a rationale. The text passed in is a fragment, not a complete
  * prompt, so the agent should judge it on its own merits.
  */
+export const contentCardSourcingPrompt: string = dedent`
+  # Task
+  You are a content card sourcing agent. Given a query that names a piece of
+  media — a Game, Musician, Movie, TV Show, Song, Album, or Book — you find
+  and return a structured content card for it using live web search and
+  extraction tools.
+
+  # What a content card contains
+  Every content card has exactly these fields:
+  - **name** — the canonical title of the item (game title, artist name, movie
+    title, song title, album title, book title, show title).
+  - **type** — which category the item belongs to: Game, Musician, Movie,
+    TV Show, Song, Album, or Book.
+  - **description** — a concise factual summary (1-3 sentences). No marketing
+    fluff, no padding.
+  - **coverImageUrl** — a direct URL to the cover art, poster, album art, or
+    profile image. Must be a real image URL, not a page link.
+  - **url** — the canonical URL for the item (official site, Wikipedia, IMDB,
+    Steam, Spotify, Goodreads, etc.) where the user can learn more.
+
+  # Instructions
+  - Use the search tool to find the item and gather its details.
+  - Use the extract tool to pull clean content from a specific URL when the
+    search snippet doesn't have enough detail (e.g., cover image or
+    description).
+  - Target US based urls for url field and image address.
+  - If you cannot find a cover image URL, set coverImageUrl to an empty
+    string rather than guessing.
+  - If the search returns nothing relevant for the requested item, say so in
+    the description rather than fabricating fields.
+`;
+
+export const contentCardSchema = z.object({
+  name: z.string().describe("The canonical title of the item."),
+  type: z
+    .enum(["Game", "Musician", "Movie", "TV Show", "Song", "Album", "Book"])
+    .describe("Which category the item belongs to."),
+  description: z
+    .string()
+    .describe("A concise factual summary of the item (1-3 sentences)."),
+  coverImageUrl: z
+    .string()
+    .describe("Direct URL to cover art, poster, or profile image. Empty string if not found."),
+  url: z
+    .string()
+    .describe("Canonical URL for the item (official site, Wikipedia, IMDB, etc.)."),
+});
+
+export type ContentCard = z.infer<typeof contentCardSchema>;
+
 export const okfManagerPrompt: string = dedent`
   # Task
   You are an OKF manager for this local system. You are to examine the available tools you have, and you will receive a string request, your task is to update the existing okf structure based on the request.
@@ -312,3 +362,37 @@ export const okfManagerPrompt: string = dedent`
 
   Make sure you evaluate the current state of the OKF before making updates or creating new entries.
 `;
+
+
+export const classifier: string = `
+  #Task
+  You are a classifier for screenshot images.
+  Your task is to examine a screenshot, and determine what kind of information it holds.
+  Select one classification from the given list below and return your result in the given structure.
+
+  #Classifications
+  The available classification results are:
+
+    - Book: The screenshot includes a summary, a title, or a cover of a book.
+    - Movie: The screenshot includes a clip, a poster, a title, or a description of a movie.
+    - TV Show: The screenshot includes a clip, a poster, a title, or a description of a TV Show.
+    - Game: The screenshot includes a clip, a trailer, a title, or a description of a video game.
+    - Music: The screenshot includes a title, album name, artist name, album art, or playlist entries of music songs/albums/artists.
+    - Rejected: The screenshot is a photo of a person outside the context of a movie or tv show, is non commercial social media, contains adult content, is not tied to any previous categories, or is uninterpretable (black screen etc).
+  `
+
+/**
+ * Zod schema for a classifier result: an object whose `classification` field
+ * is one of the six categories enumerated in the `classifier` prompt above.
+ * Compatible with the `schema` parameter of `describeImage`.
+ */
+export const ClassificationResultSchema = z.object({
+  classification: z
+    .enum(["Book", "Movie", "TV Show", "Game", "Music", "Rejected"])
+    .describe(
+      "The classification of the screenshot: Book, Movie, TV Show, Game, Music, or Rejected.",
+    ),
+});
+
+/** Inferred type for {@link ClassificationResultSchema}. */
+export type ClassificationResult = z.infer<typeof ClassificationResultSchema>;

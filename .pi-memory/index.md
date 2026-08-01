@@ -1,3 +1,3 @@
-# Bundle Update Log
+# Subdirectories
 
-*Memory bundle initialized.*
+* [integrations](integrations/index.md)

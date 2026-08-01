@@ -20,6 +20,8 @@ import {
   memoryGraderPrompt,
   memoryGraderSystemPrompt,
   injectionRiskPrompt,
+  classifier,
+  contentCardSchema,
 } from "./prompts";
 import {
   tasks,
@@ -33,8 +35,12 @@ import {
   memoryGraderSchema,
   injectionRiskSchema,
   okfManagerResultSchema,
+  ClassificationResultSchema,
 } from "./prompts";
+import type { ClassificationResult, ContentCard } from "./prompts";
 import { injectionRiskClassifier } from "./agents/safetyClassifier";
+import { createContentCardSourcingAgent } from "./agents/contentCardSourcing";
+import type { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { getRecentScreenshots, describeScreenshots } from "./tools/photos";
 import { OsxPhotosError } from "./utils/osxPhotos";
 
@@ -251,6 +257,128 @@ const app = new Elysia({
       },
     },
   )
+  .get(
+    "/screenshots/classify",
+    async ({ query, set }) => {
+      const hoursBack = query.hoursBack;
+      const fromTime = query.fromTime;
+      const limit = query.limit;
+
+      if (fromTime) {
+        const parsed = new Date(fromTime);
+        if (Number.isNaN(parsed.getTime())) {
+          set.status = 400;
+          return { error: `Invalid fromTime: "${fromTime}" is not a parseable date/time` };
+        }
+      }
+
+      try {
+        const result = await describeScreenshots({
+          hoursBack,
+          fromTime,
+          limit,
+          prompt: classifier,
+          schema: ClassificationResultSchema,
+        });
+        // describeScreenshots types `description` as ScreenshotDescription | null,
+        // but with ClassificationResultSchema the runtime value is a
+        // ClassificationResult. Reshape into a `classification` field for the
+        // response so the schema is honest about what the model returned.
+        return {
+          windowStart: result.windowStart,
+          windowEnd: result.windowEnd,
+          returned: result.returned,
+          totalInWindow: result.totalInWindow,
+          failed: result.failed,
+          screenshots: result.screenshots.map((s) => ({
+            uuid: s.uuid,
+            filename: s.filename,
+            date: s.date,
+            path: s.path,
+            classification: s.description as ClassificationResult | null,
+            error: s.error,
+          })),
+        };
+      } catch (err) {
+        log.error(`GET /screenshots/classify failed`, {
+          hoursBack: hoursBack ?? "unset",
+          fromTime: fromTime ?? "unset",
+          limit: limit ?? "unset",
+          error: err instanceof Error ? err.message : String(err),
+          ...(err instanceof OsxPhotosError ? { stderr: err.stderr } : {}),
+        });
+        set.status = 502;
+        if (err instanceof OsxPhotosError) {
+          return { error: err.message };
+        }
+        return {
+          error: err instanceof Error ? err.message : "Screenshot classification failed",
+        };
+      }
+    },
+    {
+      detail: {
+        summary:
+          "Retrieve recent screenshots and classify each with a vision model. Returns a classification (Book, Movie, TV Show, Game, Music, or Rejected) per screenshot.",
+      },
+      query: t.Object({
+        hoursBack: t.Optional(
+          t.Number({
+            minimum: 1,
+            maximum: 24 * 30,
+            description:
+              "How far back to look, in hours (default 24, max 720). Ignored when fromTime is set.",
+          }),
+        ),
+        fromTime: t.Optional(
+          t.String({
+            description:
+              "Window start (inclusive), any parseable ISO 8601 date/time, e.g. 2026-07-20T14:30:00Z. Overrides hoursBack.",
+          }),
+        ),
+        limit: t.Optional(
+          t.Number({
+            minimum: 1,
+            maximum: 500,
+            description:
+              "Maximum screenshots to process (default 50 — vision calls are expensive).",
+          }),
+        ),
+      }),
+      response: {
+        200: t.Object({
+          windowStart: t.String(),
+          windowEnd: t.String(),
+          returned: t.Number(),
+          totalInWindow: t.Number(),
+          failed: t.Number(),
+          screenshots: t.Array(
+            t.Object({
+              uuid: t.String(),
+              filename: t.String(),
+              date: t.String(),
+              path: t.String(),
+              classification: t.Nullable(
+                t.Object({
+                  classification: t.Union([
+                    t.Literal("Book"),
+                    t.Literal("Movie"),
+                    t.Literal("TV Show"),
+                    t.Literal("Game"),
+                    t.Literal("Music"),
+                    t.Literal("Rejected"),
+                  ]),
+                }),
+              ),
+              error: t.Optional(t.String()),
+            }),
+          ),
+        }),
+        400: t.Object({ error: t.String() }),
+        502: t.Object({ error: t.String() }),
+      },
+    },
+  )
   .post(
     "/agent",
     async ({ body, set }) => {
@@ -282,6 +410,69 @@ const app = new Elysia({
         200: t.Object({
           city: t.String(),
           response: t.String(),
+        }),
+        400: t.Object({ error: t.String() }),
+        502: t.Object({ error: t.String() }),
+      },
+    },
+  )
+  .post(
+    "/content-card",
+    async ({ body, set }) => {
+      const query = body.query.trim();
+      if (!query) {
+        set.status = 400;
+        return { error: 'Missing "query" field' };
+      }
+
+      let mcpClient: McpClient | undefined;
+      try {
+        const { agent, mcpClient: client } = await createContentCardSourcingAgent();
+        mcpClient = client;
+        const card = await agent.run(query, contentCardSchema) as ContentCard;
+        return { query, ...card };
+      } catch (err) {
+        log.error(`POST /content-card failed`, {
+          query,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        set.status = 502;
+        return {
+          error: err instanceof Error ? err.message : "Content card sourcing failed",
+        };
+      } finally {
+        // Close the MCP connection so we don't leak the remote socket.
+        mcpClient?.close();
+      }
+    },
+    {
+      detail: {
+        summary:
+          "Source a content card for a media item (Game, Musician, Movie, TV Show, Song, Album, or Book) using live web search via Tavily MCP.",
+      },
+      body: t.Object({
+        query: t.String({
+          minLength: 1,
+          description:
+            "The name of the media item to look up, e.g. 'The Witcher 3', 'Radiohead', 'The Matrix'.",
+        }),
+      }),
+      response: {
+        200: t.Object({
+          query: t.String(),
+          name: t.String(),
+          type: t.Union([
+            t.Literal("Game"),
+            t.Literal("Musician"),
+            t.Literal("Movie"),
+            t.Literal("TV Show"),
+            t.Literal("Song"),
+            t.Literal("Album"),
+            t.Literal("Book"),
+          ]),
+          description: t.String(),
+          coverImageUrl: t.String(),
+          url: t.String(),
         }),
         400: t.Object({ error: t.String() }),
         502: t.Object({ error: t.String() }),

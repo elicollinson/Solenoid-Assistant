@@ -123,10 +123,10 @@ export async function initNotionMcpCache(): Promise<NotionMcpCache> {
           error: resultParsed.error.message,
         });
       } else {
-        const content = resultParsed.data.content;
-        if (content && content.length > 0 && content[0]?.text) {
+        const text = resultParsed.data.content?.[0]?.text;
+        if (text) {
           const fetchParsed = notionFetchSelfResultSchema.safeParse(
-            JSON.parse(content[0].text),
+            JSON.parse(text),
           );
           if (fetchParsed.success) {
             cachedFetchResult = fetchParsed.data;

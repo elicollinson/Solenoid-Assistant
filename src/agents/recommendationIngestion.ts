@@ -119,11 +119,11 @@ export async function createRecommendationIngestionAgent(
   // Build the custom deterministic search tool (REST API) alongside the
   // MCP create/update tools.
   const notionSearchTool = createNotionSearchTool();
+  const filter = opts.toolFilter ?? DEFAULT_NOTION_TOOL_FILTER;
 
   let tools;
   try {
-    const mcpTools = await loadMcpTools(mcpClient, opts.toolFilter ?? DEFAULT_NOTION_TOOL_FILTER);
-    tools = [notionSearchTool, ...mcpTools];
+    tools = [notionSearchTool, ...await loadMcpTools(mcpClient, filter)];
   } catch (err) {
     // If the cached client's token expired during runtime, the listTools()
     // call inside loadMcpTools will fail with an auth error. Reconnect with
@@ -131,8 +131,7 @@ export async function createRecommendationIngestionAgent(
     if (!ownsClient && isNotionAuthError(err)) {
       const cache = await reconnectNotionMcpCache();
       mcpClient = cache.client;
-      const mcpTools = await loadMcpTools(mcpClient, opts.toolFilter ?? DEFAULT_NOTION_TOOL_FILTER);
-      tools = [notionSearchTool, ...mcpTools];
+      tools = [notionSearchTool, ...await loadMcpTools(mcpClient, filter)];
     } else {
       throw err;
     }

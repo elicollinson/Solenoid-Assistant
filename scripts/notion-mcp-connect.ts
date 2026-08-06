@@ -15,10 +15,7 @@ async function main(): Promise<void> {
   await client.initialize();
 
   if (!client.hasTokens) {
-    log.error(
-      "No tokens found in .env — run the auth flow first:",
-      {},
-    );
+    log.error("No tokens found in .env — run the auth flow first:");
     console.log("    bun run scripts/notion-mcp-auth.ts");
     process.exit(1);
   }

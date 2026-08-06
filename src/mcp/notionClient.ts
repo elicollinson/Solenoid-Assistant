@@ -425,25 +425,20 @@ export async function createMcpClient(
     },
   );
 
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    "User-Agent": "ManualPersonalAssistant-MCP-Client/1.0",
+  };
+
   let transport;
 
   if (useSSE) {
     transport = new SSEClientTransport(new URL(`${serverUrl}/sse`), {
-      requestInit: {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "User-Agent": "ManualPersonalAssistant-MCP-Client/1.0",
-        },
-      },
+      requestInit: { headers },
     });
   } else {
     transport = new StreamableHTTPClientTransport(new URL(`${serverUrl}/mcp`), {
-      requestInit: {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "User-Agent": "ManualPersonalAssistant-MCP-Client/1.0",
-        },
-      },
+      requestInit: { headers },
     });
   }
 
@@ -511,13 +506,11 @@ export async function refreshAccessToken(
         }
       }
     } catch (parseError) {
-      // Not JSON error response (re-throw if it's our own REAUTH/INVALID error)
-      if (parseError instanceof Error && parseError.message.includes("REAUTH")) {
-        throw parseError;
-      }
+      // Re-throw our own sentinel errors; swallow JSON parse failures.
       if (
         parseError instanceof Error &&
-        parseError.message.includes("INVALID")
+        (parseError.message === "REAUTH_REQUIRED" ||
+          parseError.message === "INVALID_CLIENT")
       ) {
         throw parseError;
       }

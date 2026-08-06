@@ -36,15 +36,40 @@ import {
   injectionRiskSchema,
   okfManagerResultSchema,
   ClassificationResultSchema,
+  recommendationIngestionSchema,
 } from "./prompts";
-import type { ClassificationResult, ContentCard } from "./prompts";
+import type {
+  ClassificationResult,
+  ContentCard,
+  RecommendationIngestionInput,
+  RecommendationIngestionResult,
+} from "./prompts";
+import { recommendationIngestionInputSchema } from "./prompts";
 import { injectionRiskClassifier } from "./agents/safetyClassifier";
 import { createContentCardSourcingAgent } from "./agents/contentCardSourcing";
+import { createClassifierAgent } from "./agents/classifier";
+import { createRecommendationIngestionAgent } from "./agents/recommendationIngestion";
 import type { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
-import { getRecentScreenshots, describeScreenshots } from "./tools/photos";
+import { initNotionMcpCache } from "./mcp/notionCache";
+import { getRecentScreenshots, describeScreenshots, classifyScreenshots } from "./tools/photos";
 import { OsxPhotosError } from "./utils/osxPhotos";
+import {
+  loadProcessed,
+  saveProcessed,
+  markAsIngested,
+} from "./utils/screenshotsProcessed";
 
 const PORT = Number(process.env.PORT ?? 3000);
+
+// Eagerly connect to Notion MCP at startup, call `notion-fetch` to verify the
+// workspace, and cache the client for reuse by agents. Non-fatal: if Notion
+// isn't configured the app still starts; agents that need Notion will fail at
+// call time with a clear message.
+await initNotionMcpCache().catch((err) => {
+  log.warn("Notion MCP cache init failed — Notion-dependent agents will error at call time", {
+    error: err instanceof Error ? err.message : String(err),
+  });
+});
 
 // Average concern score above which the input is flagged as a likely prompt
 // injection attack. The per-chunk score is 0–1, so 0.5 is the midpoint.
@@ -54,6 +79,27 @@ const INJECTION_FLAG_THRESHOLD = 0.5;
 // scores (each 0–10) exceeds this. Matches the "above 7" rule the grader
 // prompt used to delegate to the model via the calculate tool.
 const MEMORY_PASS_THRESHOLD = 7;
+
+// Map a screenshot classification to the recommendation ingestion `collection`
+// value. "Rejected" never reaches here — it's filtered out before ingestion.
+function classificationToCollection(
+  classification: ClassificationResult["classification"],
+): RecommendationIngestionInput["collection"] {
+  switch (classification) {
+    case "Book":
+      return "book";
+    case "Movie":
+      return "movie";
+    case "TV Show":
+      return "tv";
+    case "Game":
+      return "game";
+    case "Music":
+      return "music";
+    default:
+      throw new Error(`Unmappable classification: ${classification}`);
+  }
+}
 
 // Schedule config is display/default-args only here — the worker process
 // (src/worker.ts) owns actual scheduling and re-reads the file on its own
@@ -272,18 +318,18 @@ const app = new Elysia({
         }
       }
 
+      // Create classifier agent with Tavily MCP for web search.
+      let classifierMcpClient: McpClient | undefined;
       try {
-        const result = await describeScreenshots({
+        const classifierResult = await createClassifierAgent();
+        classifierMcpClient = classifierResult.mcpClient;
+
+        const result = await classifyScreenshots(classifierResult.agent, {
           hoursBack,
           fromTime,
           limit,
-          prompt: classifier,
-          schema: ClassificationResultSchema,
         });
-        // describeScreenshots types `description` as ScreenshotDescription | null,
-        // but with ClassificationResultSchema the runtime value is a
-        // ClassificationResult. Reshape into a `classification` field for the
-        // response so the schema is honest about what the model returned.
+
         return {
           windowStart: result.windowStart,
           windowEnd: result.windowEnd,
@@ -295,7 +341,7 @@ const app = new Elysia({
             filename: s.filename,
             date: s.date,
             path: s.path,
-            classification: s.description as ClassificationResult | null,
+            classification: s.classification,
             error: s.error,
           })),
         };
@@ -314,6 +360,8 @@ const app = new Elysia({
         return {
           error: err instanceof Error ? err.message : "Screenshot classification failed",
         };
+      } finally {
+        classifierMcpClient?.close();
       }
     },
     {
@@ -368,8 +416,340 @@ const app = new Elysia({
                     t.Literal("Music"),
                     t.Literal("Rejected"),
                   ]),
+                  name: t.String({
+                    description:
+                      "The name of the entity in the screenshot, or Unknown.",
+                  }),
                 }),
               ),
+              error: t.Optional(t.String()),
+            }),
+          ),
+        }),
+        400: t.Object({ error: t.String() }),
+        502: t.Object({ error: t.String() }),
+      },
+    },
+  )
+  .get(
+    "/screenshots/ingest",
+    async ({ query, set }) => {
+      const hoursBack = query.hoursBack;
+      const fromTime = query.fromTime;
+      const limit = query.limit;
+
+      if (fromTime) {
+        const parsed = new Date(fromTime);
+        if (Number.isNaN(parsed.getTime())) {
+          set.status = 400;
+          return { error: `Invalid fromTime: "${fromTime}" is not a parseable date/time` };
+        }
+      }
+
+      // --- Phase 1a: create classifier agent (needs Tavily MCP) ------------
+      let classifierMcpClient: McpClient | undefined;
+      let classifierAgent: Agent | undefined;
+
+      try {
+        const classifierResult = await createClassifierAgent();
+        classifierMcpClient = classifierResult.mcpClient;
+        classifierAgent = classifierResult.agent;
+      } catch (err) {
+        log.error(`GET /screenshots/ingest — classifier agent creation failed`, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        set.status = 502;
+        return {
+          error: `Failed to create classifier agent: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+
+      // --- Phase 1b: classify screenshots (vision + web search) ------------
+      let classifyResult;
+      try {
+        classifyResult = await classifyScreenshots(classifierAgent, {
+          hoursBack,
+          fromTime,
+          limit,
+        });
+      } catch (err) {
+        classifierMcpClient?.close();
+        log.error(`GET /screenshots/ingest — classify phase failed`, {
+          hoursBack: hoursBack ?? "unset",
+          fromTime: fromTime ?? "unset",
+          limit: limit ?? "unset",
+          error: err instanceof Error ? err.message : String(err),
+          ...(err instanceof OsxPhotosError ? { stderr: err.stderr } : {}),
+        });
+        set.status = 502;
+        if (err instanceof OsxPhotosError) return { error: err.message };
+        return {
+          error: err instanceof Error ? err.message : "Screenshot classification failed",
+        };
+      }
+
+      // --- Phase 2: create agents (one each, reused for every screenshot) ---
+      // Tavily MCP client is per-request and must be closed when done. The
+      // Notion MCP client comes from the shared startup cache and must NOT be
+      // closed here.
+      let tavilyMcpClient: McpClient | undefined;
+      let contentCardAgent: Agent | undefined;
+      let recommendationAgent: Agent | undefined;
+
+      try {
+        const tavily = await createContentCardSourcingAgent();
+        tavilyMcpClient = tavily.mcpClient;
+        contentCardAgent = tavily.agent;
+
+        const notion = await createRecommendationIngestionAgent();
+        recommendationAgent = notion.agent;
+      } catch (err) {
+        tavilyMcpClient?.close();
+        log.error(`GET /screenshots/ingest — agent creation failed`, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        set.status = 502;
+        return {
+          error: `Failed to create ingestion agents: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+
+      // --- Phase 3: per-screenshot pipeline (sequential) -------------------
+      // Sequential (not Promise.all) because both MCP clients are single
+      // HTTP connections; concurrent callTool requests on the same transport
+      // can interleave and corrupt the response stream.
+      const processed = await loadProcessed();
+      let dirty = false;
+
+      const screenshots = [];
+      for (const s of classifyResult.screenshots) {
+        const classification = s.classification;
+
+        const base = {
+          uuid: s.uuid,
+          filename: s.filename,
+          date: s.date,
+          path: s.path,
+          classification: classification
+            ? {
+                classification: classification.classification,
+                name: classification.name,
+              }
+            : null,
+          contentCard: null as ContentCard | null,
+          ingestion: null as RecommendationIngestionResult | null,
+        };
+
+        // Vision failed for this screenshot — nothing to ingest.
+        if (!classification) {
+          screenshots.push({
+            ...base,
+            status: "skipped" as const,
+            error: s.error,
+          });
+          continue;
+        }
+
+        // Already ingested in a previous run — skip to avoid duplicates.
+        const existing = processed[s.uuid];
+        if (existing) {
+          screenshots.push({
+            ...base,
+            status: "skipped" as const,
+            error: `Already ingested on ${existing.ingestedAt} as "${classification.classification}: ${classification.name}"`,
+          });
+          continue;
+        }
+
+        // Classifier rejected it — skip ingestion entirely.
+        if (classification.classification === "Rejected") {
+          screenshots.push({
+            ...base,
+            status: "rejected" as const,
+          });
+          continue;
+        }
+
+        // No usable name — the content card sourcing agent would search
+        // for "Unknown" and get garbage.
+        if (!classification.name.trim() || classification.name === "Unknown") {
+          screenshots.push({
+            ...base,
+            status: "skipped" as const,
+            error: "Classifier returned an empty or Unknown name",
+          });
+          continue;
+        }
+
+        // Step 3a: source the content card.
+        let card: ContentCard;
+        try {
+          card = (await contentCardAgent.run(
+            classification.name,
+            contentCardSchema,
+          )) as ContentCard;
+        } catch (err) {
+          screenshots.push({
+            ...base,
+            status: "failed" as const,
+            error: `Content card sourcing failed: ${err instanceof Error ? err.message : String(err)}`,
+          });
+          continue;
+        }
+
+        // Step 3b: ingest into Notion.
+        const collection = classificationToCollection(classification.classification);
+        const ingestionInput: RecommendationIngestionInput = {
+          name: card.name,
+          url: card.url,
+          description: card.description || undefined,
+          image_url: card.coverImageUrl || undefined,
+          collection,
+        };
+
+        try {
+          const ingestionResult = (await recommendationAgent.run(
+            JSON.stringify(ingestionInput),
+            recommendationIngestionSchema,
+          )) as RecommendationIngestionResult;
+
+          if (ingestionResult.status !== "error") {
+            // Mark as ingested so future runs skip this UUID.
+            markAsIngested(processed, s.uuid, classification.classification, classification.name);
+            dirty = true;
+          }
+
+          screenshots.push({
+            ...base,
+            contentCard: card,
+            ingestion: ingestionResult,
+            status: ingestionResult.status === "error" ? "failed" as const : "ingested" as const,
+            error: ingestionResult.error ?? undefined,
+          });
+        } catch (err) {
+          screenshots.push({
+            ...base,
+            contentCard: card,
+            status: "failed" as const,
+            error: `Recommendation ingestion failed: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
+      }
+
+      // Always close the Tavily MCP client — the Notion client is shared.
+      tavilyMcpClient?.close();
+
+      // Persist the updated processed map.
+      if (dirty) {
+        await saveProcessed(processed);
+      }
+
+      return {
+        windowStart: classifyResult.windowStart,
+        windowEnd: classifyResult.windowEnd,
+        returned: classifyResult.returned,
+        totalInWindow: classifyResult.totalInWindow,
+        failed: classifyResult.failed,
+        screenshots,
+      };
+    },
+    {
+      detail: {
+        summary:
+          "Classify recent screenshots, source a content card for each non-rejected item, and ingest it into the Notion gallery database. Returns the per-screenshot ingestion status.",
+      },
+      query: t.Object({
+        hoursBack: t.Optional(
+          t.Number({
+            minimum: 1,
+            maximum: 24 * 30,
+            description:
+              "How far back to look, in hours (default 24, max 720). Ignored when fromTime is set.",
+          }),
+        ),
+        fromTime: t.Optional(
+          t.String({
+            description:
+              "Window start (inclusive), any parseable ISO 8601 date/time, e.g. 2026-07-20T14:30:00Z. Overrides hoursBack.",
+          }),
+        ),
+        limit: t.Optional(
+          t.Number({
+            minimum: 1,
+            maximum: 500,
+            description:
+              "Maximum screenshots to process (default 50 — vision + web + Notion calls are expensive).",
+          }),
+        ),
+      }),
+      response: {
+        200: t.Object({
+          windowStart: t.String(),
+          windowEnd: t.String(),
+          returned: t.Number(),
+          totalInWindow: t.Number(),
+          failed: t.Number(),
+          screenshots: t.Array(
+            t.Object({
+              uuid: t.String(),
+              filename: t.String(),
+              date: t.String(),
+              path: t.String(),
+              classification: t.Nullable(
+                t.Object({
+                  classification: t.Union([
+                    t.Literal("Book"),
+                    t.Literal("Movie"),
+                    t.Literal("TV Show"),
+                    t.Literal("Game"),
+                    t.Literal("Music"),
+                    t.Literal("Rejected"),
+                  ]),
+                  name: t.String(),
+                }),
+              ),
+              contentCard: t.Nullable(
+                t.Object({
+                  name: t.String(),
+                  type: t.Union([
+                    t.Literal("Game"),
+                    t.Literal("Musician"),
+                    t.Literal("Movie"),
+                    t.Literal("TV Show"),
+                    t.Literal("Song"),
+                    t.Literal("Album"),
+                    t.Literal("Book"),
+                  ]),
+                  description: t.String(),
+                  coverImageUrl: t.String(),
+                  url: t.String(),
+                }),
+              ),
+              ingestion: t.Nullable(
+                t.Object({
+                  status: t.Union([
+                    t.Literal("created"),
+                    t.Literal("updated"),
+                    t.Literal("error"),
+                  ]),
+                  match: t.Union([
+                    t.Literal("exact"),
+                    t.Literal("none"),
+                    t.Literal("unsure"),
+                    t.Null(),
+                  ]),
+                  page_id: t.Union([t.String(), t.Null()]),
+                  page_url: t.Union([t.String(), t.Null()]),
+                  warnings: t.Array(t.String()),
+                  error: t.Union([t.String(), t.Null()]),
+                }),
+              ),
+              status: t.Union([
+                t.Literal("ingested"),
+                t.Literal("rejected"),
+                t.Literal("failed"),
+                t.Literal("skipped"),
+              ]),
               error: t.Optional(t.String()),
             }),
           ),
@@ -478,8 +858,7 @@ const app = new Elysia({
         502: t.Object({ error: t.String() }),
       },
     },
-  )
-  .get(
+  ).get(
     "/tasks",
     () =>
       [...tasks.values()].map((task) => ({

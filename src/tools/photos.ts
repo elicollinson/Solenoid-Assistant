@@ -1,5 +1,10 @@
 import { z } from "zod";
 import { defineTool } from "../core/tools";
+import type { Agent } from "../core/rawAgent";
+import {
+  ClassificationResultSchema,
+  type ClassificationResult,
+} from "../prompts";
 import {
   queryScreenshots,
   materialize,
@@ -211,11 +216,19 @@ export async function describeScreenshots(
     ? new Date(fromTime)
     : new Date(now.getTime() - hoursBack * 3600_000);
 
+  log.info("describeScreenshots: querying Photos library", {
+    fromDate: localIso(start),
+    limit,
+  });
   const records = await queryScreenshots({
     fromDate: localIso(start),
   });
 
   const photos = records.slice(0, limit);
+  log.info("describeScreenshots: query complete", {
+    matched: records.length,
+    selected: photos.length,
+  });
   if (photos.length === 0) {
     return {
       windowStart: start.toISOString(),
@@ -230,9 +243,23 @@ export async function describeScreenshots(
   // 2. Materialize: ensure every screenshot has a readable file on disk.
   // Local files are used in place; iCloud-only assets are downloaded.
   await mkdir(workDir, { recursive: true });
+  // This step shells out to `osxphotos export`, which downloads iCloud-only
+  // assets — by far the slowest and most stall-prone stage in the pipeline.
+  log.info("describeScreenshots: materializing files", {
+    count: photos.length,
+    workDir,
+  });
   const paths = await materialize(photos, workDir);
+  log.info("describeScreenshots: materialize complete", {
+    resolved: paths.size,
+    of: photos.length,
+  });
 
   // 3. Send each image to the vision model with concurrency control.
+  log.info("describeScreenshots: starting vision pass", {
+    count: photos.length,
+    concurrency,
+  });
   let done = 0;
   let failed = 0;
 
@@ -358,3 +385,179 @@ export const getRecentScreenshotsTool = defineTool({
   execute: ({ hoursBack, fromTime, limit }) =>
     getRecentScreenshots({ hoursBack, fromTime, limit }),
 });
+
+// ---------------------------------------------------------------------------
+// Two-step classification: vision description → classifier agent with tools.
+// ---------------------------------------------------------------------------
+
+/** Prompt sent to the vision model for classification pipeline. */
+const CLASSIFICATION_VISION_PROMPT =
+  "Describe this screenshot concisely. What app or website is shown? What content " +
+  "is visible — titles, names, descriptions, images? Quote any prominent text verbatim. " +
+  "Focus on identifying what media or product (if any) is being shown.";
+
+export interface ClassifiedScreenshot {
+  uuid: string;
+  filename: string;
+  /** ISO 8601 capture date. */
+  date: string;
+  /** Path to the image file that was sent to the model. */
+  path: string;
+  /** The classifier's result, or null if this one failed. */
+  classification: ClassificationResult | null;
+  error?: string;
+}
+
+export interface ClassifyScreenshotsResult {
+  windowStart: string;
+  windowEnd: string;
+  returned: number;
+  totalInWindow: number;
+  /** Number of screenshots that failed (vision or classification). */
+  failed: number;
+  screenshots: ClassifiedScreenshot[];
+}
+
+/** Zod schema for the optional vision model configuration (matches VisionOptions). */
+const visionOptionsSchema = z.object({
+  model: z.string().optional(),
+  host: z.string().optional(),
+  apiKey: z.string().optional(),
+});
+
+/**
+ * Zod schema for {@link classifyScreenshots} parameters. Validates the input
+ * at the function boundary so malformed callers fail with a clear error instead
+ * of passing garbage downstream.
+ */
+export const classifyScreenshotsParamsSchema = z.object({
+  /** How far back to look, in hours. Default 24. */
+  hoursBack: z.number().min(1).max(24 * 30).optional(),
+  /** Window start as an ISO 8601 timestamp. Overrides hoursBack. */
+  fromTime: z.string().optional(),
+  /** Cap on screenshots to process. Default 50 (vision calls are expensive). */
+  limit: z.number().min(1).max(500).optional(),
+  /** Where iCloud-only screenshots get downloaded to. */
+  workDir: z.string().optional(),
+  /** Parallel in-flight vision requests. Default 4. */
+  concurrency: z.number().min(1).optional(),
+  /** Vision model options (model name, host, API key). */
+  vision: visionOptionsSchema.optional(),
+});
+
+export type ClassifyScreenshotsParams = z.infer<
+  typeof classifyScreenshotsParamsSchema
+>;
+
+/**
+ * Query recent screenshots, describe each with a vision model, then classify
+ * the descriptions using an agent that has web search tools.
+ *
+ * Two-step pipeline:
+ *   1. Vision call: "What's in this screenshot?" → structured description
+ *   2. Classifier agent (with Tavily tools): takes the description, optionally
+ *      searches to verify item identity, returns classification + canonical name
+ *
+ * This is slower than a single vision call but more accurate — the classifier
+ * can look up ambiguous names instead of guessing.
+ */
+export async function classifyScreenshots(
+  classifierAgent: Agent,
+  rawParams: ClassifyScreenshotsParams = {},
+): Promise<ClassifyScreenshotsResult> {
+  const parsed = classifyScreenshotsParamsSchema.safeParse(rawParams);
+  if (!parsed.success) {
+    throw new Error(`Invalid classifyScreenshots params: ${parsed.error.message}`);
+  }
+  const params = parsed.data;
+
+  const {
+    hoursBack = 24,
+    fromTime,
+    limit = 50,
+    workDir = path.join(process.cwd(), ".screenshots"),
+    concurrency = 4,
+    vision = {},
+  } = params;
+
+  // Step 1: get vision descriptions of each screenshot.
+  const described = await describeScreenshots({
+    hoursBack,
+    fromTime,
+    limit,
+    prompt: CLASSIFICATION_VISION_PROMPT,
+    workDir,
+    concurrency,
+    vision,
+  });
+
+  if (described.screenshots.length === 0) {
+    return described as unknown as ClassifyScreenshotsResult;
+  }
+
+  // Step 2: classify each description using the agent with web tools.
+  let failed = described.failed;
+
+  const classified: ClassifiedScreenshot[] = [];
+  for (const s of described.screenshots) {
+    const base = {
+      uuid: s.uuid,
+      filename: s.filename,
+      date: s.date,
+      path: s.path,
+    };
+
+    if (!s.description) {
+      failed++;
+      classified.push({
+        ...base,
+        classification: null,
+        error: s.error ?? "Vision description failed",
+      });
+      continue;
+    }
+
+    // Build a prompt from the vision description for the classifier agent.
+    const desc = s.description;
+    const promptForClassifier = [
+      `App/website: ${desc.app}`,
+      `Summary: ${desc.summary}`,
+      ...(desc.prominentText.length > 0
+        ? [`Prominent text: ${desc.prominentText.join(" | ")}`]
+        : []),
+    ].join("\n");
+
+    try {
+      const classification = (await classifierAgent.run(
+        promptForClassifier,
+        ClassificationResultSchema,
+      )) as ClassificationResult;
+
+      classified.push({
+        ...base,
+        classification,
+      });
+    } catch (err) {
+      failed++;
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn(`classifyScreenshots: classification failed for ${s.uuid}`, {
+        uuid: s.uuid,
+        error: msg,
+      });
+      classified.push({
+        ...base,
+        classification: null,
+        error: `Classification failed: ${msg}`,
+      });
+    }
+  }
+
+  return {
+    windowStart: described.windowStart,
+    windowEnd: described.windowEnd,
+    returned: classified.length,
+    totalInWindow: described.totalInWindow,
+    failed,
+    screenshots: classified,
+  };
+}

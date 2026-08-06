@@ -110,21 +110,49 @@ export class OsxPhotosError extends Error {
  */
 const MAX_BUFFER = 256 * 1024 * 1024;
 
+/**
+ * Ceiling on any single osxphotos invocation. An iCloud download of a large
+ * batch is the slow case; anything past this is a wedged subprocess, and a
+ * wedged subprocess must not wedge the HTTP request that started it.
+ */
+const DEFAULT_TIMEOUT_MS = 10 * 60_000;
+
 async function runOsxPhotos(
   args: string[],
   binary: string,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<string> {
   try {
     // execFile, not exec: argv array means no shell, so paths with spaces
     // (like "Photos Library.photoslibrary") need no quoting and nothing
     // user-supplied can be interpreted as shell syntax.
-    const { stdout } = await execFileAsync(binary, args, {
+    const pending = execFileAsync(binary, args, {
       maxBuffer: MAX_BUFFER,
       encoding: "utf8",
+      timeout: timeoutMs,
+      killSignal: "SIGKILL",
     });
+
+    // osxphotos has interactive `click.confirm` guards (e.g. exporting into a
+    // directory that already holds an export database). Node leaves the child's
+    // stdin an open pipe it never writes to, so such a prompt blocks on a read
+    // that can never complete — the whole request hangs with no output. Closing
+    // stdin turns any prompt into an immediate EOF/Abort, i.e. a fast error
+    // instead of a silent hang.
+    pending.child.stdin?.end();
+
+    const { stdout } = await pending;
     return stdout;
   } catch (err: unknown) {
-    const e = err as NodeJS.ErrnoException & { stderr?: string };
+    const e = err as NodeJS.ErrnoException & { stderr?: string; killed?: boolean };
+
+    if (e.killed) {
+      throw new OsxPhotosError(
+        `osxphotos timed out after ${Math.round(timeoutMs / 1000)}s and was killed ` +
+          `(command: ${binary} ${args.join(" ")}).`,
+        e.stderr ?? "",
+      );
+    }
     if (e.code === "ENOENT") {
       throw new OsxPhotosError(
         `Could not find the '${binary}' executable. Install it with ` +
@@ -140,6 +168,17 @@ async function runOsxPhotos(
         "osxphotos could not read the Photos library. Grant Full Disk Access " +
           "to your terminal (or whatever process runs this) in System Settings " +
           "> Privacy & Security > Full Disk Access, then restart it.",
+        stderr,
+      );
+    }
+    // click aborts when a confirmation prompt hits closed stdin. That means a
+    // guard fired that we should be suppressing with an explicit flag, not a
+    // transient failure — say so rather than surfacing a bare "Aborted!".
+    if (/aborted!?/i.test(stderr)) {
+      throw new OsxPhotosError(
+        "osxphotos asked for interactive confirmation and was aborted (stdin is " +
+          "closed for non-interactive runs). The stderr warning above it names the " +
+          "guard that fired; pass the flag that suppresses it.",
         stderr,
       );
     }
@@ -293,6 +332,12 @@ export async function materialize(
     // Screenshots are never edited in any meaningful sense, but if one has
     // been, the edit is the version you actually want described.
     "--skip-original-if-edited",
+    // destDir is reused across runs, so it holds an export database from the
+    // last one. Without --update, osxphotos warns about the stale database and
+    // blocks on an interactive "Do you want to continue?" — fatal for a server.
+    // --update is also what we want semantically: already-exported screenshots
+    // are skipped instead of re-downloaded.
+    "--update",
   ];
   if (libraryPath) args.push("--library", libraryPath);
 

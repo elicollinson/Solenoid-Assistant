@@ -1,7 +1,7 @@
 import { GeneratorGrader } from "./generatorGrader";
 import { createReadImessagesTool, type ReadWindow } from "../tools/imessage";
 import { getTimeTool } from "../tools/time";
-import { createOllamaClient } from "../core/ollama";
+import { createChatProvider } from "../core/providerFactory";
 import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 
 /**
@@ -18,7 +18,7 @@ export function createImessageIntakeAgent(
 ): GeneratorGrader {
   return new GeneratorGrader({
     name: "imessage-intake",
-    client: createOllamaClient({}, config),
+    client: createChatProvider(config),
     model: config.model,
     tools: [createReadImessagesTool(window), getTimeTool],
   });

@@ -1,6 +1,6 @@
 
 import { Agent } from "../core/rawAgent";
-import { createOllamaClient } from "../core/ollama";
+import { createChatProvider } from "../core/providerFactory";
 import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 
 export function createSafetyClassifierAgent(
@@ -8,7 +8,7 @@ export function createSafetyClassifierAgent(
 ): Agent {
   return new Agent({
     name: "safety-classifier",
-    client: createOllamaClient({}, config),
+    client: createChatProvider(config),
     model: config.model,
   });
 }

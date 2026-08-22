@@ -14,7 +14,7 @@ import { Agent } from "../core/rawAgent";
 import { contentCardSourcingPrompt, contentCardSchema, type ContentCard } from "../prompts";
 import { connectToTavilyMcp } from "../mcp/tavilyClient";
 import { loadMcpTools, type ToolFilter } from "../mcp/adapter";
-import { createOllamaClient } from "../core/ollama";
+import { createChatProvider } from "../core/providerFactory";
 import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 import { agentResource, type AgentResource } from "./resource";
 
@@ -66,7 +66,7 @@ export async function createContentCardSourcingAgent(
     );
     const agent = new Agent({
       name: "content-card-sourcing",
-      client: createOllamaClient({}, config),
+      client: createChatProvider(config),
       systemPrompt: opts.systemPrompt ?? contentCardSourcingPrompt,
       model: opts.model ?? config.model,
       tools,

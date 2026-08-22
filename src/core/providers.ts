@@ -171,8 +171,13 @@ export class OpenAIProvider extends BaseChatProvider {
       tools: opts.tools.length
         ? (opts.tools as OpenAI.Chat.Completions.ChatCompletionTool[])
         : undefined,
-      // Reasoning models accept an effort hint; a bare `true` uses the default.
-      ...(typeof opts.think === "string" ? { reasoning_effort: opts.think } : {}),
+      // A bare `true` uses the backend default. `false` maps to the OpenAI-
+      // compatible `none` value (LM Studio uses this to disable reasoning).
+      ...(opts.think === false
+        ? { reasoning_effort: "none" as const }
+        : typeof opts.think === "string"
+          ? { reasoning_effort: opts.think }
+          : {}),
       ...(opts.format
         ? {
             response_format: {
@@ -189,9 +194,12 @@ export class OpenAIProvider extends BaseChatProvider {
 
     const msg = res.choices[0]?.message;
     if (!msg) throw new Error("OpenAI returned no choices");
+    const reasoningContent = (msg as unknown as { reasoning_content?: unknown })
+      .reasoning_content;
     return {
       role: "assistant",
       content: msg.content ?? "",
+      thinking: typeof reasoningContent === "string" ? reasoningContent : undefined,
       toolCalls: msg.tool_calls
         ?.filter((c) => c.type === "function")
         .map((c) => ({

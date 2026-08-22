@@ -32,7 +32,7 @@ import {
   isNotionAuthError,
 } from "../mcp/notionCache";
 import { createNotionSearchTool } from "../notion/searchTool";
-import { createOllamaClient } from "../core/ollama";
+import { createChatProvider } from "../core/providerFactory";
 import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 import { agentResource, type AgentResource } from "./resource";
 
@@ -131,7 +131,7 @@ export async function createRecommendationIngestionAgent(
 
   const agent = new Agent({
     name: "recommendation-ingestion",
-    client: createOllamaClient({}, config),
+    client: createChatProvider(config),
     systemPrompt: opts.systemPrompt ?? recommendationIngestionPrompt(config),
     model: opts.model ?? config.model,
     tools,

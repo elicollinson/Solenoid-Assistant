@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { Agent } from "../core/rawAgent";
 import { createOkfTools } from "../tools/okf";
 import { okfManagerPrompt } from "../prompts";
-import { createOllamaClient } from "../core/ollama";
+import { createChatProvider } from "../core/providerFactory";
 import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 
 // Anchored to this module, not the process cwd: a bare "../../okf" resolves
@@ -26,7 +26,7 @@ export function createOkfManagerAgent(
   });
   return new Agent({
     name: "okf-manager",
-    client: createOllamaClient({}, config),
+    client: createChatProvider(config),
     systemPrompt: okfManagerPrompt,
     model: config.model,
     tools: all,

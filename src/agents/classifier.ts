@@ -13,7 +13,7 @@ import { Agent } from "../core/rawAgent";
 import { classifierWithSearchPrompt, ClassificationResultSchema, type ClassificationResult } from "../prompts";
 import { connectToTavilyMcp } from "../mcp/tavilyClient";
 import { loadMcpTools, type ToolFilter } from "../mcp/adapter";
-import { createOllamaClient } from "../core/ollama";
+import { createChatProvider } from "../core/providerFactory";
 import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 import { agentResource, type AgentResource } from "./resource";
 
@@ -69,7 +69,7 @@ export async function createClassifierAgent(
     );
     const agent = new Agent({
       name: "screenshot-classifier",
-      client: createOllamaClient({}, config),
+      client: createChatProvider(config),
       systemPrompt: opts.systemPrompt ?? classifierWithSearchPrompt,
       model: opts.model ?? config.model,
       tools,

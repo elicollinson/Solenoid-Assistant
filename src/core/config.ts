@@ -7,10 +7,13 @@ const optionalEnvString = z.preprocess(
 
 const runtimeConfigSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
+  LLM_PROVIDER: z.enum(["ollama", "openai"]).default("ollama"),
   MODEL: optionalEnvString.default("glm-5.2"),
   IMAGE_MODEL: optionalEnvString,
   OLLAMA_API_URL: optionalEnvString.default("https://ollama.com"),
   OLLAMA_API_KEY: optionalEnvString,
+  OPENAI_BASE_URL: optionalEnvString,
+  OPENAI_API_KEY: optionalEnvString,
   PHOENIX_TRACING_ENABLED: optionalEnvString.default("true"),
   PHOENIX_COLLECTOR_ENDPOINT: optionalEnvString.default("http://localhost:6006"),
   PHOENIX_PROJECT_NAME: optionalEnvString.default("solenoid-assistant"),
@@ -25,10 +28,15 @@ const runtimeConfigSchema = z.object({
 
 export interface RuntimeConfig {
   port: number;
+  llmProvider: "ollama" | "openai";
   model: string;
   imageModel: string;
   ollama: {
     host: string;
+    apiKey?: string;
+  };
+  openai: {
+    baseUrl?: string;
     apiKey?: string;
   };
   phoenix: {
@@ -57,11 +65,16 @@ export function loadRuntimeConfig(
   const parsed = runtimeConfigSchema.parse(env);
   return {
     port: parsed.PORT,
+    llmProvider: parsed.LLM_PROVIDER,
     model: parsed.MODEL,
     imageModel: parsed.IMAGE_MODEL ?? parsed.MODEL,
     ollama: {
       host: parsed.OLLAMA_API_URL,
       ...(parsed.OLLAMA_API_KEY ? { apiKey: parsed.OLLAMA_API_KEY } : {}),
+    },
+    openai: {
+      ...(parsed.OPENAI_BASE_URL ? { baseUrl: parsed.OPENAI_BASE_URL } : {}),
+      ...(parsed.OPENAI_API_KEY ? { apiKey: parsed.OPENAI_API_KEY } : {}),
     },
     phoenix: {
       enabled: parsed.PHOENIX_TRACING_ENABLED !== "false",

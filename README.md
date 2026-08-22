@@ -5,7 +5,7 @@ A local Bun service for experimenting with tool-using agents and personal-assist
 ## Requirements
 
 - Bun 1.3+
-- An Ollama-compatible model endpoint
+- An Ollama-native or OpenAI-compatible model endpoint
 - macOS with Full Disk Access for the iMessage, Contacts, and Photos workflows
 - `osxphotos` for screenshot workflows
 - Optional Notion and Tavily credentials for their respective MCP-backed agents
@@ -39,10 +39,13 @@ The application reads and validates runtime settings through `src/core/config.ts
 | Variable | Default | Used by |
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP server |
+| `LLM_PROVIDER` | `ollama` | Selects `ollama` or `openai` for all model calls |
 | `MODEL` | `glm-5.2` | Text agents |
 | `IMAGE_MODEL` | `MODEL` | Screenshot vision calls |
 | `OLLAMA_API_URL` | `https://ollama.com` | Ollama client |
 | `OLLAMA_API_KEY` | unset | Ollama Cloud authentication |
+| `OPENAI_BASE_URL` | unset | OpenAI-compatible endpoint, such as LM Studio `/v1` |
+| `OPENAI_API_KEY` | `lm-studio` fallback | OpenAI-compatible authentication |
 | `PHOENIX_TRACING_ENABLED` | `true` | Trace export |
 | `PHOENIX_COLLECTOR_ENDPOINT` | `http://localhost:6006` | Phoenix collector |
 | `PHOENIX_PROJECT_NAME` | `solenoid-assistant` | Phoenix project |
@@ -52,6 +55,23 @@ The application reads and validates runtime settings through `src/core/config.ts
 | `NOTION_DS_*` | unset | Recommendation target databases |
 
 See `.env.example` for the complete list.
+
+For the remote LM Studio model shown in the project setup, use:
+
+```dotenv
+LLM_PROVIDER=openai
+OPENAI_BASE_URL=http://192.168.0.187:1234/v1
+OPENAI_API_KEY=<LM Studio API token>
+MODEL=qwen/qwen3.5-9b
+IMAGE_MODEL=qwen/qwen3.5-9b
+```
+
+The application uses LM Studio's OpenAI-compatible `/v1/chat/completions`
+endpoint so agent tool calls, multi-turn tool results, structured JSON output,
+and vision requests share the existing provider implementation. When LM Studio
+has **Require Authentication** enabled, generate a token in Server Settings and
+set it as `OPENAI_API_KEY`; `lm-studio` is only a placeholder for servers with
+authentication disabled.
 
 ## HTTP endpoints
 

@@ -6,22 +6,31 @@
 // (writable data source) or something else (linked view, page, etc.).
 
 import { NotionMcpClient } from "../src/mcp/notionClient";
+import { loadRuntimeConfig } from "../src/core/config";
 import { log } from "../src/core/logger";
 
-const CANDIDATES = [
-  { name: "Books", id: "3afaa6b5-f46f-80ca-90d7-e82ddbf8d00c" },
-  { name: "Books List", id: "3afaa6b5-f46f-80bc-bafa-dbfc648efcd7" },
-  { name: "Movies", id: "3afaa6b5-f46f-80ec-a5c9-fca725fcc4f1" },
-  { name: "Movie List", id: "3afaa6b5-f46f-8056-bbdf-fac6f59154c7" },
-  { name: "TV Shows", id: "3afaa6b5-f46f-8006-8c16-e150dbe338ab" },
-  { name: "Show List", id: "3afaa6b5-f46f-808d-9697-d05f3da53f88" },
-  { name: "Music", id: "3afaa6b5-f46f-805a-b360-efa352bb6eb1" },
-  { name: "Music List", id: "3afaa6b5-f46f-801c-9c7d-cd2a74d1d761" },
-  { name: "Games", id: "3afaa6b5-f46f-80b0-a467-f2342addd41d" },
-  { name: "Game List", id: "3afaa6b5-f46f-8026-9484-e36f83e153c4" },
-];
+const config = loadRuntimeConfig();
+const configuredCandidates = [
+  ["Books", config.notion.dataSourceIds.book],
+  ["Movies", config.notion.dataSourceIds.movie],
+  ["TV Shows", config.notion.dataSourceIds.tv],
+  ["Music", config.notion.dataSourceIds.music],
+  ["Games", config.notion.dataSourceIds.game],
+] as const;
+
+function candidates(): Array<{ name: string; id: string }> {
+  const ids = process.argv.slice(2);
+  if (ids.length > 0) return ids.map((id, index) => ({ name: `Candidate ${index + 1}`, id }));
+  return configuredCandidates.flatMap(([name, id]) => (id ? [{ name, id }] : []));
+}
 
 async function main(): Promise<void> {
+  const databaseCandidates = candidates();
+  if (databaseCandidates.length === 0) {
+    throw new Error(
+      "No database IDs supplied. Pass IDs as arguments or configure the NOTION_DS_* variables.",
+    );
+  }
   const client = new NotionMcpClient();
   await client.initialize();
   if (!client.hasTokens) {
@@ -31,7 +40,7 @@ async function main(): Promise<void> {
   const mcpClient = await client.connect();
 
   console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  for (const { name, id } of CANDIDATES) {
+  for (const { name, id } of databaseCandidates) {
     try {
       const result = await mcpClient.callTool({
         name: "notion-fetch",
@@ -57,7 +66,13 @@ async function main(): Promise<void> {
     }
   }
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+  await mcpClient.close();
   process.exit(0);
 }
 
-main();
+main().catch((error) => {
+  log.error("Notion database check failed", {
+    error: error instanceof Error ? error.message : String(error),
+  });
+  process.exit(1);
+});

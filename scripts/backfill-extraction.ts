@@ -76,7 +76,7 @@ async function extractWindow(base: string, start: Date, end: Date): Promise<Wind
   const window = { start: start.toISOString(), end: end.toISOString() };
   const qs = new URLSearchParams(window).toString();
   try {
-    const res = await fetch(`${base}/messageExtraction?${qs}`, {
+    const res = await fetch(`${base}/message-extraction?${qs}`, {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     const body = (await res.json()) as ExtractionResponse & { error?: string };

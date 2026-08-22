@@ -1,10 +1,11 @@
 // Provider adapters: one normalized chat interface, three backends.
 // Tool definitions stay in the OpenAI-style function shape (ollama's `Tool`
 // type, produced by defineTool) — each adapter converts to its wire format.
-import { Ollama, type Message as OllamaMessage, type Tool } from "ollama";
+import { Ollama, type Message as OllamaMessage, type Tool as OllamaTool } from "ollama";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { tracedChat } from "./tracing/tracedProvider";
+import type { FunctionToolDefinition } from "./tools";
 
 export type ThinkLevel = boolean | "low" | "medium" | "high";
 
@@ -49,7 +50,7 @@ export interface OutputFormat {
 
 export interface ChatOptions {
   model: string;
-  tools: Tool[];
+  tools: FunctionToolDefinition[];
   think?: ThinkLevel;
   format?: OutputFormat;
 }
@@ -112,7 +113,7 @@ export class OllamaProvider extends BaseChatProvider {
     const res = await this.client.chat({
       model: opts.model,
       messages: ollamaMessages,
-      tools: opts.tools,
+      tools: opts.tools as OllamaTool[],
       think: opts.think,
       format: opts.format?.schema, // ollama constrains decoding to the schema
     });
@@ -246,7 +247,7 @@ export class AnthropicProvider extends BaseChatProvider {
       ...(system ? { system } : {}),
       messages: this.toAnthropic(messages),
       tools: opts.tools.map((t) => ({
-        name: t.function.name ?? "",
+        name: t.function.name,
         description: t.function.description,
         input_schema: t.function.parameters as Anthropic.Tool.InputSchema,
       })),

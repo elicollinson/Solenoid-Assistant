@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { Agent, extractJson, toOutputFormat, type AgentOptions } from "../core/rawAgent";
+import {
+  Agent,
+  MAX_BLANK_RETRIES,
+  extractJson,
+  toOutputFormat,
+  type AgentOptions,
+} from "../core/rawAgent";
 import { type ChatMessage, type OutputFormat } from "../core/providers";
 import { graderPrompt, type PromptTemplate } from "../prompts";
 import { log } from "../core/logger";
@@ -8,30 +14,37 @@ import { SemanticConventions, safeJson, type Attributes } from "../core/tracing"
 
 // Extends AgentOptions with a second system prompt for the grader stage.
 export interface GeneratorGraderOptions extends AgentOptions {
-  graderPrompt?: string | PromptTemplate<{ output: string; messages: ChatMessage[]; }>;
+  graderPrompt?: string | PromptTemplate<{ output: string; messages: ChatMessage[] }>;
 }
 
 // Structured verdict returned by the grader stage — one score per criterion in
 // the grader prompt. Ranges live in .describe() rather than .min/.max because
 // some backends (Anthropic structured outputs) reject numeric constraints.
-export const gradeSchema = z.object({
+const gradeScoresSchema = z.object({
   accuracy: z.number().describe("Model accuracy score, 1-10"),
   specificity: z.number().describe("Response specificity score, 1-10"),
   constraintAdherence: z.number().describe("Adherence to given constraints score, 1-10"),
+  feedback: z.string().describe("Brief explanation of the scores and how to improve"),
+});
+
+export const gradeSchema = gradeScoresSchema.extend({
   averageScore: z.number().describe("Average of the three criterion scores"),
   passed: z.boolean().describe("true if the average score is above 7"),
-  feedback: z.string().describe("Brief explanation of the scores and how to improve"),
 });
 export type GradeResult = z.infer<typeof gradeSchema>;
 
 /**
- * A two-stage agent: a generator that produces a draft, followed by a grader
- * that critiques it. For now this is a sample child class demonstrating how to
- * extend `Agent` — it adds a `graderPrompt` constructor field and overrides
- * `loop` (adding a console log) without touching the parent's behavior.
+ * A first-class two-stage agent primitive: a generator produces a candidate,
+ * a separate evaluator grades it, and failed candidates are revised with the
+ * evaluator's feedback. It owns this control loop because grading is a
+ * different execution strategy, while reusing Agent's provider, tool, tracing,
+ * and structured-output primitives.
  */
 export class GeneratorGrader extends Agent {
-  private readonly graderPrompt: string | PromptTemplate<{ output: string; messages: ChatMessage[]; }>;
+  private readonly graderPrompt: string | PromptTemplate<{
+    output: string;
+    messages: ChatMessage[];
+  }>;
 
   constructor(opts: GeneratorGraderOptions) {
     super(opts);
@@ -45,8 +58,11 @@ export class GeneratorGrader extends Agent {
   }
 
   protected async grade(messages: ChatMessage[]): Promise<GradeResult> {
-
-    let gPrompt = graderPrompt({ output: messages[messages.length - 1]?.content ?? "", messages: messages });
+    const output = messages[messages.length - 1]?.content ?? "";
+    const gPrompt =
+      typeof this.graderPrompt === "function"
+        ? this.graderPrompt({ output, messages })
+        : this.graderPrompt;
 
     // Custom child span via the base-class hook: the grading stage shows up
     // as an EVALUATOR span in the trace, with its LLM call nested under it
@@ -56,8 +72,8 @@ export class GeneratorGrader extends Agent {
       "grade",
       { [SemanticConventions.INPUT_VALUE]: messages[messages.length - 1]?.content ?? "" },
       async (span) => {
-        const gradeFormat = toOutputFormat("grade", gradeSchema);
-        const msg = await this.client.chat([{ role: "system", content: gPrompt },], {
+        const gradeFormat = toOutputFormat("grade", gradeScoresSchema);
+        const msg = await this.client.chat([{ role: "system", content: gPrompt }], {
           model: this.model,
           tools: [],
           think: this.effectiveThink(gradeFormat),
@@ -65,7 +81,14 @@ export class GeneratorGrader extends Agent {
         });
 
         try {
-          const grade = gradeSchema.parse(JSON.parse(extractJson(msg.content)));
+          const scores = gradeScoresSchema.parse(JSON.parse(extractJson(msg.content)));
+          const averageScore =
+            (scores.accuracy + scores.specificity + scores.constraintAdherence) / 3;
+          const grade = gradeSchema.parse({
+            ...scores,
+            averageScore,
+            passed: averageScore > 7,
+          });
           span.setAttribute(SemanticConventions.OUTPUT_VALUE, safeJson(grade));
           return grade;
         } catch (err) {
@@ -79,11 +102,9 @@ export class GeneratorGrader extends Agent {
 
   protected override async loop(messages: ChatMessage[], format?: OutputFormat): Promise<string> {
     const toolDefs = [...this.tools.values()].map((t) => t.definition);
-
-
-
     let i = 0;
-    while(true) {
+    let blankRetries = 0;
+    while (true) {
       const msg = await this.client.chat(messages, {
         model: this.model,
         tools: toolDefs,
@@ -96,12 +117,25 @@ export class GeneratorGrader extends Agent {
       messages.push(msg); // keep the assistant turn (incl. its reasoning) in history
 
       if (!msg.toolCalls?.length) {
+        if (format && !msg.content.trim() && blankRetries < MAX_BLANK_RETRIES) {
+          blankRetries++;
+          messages.push({
+            role: "user",
+            content:
+              "Reply now with the JSON object matching the schema. Your entire " +
+              "reply is that raw JSON object, starting with { and ending with }.",
+          });
+          continue;
+        }
         // no tools requested => candidate answer; grade it before returning
         const grade = await this.grade(messages);
         if (grade.passed) {
           return msg.content;
         } else {
-          messages.push({role: "system", content: `Grader Feedback: ${grade.feedback}`})
+          messages.push({
+            role: "system",
+            content: `Grader Feedback: ${grade.feedback}`,
+          });
         }
       } else {
         for (const call of msg.toolCalls) {

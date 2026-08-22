@@ -2,29 +2,27 @@
 import { Agent } from "../core/rawAgent";
 import { GeneratorGrader } from "./generatorGrader";
 import { weatherTool, calculateTool } from "../tools/demo";
-import { Ollama } from "ollama";
+import { createOllamaClient } from "../core/ollama";
+import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 
-export const demoAgent = new Agent({
-  client: new Ollama({
-    host: process.env.OLLAMA_API_URL || "https://ollama.com",
-    headers: { Authorization: `Bearer ${process.env.OLLAMA_API_KEY || ""}` },
-  }),
-  model: process.env.MODEL || "glm-5.2",
-  tools: [
-    weatherTool,
-    calculateTool
-  ],
-});
+export function createDemoAgent(config: RuntimeConfig = loadRuntimeConfig()): Agent {
+  return new Agent({
+    name: "demo-agent",
+    client: createOllamaClient({}, config),
+    model: config.model,
+    tools: [weatherTool, calculateTool],
+  });
+}
 
-export const demoAgentGG = new GeneratorGrader({
-  client: new Ollama({
-    host: process.env.OLLAMA_API_URL || "https://ollama.com",
-    headers: { Authorization: `Bearer ${process.env.OLLAMA_API_KEY || ""}` },
-  }),
-  model: process.env.MODEL || "glm-5.2",
-  tools: [
-    weatherTool,
-    calculateTool
-  ],
-});
+export function createWeatherAgent(
+  config: RuntimeConfig = loadRuntimeConfig(),
+): GeneratorGrader {
+  return new GeneratorGrader({
+    name: "weather-generator-grader",
+    client: createOllamaClient({}, config),
+    model: config.model,
+    tools: [weatherTool, calculateTool],
+  });
+}
 
+export const weatherAgent = createWeatherAgent();

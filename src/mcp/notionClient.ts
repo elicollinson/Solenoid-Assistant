@@ -8,12 +8,14 @@
 // from .env and talks to the MCP server.
 
 import { randomBytes, createHash } from "crypto";
-import { readFileSync, writeFileSync, existsSync } from "fs";
 import { z } from "zod";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { log } from "../core/logger";
+import { isMcpAuthError } from "./errors";
+import { setEnvValue } from "../core/envFile";
+export { setEnvValue } from "../core/envFile";
 
 // ---------------------------------------------------------------------------
 // Types (Zod schemas → inferred types)
@@ -98,37 +100,6 @@ export const NOTION_MCP_SERVER_URL = "https://mcp.notion.com";
 // Default redirect URI for the local callback server.
 export const DEFAULT_REDIRECT_PORT = 3001;
 export const DEFAULT_REDIRECT_URI = `http://localhost:${DEFAULT_REDIRECT_PORT}/callback`;
-
-// Path to .env relative to cwd. Bun loads .env into process.env at startup;
-// this is used for *persisting* rotated tokens back to disk so the next
-// process start doesn't need a full re-auth.
-const ENV_PATH = ".env";
-
-/**
- * Set or update a key=value pair in the .env file (preserves other lines).
- * Used to persist rotated OAuth tokens so the next process start doesn't
- * need a full re-auth flow.
- */
-export function setEnvValue(key: string, value: string): void {
-  if (!existsSync(ENV_PATH)) {
-    writeFileSync(ENV_PATH, `${key}=${value}\n`);
-    return;
-  }
-  const lines = readFileSync(ENV_PATH, "utf-8").split("\n");
-  const prefix = `${key}=`;
-  let found = false;
-  const updated = lines.map((line) => {
-    if (line.startsWith(prefix)) {
-      found = true;
-      return `${key}=${value}`;
-    }
-    return line;
-  });
-  if (!found) {
-    updated.push(`${key}=${value}`);
-  }
-  writeFileSync(ENV_PATH, updated.join("\n"));
-}
 
 // ---------------------------------------------------------------------------
 // Step 1: OAuth discovery (RFC 9470 → RFC 8414)
@@ -642,7 +613,7 @@ export class NotionMcpClient {
       return this.client;
     } catch (error) {
       // If it's a 401 (expired token), try refreshing and retrying once.
-      if (this.isAuthError(error)) {
+      if (isMcpAuthError(error)) {
         log.info("Notion access token expired — refreshing...");
         await this.ensureValidToken();
         this.persistTokens();
@@ -670,7 +641,7 @@ export class NotionMcpClient {
       // If it's an auth error, don't bother with SSE — it will fail the same
       // way but with an unrecognisable error message. Re-throw so connect()
       // can detect it and refresh the token.
-      if (this.isAuthError(error)) {
+      if (isMcpAuthError(error)) {
         throw error;
       }
       log.warn("Streamable HTTP failed, falling back to SSE", {
@@ -678,27 +649,6 @@ export class NotionMcpClient {
       });
       return await createMcpClient(this.serverUrl, token, true);
     }
-  }
-
-  /** Detect whether an error is auth-related (401 / expired / invalid token).
-   *
-   * Notion's MCP server returns `{"error":"invalid_token","error_description":"Invalid access token"}`
-   * when the access token has expired — this does NOT contain "401" or
-   * "unauthorized", so we must also check for `invalid_token` and
-   * `Invalid access token` to trigger the auto-refresh path.
-   */
-  private isAuthError(error: unknown): boolean {
-    const msg = error instanceof Error ? error.message : String(error);
-    // The MCP SDK's StreamableHTTPError and SseError both expose a `code`
-    // property with the HTTP status code.
-    const code = (error as { code?: number })?.code;
-    return (
-      code === 401 ||
-      msg.includes("401") ||
-      msg.includes("unauthorized") ||
-      msg.includes("invalid_token") ||
-      msg.includes("Invalid access token")
-    );
   }
 
   /** Persist the current access + refresh tokens to .env for next startup. */

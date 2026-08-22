@@ -35,6 +35,9 @@ export class TaskArgsError extends Error {
 export const tasks = new Map<string, TaskDef>();
 
 export function registerTask(task: TaskDef): void {
+  if (tasks.has(task.name)) {
+    throw new Error(`Task "${task.name}" is already registered`);
+  }
   tasks.set(task.name, task);
 }
 

@@ -41,3 +41,6 @@ phoenix_data/
 .pi-memory/
 .screenshots/
 .pi/remote-pi/
+
+# Generated evaluation output (source datasets stay under src/data)
+/artifacts/evals/

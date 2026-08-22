@@ -18,7 +18,7 @@
 //   - Performance: filter_properties[] query param limits response fields
 
 import { z } from "zod";
-import { log } from "../core/logger";
+import { loadRuntimeConfig } from "../core/config";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -84,8 +84,13 @@ export function toDataSourceId(dsEnvVar: string): string {
   return dsEnvVar.replace(/^collection:\/\//, "");
 }
 
-function getHeaders(): Record<string, string> {
-  const token = process.env.NOTION_API_TOKEN;
+export interface NotionRestClientOptions {
+  apiToken?: string;
+  fetch?: typeof globalThis.fetch;
+}
+
+function getHeaders(apiToken?: string): Record<string, string> {
+  const token = apiToken ?? loadRuntimeConfig().notion.apiToken;
   if (!token) {
     throw new Error(
       "NOTION_API_TOKEN not set in .env — create an internal connection at " +
@@ -125,12 +130,14 @@ export function getPageTitle(page: NotionPageResult): string {
 export async function searchDataSourceByName(
   dataSourceId: string,
   name: string,
+  options: NotionRestClientOptions = {},
 ): Promise<SearchResult> {
   // Step 1: Exact match (Notion's `equals` is case-insensitive per docs)
-  const exactResults = await queryDataSource(dataSourceId, {
-    property: "Name",
-    title: { equals: name },
-  });
+  const exactResults = await queryDataSource(
+    dataSourceId,
+    { property: "Name", title: { equals: name } },
+    options,
+  );
 
   if (exactResults.length === 1) {
     return { found: true, exact_match: true, page: exactResults[0] ?? null, candidates: [] };
@@ -141,10 +148,11 @@ export async function searchDataSourceByName(
   }
 
   // Step 2: Contains match for partial/substring matches
-  const partialResults = await queryDataSource(dataSourceId, {
-    property: "Name",
-    title: { contains: name },
-  });
+  const partialResults = await queryDataSource(
+    dataSourceId,
+    { property: "Name", title: { contains: name } },
+    options,
+  );
 
   return {
     found: partialResults.length > 0,
@@ -165,6 +173,7 @@ export async function searchDataSourceByName(
 async function queryDataSource(
   dataSourceId: string,
   filter: Record<string, unknown>,
+  options: NotionRestClientOptions,
 ): Promise<NotionPageResult[]> {
   const allResults: NotionPageResult[] = [];
   let startCursor: string | undefined;
@@ -181,9 +190,10 @@ async function queryDataSource(
       body.start_cursor = startCursor;
     }
 
-    const res = await fetch(url, {
+    const fetchImpl = options.fetch ?? globalThis.fetch;
+    const res = await fetchImpl(url, {
       method: "POST",
-      headers: getHeaders(),
+      headers: getHeaders(options.apiToken),
       body: JSON.stringify(body),
     });
 

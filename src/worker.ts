@@ -9,32 +9,10 @@ import { initTracing, shutdownTracing } from "./core/tracing";
 initTracing();
 
 import { Cron } from "croner";
-import { getTask, runTask, loadTasksConfig, type ScheduledTask } from "./tasks";
+import { runTask, loadTasksConfig } from "./tasks";
+import { validateSchedule } from "./tasks/validation";
 import { log } from "./core/logger";
-
-// Fail fast: a typo'd task name, bad args, or bad cron expression should kill
-// the worker at startup with a clear message — not surface at 7am when the
-// schedule first fires.
-function validateSchedule(s: ScheduledTask): string[] {
-  const errors: string[] = [];
-  const task = getTask(s.task);
-  if (!task) {
-    errors.push(`[${s.name}] unknown task "${s.task}"`);
-  } else {
-    const parsed = task.schema.safeParse(s.args);
-    if (!parsed.success) {
-      errors.push(`[${s.name}] invalid args for task "${s.task}": ${parsed.error.message}`);
-    }
-  }
-  try {
-    new Cron(s.cron, { paused: true, timezone: s.timezone }).stop();
-  } catch (err) {
-    errors.push(
-      `[${s.name}] invalid cron "${s.cron}": ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  return errors;
-}
+import { installShutdownHandler } from "./core/shutdown";
 
 const config = await loadTasksConfig();
 const enabled = config.tasks.filter((s) => s.enabled);
@@ -71,11 +49,7 @@ for (const job of jobs) {
   console.log(`  ${job.name}: next run ${job.nextRun()?.toISOString() ?? "never"}`);
 }
 
-// Flush queued spans (batch exporter) before the process exits.
-for (const sig of ["SIGINT", "SIGTERM"] as const) {
-  process.on(sig, async () => {
-    for (const job of jobs) job.stop();
-    await shutdownTracing();
-    process.exit(0);
-  });
-}
+installShutdownHandler(async () => {
+  for (const job of jobs) job.stop();
+  await shutdownTracing();
+});

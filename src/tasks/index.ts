@@ -17,3 +17,4 @@ export {
   type TaskRunResult,
 } from "./registry";
 export { loadTasksConfig, type TasksConfig, type ScheduledTask } from "./config";
+export { validateSchedule } from "./validation";

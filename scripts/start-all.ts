@@ -3,7 +3,7 @@
 // its trace spans; if either process dies, the other is taken down and the
 // supervisor exits with the dead child's code.
 const children = [
-  Bun.spawn(["bun", "run", "src/index.ts"], { stdout: "inherit", stderr: "inherit" }),
+  Bun.spawn(["bun", "run", "src/server.ts"], { stdout: "inherit", stderr: "inherit" }),
   Bun.spawn(["bun", "run", "src/worker.ts"], { stdout: "inherit", stderr: "inherit" }),
 ];
 

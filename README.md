@@ -1,139 +1,138 @@
-# manual-personal-assistant
+# Solenoid Assistant
 
-A tiny local HTTP service built with Bun and the [`@ax-llm/ax`](https://github.com/ax-llm/ax) DSPy framework. It exposes one ax-powered endpoint (sentiment classification) and a health check.
+A local Bun service for experimenting with tool-using agents and personal-assistant workflows. The current workflows cover weather/tool demos, iMessage extraction, prompt-injection classification, screenshot classification and Notion ingestion, scheduled tasks, and an OKF-backed memory store.
 
 ## Requirements
 
-- [Bun](https://bun.sh) (v1.3+)
-- An LLM endpoint. Defaults to a local [Ollama](https://ollama.com) server; real OpenAI also works.
+- Bun 1.3+
+- An Ollama-compatible model endpoint
+- macOS with Full Disk Access for the iMessage, Contacts, and Photos workflows
+- `osxphotos` for screenshot workflows
+- Optional Notion and Tavily credentials for their respective MCP-backed agents
 
-## Install
+## Setup
 
 ```bash
 bun install
+cp .env.example .env
 ```
 
-## Run
+Start the HTTP server and cron worker together:
 
 ```bash
 bun start
 ```
 
-Listens on `http://localhost:3000` (override with `PORT=...`).
+Or run them separately:
 
-### Configuring the LLM
+```bash
+bun run start:server
+bun run start:worker
+```
 
-Environment variables (read at startup):
+The server defaults to `http://localhost:3000`; OpenAPI documentation is available at `/openapi`.
 
-| Var | Default | Notes |
+## Runtime configuration
+
+The application reads and validates runtime settings through `src/core/config.ts`.
+
+| Variable | Default | Used by |
 | --- | --- | --- |
-| `OPENAI_APIKEY` | `ollama` | API key; ignored by Ollama |
-| `OPENAI_API_URL` | `http://localhost:11434/v1` | any OpenAI-compatible endpoint |
-| `MODEL` | `gpt-4o-mini` | model name the endpoint serves |
+| `PORT` | `3000` | HTTP server |
+| `MODEL` | `glm-5.2` | Text agents |
+| `IMAGE_MODEL` | `MODEL` | Screenshot vision calls |
+| `OLLAMA_API_URL` | `https://ollama.com` | Ollama client |
+| `OLLAMA_API_KEY` | unset | Ollama Cloud authentication |
+| `PHOENIX_TRACING_ENABLED` | `true` | Trace export |
+| `PHOENIX_COLLECTOR_ENDPOINT` | `http://localhost:6006` | Phoenix collector |
+| `PHOENIX_PROJECT_NAME` | `solenoid-assistant` | Phoenix project |
+| `TAVILY_API_KEY` | unset | Search-backed agents |
+| `NOTION_API_TOKEN` | unset | Deterministic Notion REST search |
+| `NOTION_MCP_*` | unset | Notion OAuth/MCP connection |
+| `NOTION_DS_*` | unset | Recommendation target databases |
 
-Examples:
+See `.env.example` for the complete list.
 
-```bash
-bun start                                          # local Ollama, default model
-MODEL="qwen3:8b" bun start                          # pick an installed Ollama model
-OPENAI_APIKEY=sk-... bun start                      # real OpenAI
-OPENAI_APIKEY=sk-... OPENAI_API_URL=https://api.openai.com/v1 bun start
-```
+## HTTP endpoints
 
-### Agent providers
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/health` | Health check |
+| POST | `/agent` | Weather demo through the generator-grader agent |
+| POST | `/content-card` | Source a media content card with Tavily |
+| GET | `/screenshots` | List recent local screenshots |
+| GET | `/screenshots/describe` | Describe screenshots with a vision model |
+| GET | `/screenshots/classify` | Classify described screenshots |
+| GET | `/screenshots/ingest` | Run the existing screenshot-to-Notion ingestion workflow |
+| GET | `/message-extraction` | Extract actions, summaries, and memory from trusted iMessages |
+| POST | `/safety-classifier` | Score text for prompt-injection risk |
+| GET | `/tasks` | List registered tasks and schedules |
+| POST | `/tasks/:name/run` | Run a task manually |
 
-The `Agent` class (`src/utils/raw_agent.ts`) runs on Ollama by default but also supports OpenAI and Anthropic through adapters in `src/utils/providers.ts`. Tools defined with `defineTool` work unchanged across all three.
+The original `/messageExtraction` and `/safetyClassifier` paths remain as deprecated compatibility aliases.
 
-**Ollama (default)** — pass the client directly, as in `src/agents/demo.ts`:
+## Code organization
 
-```ts
-import { Ollama } from "ollama";
-import { Agent } from "./utils/raw_agent";
-
-const agent = new Agent({
-  client: new Ollama({ host: "http://localhost:11434" }),
-  model: "qwen3:8b",
-  tools: [...],
-});
-```
-
-**OpenAI** — set `OPENAI_API_KEY` in your environment, then wrap the client:
-
-```ts
-import OpenAI from "openai";
-import { OpenAIProvider } from "./utils/providers";
-
-const agent = new Agent({
-  client: new OpenAIProvider(new OpenAI()),
-  model: "gpt-5.2",
-  tools: [...],
-});
-```
-
-**Anthropic** — set `ANTHROPIC_API_KEY` in your environment, then wrap the client:
-
-```ts
-import Anthropic from "@anthropic-ai/sdk";
-import { AnthropicProvider } from "./utils/providers";
-
-const agent = new Agent({
-  client: new AnthropicProvider(new Anthropic()),
-  model: "claude-opus-4-8",
-  tools: [...],
-});
-```
-
-Both SDKs read their API key from the environment automatically — no key needs to be passed in code. The `think` option maps to each provider's reasoning controls (Ollama `think`, OpenAI `reasoning_effort`, Anthropic adaptive thinking + effort).
-
-## Endpoints
-
-### `GET /health`
-
-```bash
-curl http://localhost:3000/health
-# {"status":"ok"}
-```
-
-### `POST /agent`
-
-Classifies a review's sentiment using an ax signature.
-
-```bash
-curl -X POST http://localhost:3000/agent \
-  -H 'Content-Type: application/json' \
-  -d '{"review":"This product is amazing!"}'
-# {"review":"This product is amazing!","sentiment":"positive"}
-```
-
-- `400` on missing/invalid JSON or no `review` field
-- `502` if the LLM call fails (error message returned in the body)
-
-## Project layout
-
-```
+```text
 src/
-  index.ts   service entry: boots Bun.serve, dispatches routes
-  health.ts  GET /health
-  agent.ts   POST /agent — ax sentiment classifier + LLM client
+  agents/       Agent primitives, factories, and lifecycle resources
+  core/         Runtime config, providers, tools, logging, and tracing
+  http/routes/  Elysia route modules and transport schemas
+  workflows/    Multi-step application workflows used by routes
+  mcp/          MCP adapters and connection lifecycle
+  notion/       Notion REST integration and search tool
+  contacts/     Contacts normalization and trust gate
+  imessage/     Read-only Messages database access
+  okf/          OKF parser, validator, and store
+  tasks/        Task definitions, registry, config, and validation
+  tools/        Local AgentTool definitions
+  utils/        Focused supporting utilities
+  index.ts      HTTP app composition; does not open a listener
+  server.ts     Server startup and shutdown
+  worker.ts     Cron worker startup and shutdown
 ```
 
-The ax demo (signature + provider config) is isolated in `src/agent.ts`; `src/index.ts` only imports handlers and routes requests.
+Agent modules use the same runtime configuration and return a common lifecycle resource when they own external connections. `GeneratorGrader` is a separate agent primitive with its own generate/grade/revise loop.
 
-## Type-check
+## Notion authentication
+
+```bash
+bun run auth:notion
+bun run connect:notion
+```
+
+Find or verify recommendation database IDs with:
+
+```bash
+bun run scripts/notion-find-databases.ts
+bun run scripts/notion-check-databases.ts [database-id ...]
+```
+
+## Scheduled tasks
+
+Task implementations are registered in `src/tasks/index.ts`; schedules and arguments live in `tasks.yaml`. The worker validates task names, arguments, cron expressions, and timezones before scheduling anything.
+
+## Observability
+
+Agent, LLM, tool, evaluator, and task spans are exported to Phoenix. Start the local collector with:
+
+```bash
+docker compose up -d
+```
+
+Then open `http://localhost:6006` and select the configured project.
+
+## Validation
 
 ```bash
 bun run typecheck
+bun test
 ```
-## Observability (Phoenix tracing)
 
-Every `agent.run()` invocation produces one trace in [Arize Phoenix](https://docs.arize.com/phoenix): an AGENT root span, an LLM span per model call (with messages, token counts, and tool schemas), and a TOOL span per tool call. Log lines written with `log` from `src/core/logger.ts` inside tool logic appear as events on the tool's span. Tracing is built into the base classes (`Agent`, `BaseChatProvider`), so new agents, tools, and providers are traced automatically.
+Live macOS and integration checks are intentionally separate from the unit suite:
 
 ```bash
-# Start local Phoenix (data persists on the host in ./phoenix_data)
-docker compose up -d
-
-# Run the service and make a request, then open the UI
-open http://localhost:6006   # project: solenoid-assistant
+bun run smoke:imessage
+bun run connect:tavily
+bun run connect:notion
 ```
-
-Configuration (see `.env.example`): `PHOENIX_COLLECTOR_ENDPOINT`, `PHOENIX_PROJECT_NAME`, and `PHOENIX_TRACING_ENABLED=false` to disable tracing entirely.

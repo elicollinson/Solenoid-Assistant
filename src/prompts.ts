@@ -5,6 +5,11 @@
 import { z } from "zod";
 import dedent from "dedent";
 import { type ChatMessage } from "./core/providers";
+import {
+  loadRuntimeConfig,
+  requireNotionDataSourceIds,
+  type RuntimeConfig,
+} from "./core/config";
 
 /**
  * A prompt template: a pure function from a typed `vars` object to a prompt
@@ -157,7 +162,8 @@ export const graderPrompt: PromptTemplate<{
   Conversation:
   ${formatTranscript(messages)}
 
-  Use the calculate tool to calculate the average of the three scores. If the average is above 7, pass the output. Otherwise, fail it.
+  Return the three criterion scores and concise feedback. The caller computes
+  the average and pass/fail result deterministically.
 `;
 
 // Scores only — the pass/fail verdict is computed in code from the average
@@ -285,7 +291,7 @@ export const okfManagerResultSchema = z.object({
     ),
 });
 
-export type OKFMangerResult = z.infer<typeof injectionRiskSchema>;
+export type OkfManagerResult = z.infer<typeof okfManagerResultSchema>;
 
 /**
  * Evaluates a string of text (typically a sentence chunk) for the risk that it
@@ -363,23 +369,6 @@ export const okfManagerPrompt: string = dedent`
   Make sure you evaluate the current state of the OKF before making updates or creating new entries.
 `;
 
-
-export const classifier: string = `
-  #Task
-  You are a classifier for screenshot images, and a name extractor.
-  Your task is to examine a screenshot, and determine what kind of information it holds, and if it is in the classification list its name.
-  Select one classification from the given list below and return your result in the given structure.
-
-  #Classifications
-  The available classification results are:
-
-    - Book: The screenshot includes a summary, a title, or a cover of a book.
-    - Movie: The screenshot includes a clip, a poster, a title, or a description of a movie.
-    - TV Show: The screenshot includes a clip, a poster, a title, or a description of a TV Show.
-    - Game: The screenshot includes a clip, a trailer, a title, or a description of a video game.
-    - Music: The screenshot includes a title, album name, artist name, album art, or playlist entries of music songs/albums/artists.
-    - Rejected: The screenshot is a photo of a person outside the context of a movie or tv show, is non commercial social media, contains adult content, is not tied to any previous categories, or is uninterpretable (black screen etc).
-  `
 
 /**
  * Classifier prompt for the agent with web search tools.
@@ -517,40 +506,14 @@ export type RecommendationIngestionResult = z.infer<
  * The Notion gallery database IDs for each collection type. Read from env at
  * call time so the prompt always reflects the current configuration.
  */
-const NOTION_DS_IDS = {
-  book: process.env.NOTION_DS_BOOKS,
-  movie: process.env.NOTION_DS_MOVIES,
-  tv: process.env.NOTION_DS_TV,
-  music: process.env.NOTION_DS_MUSIC,
-  game: process.env.NOTION_DS_GAMES,
-} as const;
-
-/** Maps collection keys to the env var names they come from. */
-const NOTION_DS_ENV_NAMES = {
-  book: "NOTION_DS_BOOKS",
-  movie: "NOTION_DS_MOVIES",
-  tv: "NOTION_DS_TV",
-  music: "NOTION_DS_MUSIC",
-  game: "NOTION_DS_GAMES",
-} as const;
-
 /**
  * Validates that all five Notion data source IDs are set in the environment.
  * Throws with a clear message naming the missing vars so the caller fails
  * before the agent sends literal placeholders like `<NOTION_DS_GAMES>` to
  * Notion (which silently creates pages in a non-existent data source).
  */
-export function validateNotionDsIds(): void {
-  const missing = Object.entries(NOTION_DS_IDS)
-    .filter(([, id]) => !id)
-    .map(([key]) => NOTION_DS_ENV_NAMES[key as keyof typeof NOTION_DS_ENV_NAMES]);
-  if (missing.length > 0) {
-    throw new Error(
-      `Notion data source IDs not set in .env: ${missing.join(", ")}. ` +
-        `Set these to the database IDs from your Notion gallery databases ` +
-        `(found in the database URL: notion.so/<workspace>/<db_id>).`,
-    );
-  }
+export function validateNotionDsIds(config: RuntimeConfig = loadRuntimeConfig()): void {
+  requireNotionDataSourceIds(config);
 }
 
 /**
@@ -562,8 +525,10 @@ export function validateNotionDsIds(): void {
  * Throws if any `NOTION_DS_*` env var is missing — call `validateNotionDsIds()`
  * or let this throw to fail fast rather than sending placeholder IDs to Notion.
  */
-export const recommendationIngestionPrompt: PromptTemplate<void> = () => {
-  validateNotionDsIds();
+export const recommendationIngestionPrompt = (
+  config: RuntimeConfig = loadRuntimeConfig(),
+): string => {
+  const dataSourceIds = requireNotionDataSourceIds(config);
   return dedent`
     You are a recommendation ingestion agent. Your sole function is to insert
     or update one record in a Notion gallery database. You do not converse,
@@ -581,11 +546,11 @@ export const recommendationIngestionPrompt: PromptTemplate<void> = () => {
 
     ## TARGETS
     Map \`collection\` to a data source ID:
-      book  -> ${NOTION_DS_IDS.book}
-      movie -> ${NOTION_DS_IDS.movie}
-      tv    -> ${NOTION_DS_IDS.tv}
-      music -> ${NOTION_DS_IDS.music}
-      game  -> ${NOTION_DS_IDS.game}
+      book  -> ${dataSourceIds.book}
+      movie -> ${dataSourceIds.movie}
+      tv    -> ${dataSourceIds.tv}
+      music -> ${dataSourceIds.music}
+      game  -> ${dataSourceIds.game}
 
     Property names in every target data source:
       "Name"        (title)

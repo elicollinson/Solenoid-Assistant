@@ -2,6 +2,7 @@
 import { z } from "zod";
 import { defineTool } from "../core/tools";
 import { log } from "../core/logger";
+import { evaluateArithmetic } from "../utils/arithmetic";
 
 export const weatherTool = defineTool({
   name: "get_weather",
@@ -18,5 +19,5 @@ export const calculateTool = defineTool({
   name: "calculate",
   description: "Evaluate a math expression",
   schema: z.object({ expression: z.string() }),
-  execute: ({ expression }) => String(Function(`"use strict"; return (${expression})`)()),
+  execute: ({ expression }) => String(evaluateArithmetic(expression)),
 });

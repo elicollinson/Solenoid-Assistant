@@ -449,6 +449,10 @@ export type ClassifyScreenshotsParams = z.infer<
   typeof classifyScreenshotsParamsSchema
 >;
 
+export interface ClassifyScreenshotsDependencies {
+  describe?: typeof describeScreenshots;
+}
+
 /**
  * Query recent screenshots, describe each with a vision model, then classify
  * the descriptions using an agent that has web search tools.
@@ -464,6 +468,7 @@ export type ClassifyScreenshotsParams = z.infer<
 export async function classifyScreenshots(
   classifierAgent: Agent,
   rawParams: ClassifyScreenshotsParams = {},
+  dependencies: ClassifyScreenshotsDependencies = {},
 ): Promise<ClassifyScreenshotsResult> {
   const parsed = classifyScreenshotsParamsSchema.safeParse(rawParams);
   if (!parsed.success) {
@@ -481,7 +486,7 @@ export async function classifyScreenshots(
   } = params;
 
   // Step 1: get vision descriptions of each screenshot.
-  const described = await describeScreenshots({
+  const described = await (dependencies.describe ?? describeScreenshots)({
     hoursBack,
     fromTime,
     limit,
@@ -496,7 +501,10 @@ export async function classifyScreenshots(
   }
 
   // Step 2: classify each description using the agent with web tools.
-  let failed = described.failed;
+  // Vision failures are already represented by null descriptions and are
+  // counted as part of the classification pipeline below. Start from zero so
+  // each screenshot contributes at most one failure.
+  let failed = 0;
 
   const classified: ClassifiedScreenshot[] = [];
   for (const s of described.screenshots) {

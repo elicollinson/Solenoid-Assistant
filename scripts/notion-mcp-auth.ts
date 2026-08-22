@@ -27,6 +27,15 @@ import {
   type ClientCredentials,
 } from "../src/mcp/notionClient";
 
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 // ---------------------------------------------------------------------------
 // Main auth flow
 // ---------------------------------------------------------------------------
@@ -82,15 +91,15 @@ async function main(): Promise<void> {
 
   // Try to open the browser automatically
   try {
-    const open = (await import("child_process")).exec;
-    open(`open "${authUrl}"`);
+    Bun.spawn(["open", authUrl], { stdout: "ignore", stderr: "ignore" });
   } catch {
     // Not macOS or exec unavailable — user can copy the URL manually
   }
 
   // Step 5: Start local HTTP server to receive the callback
+  let callbackServer: ReturnType<typeof Bun.serve> | undefined;
   const code = await new Promise<string>((resolve, reject) => {
-    const server = Bun.serve({
+    callbackServer = Bun.serve({
       port,
       async fetch(req) {
         const url = req.url;
@@ -109,7 +118,7 @@ async function main(): Promise<void> {
             const msg = err instanceof Error ? err.message : String(err);
             reject(new Error(msg));
             return new Response(
-              `<html><body><h1>❌ Authorization failed</h1><p>${msg}</p></body></html>`,
+              `<html><body><h1>❌ Authorization failed</h1><p>${escapeHtml(msg)}</p></body></html>`,
               { status: 400, headers: { "Content-Type": "text/html" } },
             );
           }
@@ -120,7 +129,6 @@ async function main(): Promise<void> {
       },
     });
 
-    // Server is cleaned up after the promise resolves (process.exit below).
     log.info(`Local callback server listening on port ${port}`);
   }).catch((err) => {
     log.error("Callback handling failed", {
@@ -128,6 +136,7 @@ async function main(): Promise<void> {
     });
     process.exit(1);
   });
+  callbackServer?.stop();
 
   log.info("Authorization code received, exchanging for tokens...");
 
@@ -177,4 +186,9 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-main();
+main().catch((error) => {
+  log.error("OAuth flow failed", {
+    error: error instanceof Error ? error.message : String(error),
+  });
+  process.exit(1);
+});

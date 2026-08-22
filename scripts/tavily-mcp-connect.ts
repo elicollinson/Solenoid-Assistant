@@ -82,7 +82,13 @@ async function main(): Promise<void> {
   }
 
   log.info("Connection test complete!");
+  await mcpClient.close();
   process.exit(0);
 }
 
-main();
+main().catch((error) => {
+  log.error("Connection test failed", {
+    error: error instanceof Error ? error.message : String(error),
+  });
+  process.exit(1);
+});

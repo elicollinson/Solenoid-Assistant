@@ -12,8 +12,7 @@
 
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { z } from "zod";
-import type { Tool } from "ollama";
-import type { AgentTool } from "../core/tools";
+import type { AgentTool, FunctionToolDefinition } from "../core/tools";
 
 // ---------------------------------------------------------------------------
 // Filter type — flexible enough for prefix, allowlist, or predicate
@@ -53,12 +52,12 @@ export function mcpToolToAgentTool(
   const schema = z.record(z.string(), z.unknown());
 
   // The model-facing definition reuses the server's JSON Schema directly.
-  const definition: Tool = {
+  const definition: FunctionToolDefinition = {
     type: "function",
     function: {
       name: mcpTool.name,
       description: mcpTool.description ?? "",
-      parameters: (mcpTool.inputSchema ?? { type: "object", properties: {} }) as Tool["function"]["parameters"],
+      parameters: mcpTool.inputSchema ?? { type: "object", properties: {} },
     },
   };
 
@@ -135,6 +134,11 @@ export async function connectAndLoadMcpTools(
   filter?: ToolFilter,
 ): Promise<{ client: Client; tools: AgentTool[] }> {
   const client = await connect();
-  const tools = await loadMcpTools(client, filter);
-  return { client, tools };
+  try {
+    const tools = await loadMcpTools(client, filter);
+    return { client, tools };
+  } catch (error) {
+    await client.close().catch(() => {});
+    throw error;
+  }
 }

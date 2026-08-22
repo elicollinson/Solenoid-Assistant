@@ -10,13 +10,15 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { Ollama } from "ollama";
 import { z } from "zod";
+import pLimit from "p-limit";
 import {
   extractJson,
   toOutputFormat,
 } from "../core/rawAgent";
 import { log } from "../core/logger";
+import { createOllamaClient } from "../core/ollama";
+import { loadRuntimeConfig } from "../core/config";
 
 export interface VisionOptions {
   /**
@@ -31,17 +33,8 @@ export interface VisionOptions {
 }
 
 /** Default Ollama client constructed from the repo's standard env vars. */
-function defaultClient(opts: VisionOptions): Ollama {
-  return new Ollama({
-    host: opts.host ?? process.env.OLLAMA_API_URL ?? "https://ollama.com",
-    headers: {
-      Authorization: `Bearer ${opts.apiKey ?? process.env.OLLAMA_API_KEY ?? ""}`,
-    },
-  });
-}
-
 function resolveModel(opts: VisionOptions): string {
-  return opts.model ?? process.env.IMAGE_MODEL ?? process.env.MODEL ?? "glm-5.2";
+  return opts.model ?? loadRuntimeConfig().imageModel;
 }
 
 /**
@@ -60,7 +53,7 @@ export async function describeImage<S extends z.ZodType>(
   schema: S,
   opts: VisionOptions = {},
 ): Promise<z.infer<S>> {
-  const client = defaultClient(opts);
+  const client = createOllamaClient({ host: opts.host, apiKey: opts.apiKey });
   const model = resolveModel(opts);
 
   const imageBuffer = await readFile(imagePath);
@@ -156,17 +149,9 @@ export async function mapWithConcurrency<T, R>(
   limit: number,
   fn: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let cursor = 0;
-
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (true) {
-      const index = cursor++;
-      if (index >= items.length) return;
-      results[index] = await fn(items[index]!, index);
-    }
-  });
-
-  await Promise.all(workers);
-  return results;
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new Error(`Concurrency limit must be a positive integer, received ${limit}`);
+  }
+  const schedule = pLimit(limit);
+  return Promise.all(items.map((item, index) => schedule(() => fn(item, index))));
 }

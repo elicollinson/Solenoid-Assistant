@@ -18,30 +18,26 @@
  *     --maxLengths=5,6,7,8 \
  *     --iterations=1 \
  *     [--url=http://localhost:3000] \
- *     [--output=../src/data/pint-eval-results.json]
+ *     [--output=../artifacts/evals/notinject.json]
  *
  * Requires the server to be running (bun run start:server).
  */
 import { writeFileSync, mkdirSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { getOption } from "./lib/cli";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // --- CLI args ---------------------------------------------------------------
 const args = process.argv.slice(2);
-function getArg(name: string, fallback: string): string {
-  const match = args.find((a) => a.startsWith(`--${name}=`));
-  return match ? match.slice(name.length + 3) : fallback;
-}
-
-const API_URL = getArg("url", "http://localhost:3000");
-const MAX_LENGTHS = getArg("maxLengths", "5,6,7,8")
+const API_URL = getOption(args, "url", "http://localhost:3000");
+const MAX_LENGTHS = getOption(args, "maxLengths", "5,6,7,8")
   .split(",")
   .map((s) => Number(s.trim()))
   .filter((n) => !isNaN(n) && n >= 2);
-const ITERATIONS = Number(getArg("iterations", "1"));
-const OUTPUT_PATH = getArg("output", "../src/data/pint-eval-results.json");
+const ITERATIONS = Number(getOption(args, "iterations", "1"));
+const OUTPUT_PATH = getOption(args, "output", "../artifacts/evals/notinject.json");
 
 // --- HuggingFace dataset config ---------------------------------------------
 const HF_DATASET = "leolee99/NotInject";
@@ -219,7 +215,7 @@ async function evalEntry(
 
   let res: Response;
   try {
-    res = await fetch(`${API_URL}/safetyClassifier`, {
+    res = await fetch(`${API_URL}/safety-classifier`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ input: entry.prompt, maxLength }),

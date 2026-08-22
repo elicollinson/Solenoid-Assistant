@@ -9,19 +9,7 @@
 import { z } from "zod";
 import { defineTool } from "../core/tools";
 import { searchDataSourceByName, toDataSourceId } from "./restClient";
-
-// ---------------------------------------------------------------------------
-// Data source ID map (reuses existing NOTION_DS_* env vars)
-// ---------------------------------------------------------------------------
-
-/** Maps collection keys to their data source env var values. */
-const DS_ID_MAP: Record<string, string | undefined> = {
-  book: process.env.NOTION_DS_BOOKS,
-  movie: process.env.NOTION_DS_MOVIES,
-  tv: process.env.NOTION_DS_TV,
-  music: process.env.NOTION_DS_MUSIC,
-  game: process.env.NOTION_DS_GAMES,
-};
+import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 
 // ---------------------------------------------------------------------------
 // Tool schema
@@ -50,7 +38,7 @@ const searchSchema = z.object({
  * The tool requires `NOTION_API_TOKEN` (internal connection token) and the
  * `NOTION_DS_*` env vars to be set.
  */
-export function createNotionSearchTool() {
+export function createNotionSearchTool(config: RuntimeConfig = loadRuntimeConfig()) {
   return defineTool({
     name: "notion-search-by-name",
     description:
@@ -60,7 +48,7 @@ export function createNotionSearchTool() {
       "exact_match is false, candidates contains partial matches.",
     schema: searchSchema,
     async execute({ name, collection }) {
-      const dsEnvVar = DS_ID_MAP[collection];
+      const dsEnvVar = config.notion.dataSourceIds[collection];
       if (!dsEnvVar) {
         throw new Error(
           `No data source ID configured for collection "${collection}" — ` +
@@ -69,8 +57,10 @@ export function createNotionSearchTool() {
       }
 
       const dsId = toDataSourceId(dsEnvVar);
-      const result = await searchDataSourceByName(dsId, name);
-      return JSON.stringify(result);
+      const result = await searchDataSourceByName(dsId, name, {
+        apiToken: config.notion.apiToken,
+      });
+      return result;
     },
   });
 }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { Agent, MAX_BLANK_RETRIES, extractJson } from "./rawAgent";
+import { defineTool } from "./tools";
 import type { ChatMessage, ChatOptions, ChatProvider } from "./providers";
 
 // Replays a fixed list of assistant turns, one per chat() call, and records the
@@ -144,5 +145,24 @@ describe("think on structured calls", () => {
 
     await agent.run("grade it", schema);
     expect(client.optsSeen[0]!.think).toBe(true);
+  });
+});
+
+describe("agent construction", () => {
+  test("rejects invalid iteration limits and duplicate tool names", () => {
+    const client = new ScriptedProvider([]);
+    expect(() => new Agent({ client, model: "test", maxIterations: 0 })).toThrow(
+      /positive integer/,
+    );
+
+    const tool = defineTool({
+      name: "same",
+      description: "same",
+      schema: z.object({}),
+      execute: () => null,
+    });
+    expect(() => new Agent({ client, model: "test", tools: [tool, tool] })).toThrow(
+      /already registered/,
+    );
   });
 });

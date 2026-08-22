@@ -15,6 +15,7 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { z } from "zod";
 import { NotionMcpClient } from "./notionClient";
 import { log } from "../core/logger";
+import { isMcpAuthError } from "./errors";
 
 // ---------------------------------------------------------------------------
 // Cached state
@@ -179,15 +180,7 @@ export async function initNotionMcpCache(): Promise<NotionMcpCache> {
  * in addition to the standard HTTP auth indicators.
  */
 export function isNotionAuthError(error: unknown): boolean {
-  const msg = error instanceof Error ? error.message : String(error);
-  const code = (error as { code?: number })?.code;
-  return (
-    code === 401 ||
-    msg.includes("401") ||
-    msg.includes("unauthorized") ||
-    msg.includes("invalid_token") ||
-    msg.includes("Invalid access token")
-  );
+  return isMcpAuthError(error);
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +202,16 @@ export function getNotionMcpClient(): Client | undefined {
  */
 export function getNotionFetchResult(): NotionFetchSelfResult | undefined {
   return cachedFetchResult;
+}
+
+/** Close and clear the shared client during application shutdown. */
+export async function shutdownNotionMcpCache(): Promise<void> {
+  const client = cachedClient;
+  cachedClient = undefined;
+  cachedFetchResult = undefined;
+  initPromise = undefined;
+  reconnectPromise = undefined;
+  await client?.close().catch(() => {});
 }
 
 // ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, writeFile, readdir } from "node:fs/promises";
+import { mkdtemp, writeFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -258,33 +258,36 @@ export async function getImportSources(
   if (uuids.length === 0) return new Map();
 
   const dir = await mkdtemp(path.join(tmpdir(), "osxphotos-uuids-"));
-  const uuidFile = path.join(dir, "uuids.txt");
-  await writeFile(uuidFile, uuids.join("\n"), "utf8");
+  try {
+    const uuidFile = path.join(dir, "uuids.txt");
+    await writeFile(uuidFile, uuids.join("\n"), "utf8");
 
-  const stdout = await runOsxPhotos(
-    [
-      "query",
-      "--json",
-      "--uuid-from-file",
-      uuidFile,
-      "--field",
-      "uuid",
-      "{uuid}",
-      "--field",
-      "app",
-      "{imported_by.id}",
-    ],
-    binary,
-  );
+    const stdout = await runOsxPhotos(
+      [
+        "query",
+        "--json",
+        "--uuid-from-file",
+        uuidFile,
+        "--field",
+        "uuid",
+        "{uuid}",
+        "--field",
+        "app",
+        "{imported_by.id}",
+      ],
+      binary,
+    );
 
-  const rows = JSON.parse(stdout.trim() || "[]") as Array<{
-    uuid: string;
-    app: string;
-  }>;
-
-  return new Map(
-    rows.map((r) => [r.uuid, r.app && r.app !== "_" ? r.app : null]),
-  );
+    const rows = JSON.parse(stdout.trim() || "[]") as Array<{
+      uuid: string;
+      app: string;
+    }>;
+    return new Map(
+      rows.map((row) => [row.uuid, row.app && row.app !== "_" ? row.app : null]),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -318,30 +321,26 @@ export async function materialize(
   if (missing.length === 0) return resolved;
 
   const tmp = await mkdtemp(path.join(tmpdir(), "osxphotos-export-"));
-  const uuidFile = path.join(tmp, "uuids.txt");
-  await writeFile(uuidFile, missing.map((p) => p.uuid).join("\n"), "utf8");
+  try {
+    const uuidFile = path.join(tmp, "uuids.txt");
+    await writeFile(uuidFile, missing.map((p) => p.uuid).join("\n"), "utf8");
 
-  const args = [
-    "export",
-    destDir,
-    "--uuid-from-file",
-    uuidFile,
-    "--download-missing",
-    "--filename",
-    "{uuid}",
-    // Screenshots are never edited in any meaningful sense, but if one has
-    // been, the edit is the version you actually want described.
-    "--skip-original-if-edited",
-    // destDir is reused across runs, so it holds an export database from the
-    // last one. Without --update, osxphotos warns about the stale database and
-    // blocks on an interactive "Do you want to continue?" — fatal for a server.
-    // --update is also what we want semantically: already-exported screenshots
-    // are skipped instead of re-downloaded.
-    "--update",
-  ];
-  if (libraryPath) args.push("--library", libraryPath);
-
-  await runOsxPhotos(args, binary);
+    const args = [
+      "export",
+      destDir,
+      "--uuid-from-file",
+      uuidFile,
+      "--download-missing",
+      "--filename",
+      "{uuid}",
+      "--skip-original-if-edited",
+      "--update",
+    ];
+    if (libraryPath) args.push("--library", libraryPath);
+    await runOsxPhotos(args, binary);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
 
   // Match exported files back to UUIDs by their deterministic stem.
   const entries = await readdir(destDir);

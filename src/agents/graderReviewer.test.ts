@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
+import { Agent } from "../core/rawAgent";
 import type { ChatMessage, ChatOptions, ChatProvider } from "../core/providers";
-import { GeneratorGrader } from "./generatorGrader";
+import { createGraderReviewer } from "./graderReviewer";
 
 class ScriptedProvider implements ChatProvider {
   readonly providerName = "scripted";
@@ -25,14 +26,21 @@ const passingGrade = JSON.stringify({
   feedback: "Good response",
 });
 
-describe("GeneratorGrader", () => {
-  test("uses a custom grader prompt and returns a passing candidate", async () => {
+function reviewedAgent(client: ScriptedProvider, graderPrompt?: string | ((vars: {
+  output: string;
+  messages: ChatMessage[];
+}) => string)): Agent {
+  return new Agent({
+    client,
+    model: "test-model",
+    reviewers: [createGraderReviewer({ client, model: "test-model", graderPrompt })],
+  });
+}
+
+describe("grader reviewer", () => {
+  test("uses a custom prompt and accepts a passing candidate", async () => {
     const client = new ScriptedProvider(["candidate", passingGrade]);
-    const agent = new GeneratorGrader({
-      client,
-      model: "test-model",
-      graderPrompt: ({ output }) => `CUSTOM GRADER: ${output}`,
-    });
+    const agent = reviewedAgent(client, ({ output }) => `CUSTOM GRADER: ${output}`);
 
     expect(await agent.run("write it")).toBe("candidate");
     expect(client.calls[1]?.[0]?.content).toBe("CUSTOM GRADER: candidate");
@@ -51,20 +59,20 @@ describe("GeneratorGrader", () => {
       "revised draft",
       passingGrade,
     ]);
-    const agent = new GeneratorGrader({ client, model: "test-model" });
 
-    expect(await agent.run("write it")).toBe("revised draft");
+    expect(await reviewedAgent(client).run("write it")).toBe("revised draft");
     expect(client.calls[2]?.at(-1)).toEqual({
       role: "system",
       content: "Grader Feedback: Be more specific",
     });
   });
 
-  test("retains structured-output blank retries in its independent loop", async () => {
+  test("retains base-agent structured-output blank retries", async () => {
     const client = new ScriptedProvider(["", '{"ok":true}', passingGrade]);
-    const agent = new GeneratorGrader({ client, model: "test-model" });
 
-    expect(await agent.run("write it", z.object({ ok: z.boolean() }))).toEqual({ ok: true });
+    expect(await reviewedAgent(client).run("write it", z.object({ ok: z.boolean() }))).toEqual({
+      ok: true,
+    });
     expect(client.calls[1]?.at(-1)?.content).toContain("JSON object");
   });
 });

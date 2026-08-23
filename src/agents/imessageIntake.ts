@@ -1,4 +1,5 @@
-import { GeneratorGrader } from "./generatorGrader";
+import { Agent } from "../core/rawAgent";
+import { createGraderReviewer } from "./graderReviewer";
 import { createReadImessagesTool, type ReadWindow } from "../tools/imessage";
 import { getTimeTool } from "../tools/time";
 import { createChatProvider } from "../core/providerFactory";
@@ -15,11 +16,13 @@ import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 export function createImessageIntakeAgent(
   window?: ReadWindow,
   config: RuntimeConfig = loadRuntimeConfig(),
-): GeneratorGrader {
-  return new GeneratorGrader({
+): Agent {
+  const client = createChatProvider(config);
+  return new Agent({
     name: "imessage-intake",
-    client: createChatProvider(config),
+    client,
     model: config.model,
     tools: [createReadImessagesTool(window), getTimeTool],
+    reviewers: [createGraderReviewer({ client, model: config.model })],
   });
 }

@@ -5,7 +5,7 @@ import { weatherPrompt } from "../prompts";
 
 export const weatherTask = defineTask({
   name: "weather",
-  description: "Fetch the weather for a city via the demo GeneratorGrader agent",
+  description: "Fetch the weather for a city via the reviewed demo agent",
   schema: z.object({ city: z.string().min(1) }),
   execute: ({ city }) => weatherAgent.run(weatherPrompt, { city }),
 });

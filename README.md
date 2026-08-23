@@ -112,7 +112,7 @@ src/
   worker.ts     Cron worker startup and shutdown
 ```
 
-Agent modules use the same runtime configuration and return a common lifecycle resource when they own external connections. `GeneratorGrader` is a separate agent primitive with its own generate/grade/revise loop.
+Agent modules use the same runtime configuration and return a common lifecycle resource when they own external connections. Base agents can optionally register reviewer components; the existing weather and iMessage flows opt into generate/grade/revise by configuring the rubric grader directly.
 
 ## Notion authentication
 

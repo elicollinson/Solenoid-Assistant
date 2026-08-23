@@ -16,7 +16,6 @@
 
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { Agent } from "../core/rawAgent";
-import { Ollama } from "ollama";
 import {
   recommendationIngestionPrompt,
   recommendationIngestionSchema,
@@ -33,6 +32,9 @@ import {
   isNotionAuthError,
 } from "../mcp/notionCache";
 import { createNotionSearchTool } from "../notion/searchTool";
+import { createChatProvider } from "../core/providerFactory";
+import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
+import { agentResource, type AgentResource } from "./resource";
 
 // Default filter: create + update via MCP are enough to ingest a record.
 // Search is now handled by the custom `notion-search-by-name` tool (REST API).
@@ -57,17 +59,8 @@ export interface CreateRecommendationIngestionOptions {
    * uses the shared cached client from `src/mcp/notionCache.ts`.
    */
   mcpClient?: Client;
-}
-
-export interface RecommendationIngestionAgent {
-  agent: Agent;
-  /** The live MCP client backing the agent's tools. */
-  mcpClient: Client;
-  /**
-   * Whether the caller owns the client (and should close it when done).
-   * `false` when using the shared startup cache — in that case, do NOT close.
-   */
-  ownsClient: boolean;
+  /** Runtime dependency override, primarily for app composition and tests. */
+  config?: RuntimeConfig;
 }
 
 /**
@@ -89,22 +82,22 @@ export interface RecommendationIngestionAgent {
  *
  * @example
  *   // With a custom MCP client (caller manages lifecycle):
- *   const { agent, mcpClient, ownsClient } = await createRecommendationIngestionAgent({ mcpClient });
- *   try { ... } finally { if (ownsClient) mcpClient.close(); }
+ *   const resource = await createRecommendationIngestionAgent({ mcpClient });
+ *   const { agent } = resource; // caller still owns the supplied MCP client
  */
 export async function createRecommendationIngestionAgent(
   opts: CreateRecommendationIngestionOptions = {},
-): Promise<RecommendationIngestionAgent> {
+): Promise<AgentResource> {
+  const config = opts.config ?? loadRuntimeConfig();
   // Fail fast if the Notion data source IDs aren't configured — otherwise the
   // agent would send literal placeholders to Notion and silently "succeed".
-  validateNotionDsIds();
+  validateNotionDsIds(config);
 
   let mcpClient: Client;
-  let ownsClient: boolean;
+  const usingSharedClient = !opts.mcpClient;
 
   if (opts.mcpClient) {
     mcpClient = opts.mcpClient;
-    ownsClient = true;
   } else {
     // Use the shared cached client, initializing the cache if needed.
     let client = getNotionMcpClient();
@@ -113,12 +106,11 @@ export async function createRecommendationIngestionAgent(
       client = cache.client;
     }
     mcpClient = client;
-    ownsClient = false;
   }
 
   // Build the custom deterministic search tool (REST API) alongside the
   // MCP create/update tools.
-  const notionSearchTool = createNotionSearchTool();
+  const notionSearchTool = createNotionSearchTool(config);
   const filter = opts.toolFilter ?? DEFAULT_NOTION_TOOL_FILTER;
 
   let tools;
@@ -128,7 +120,7 @@ export async function createRecommendationIngestionAgent(
     // If the cached client's token expired during runtime, the listTools()
     // call inside loadMcpTools will fail with an auth error. Reconnect with
     // a fresh token and retry once.
-    if (!ownsClient && isNotionAuthError(err)) {
+    if (usingSharedClient && isNotionAuthError(err)) {
       const cache = await reconnectNotionMcpCache();
       mcpClient = cache.client;
       tools = [notionSearchTool, ...await loadMcpTools(mcpClient, filter)];
@@ -138,17 +130,17 @@ export async function createRecommendationIngestionAgent(
   }
 
   const agent = new Agent({
-    client: new Ollama({
-      host: process.env.OLLAMA_API_URL || "https://ollama.com",
-      headers: { Authorization: `Bearer ${process.env.OLLAMA_API_KEY || ""}` },
-    }),
-    systemPrompt: opts.systemPrompt ?? recommendationIngestionPrompt(),
-    model: opts.model ?? process.env.MODEL ?? "glm-5.2",
+    name: "recommendation-ingestion",
+    client: createChatProvider(config),
+    systemPrompt: opts.systemPrompt ?? recommendationIngestionPrompt(config),
+    model: opts.model ?? config.model,
     tools,
     maxIterations: opts.maxIterations,
   });
 
-  return { agent, mcpClient, ownsClient };
+  // The factory never owns the Notion connection: it either uses the shared
+  // application cache or a client explicitly supplied by its caller.
+  return agentResource(agent);
 }
 
 export {

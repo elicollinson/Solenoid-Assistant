@@ -11,30 +11,26 @@
  *     --maxLengths=5,10,15,20 \
  *     --iterations=3 \
  *     [--url=http://localhost:3000] \
- *     [--output=./src/data/eval-results.json]
+ *     [--output=../artifacts/evals/safety-classifier.json]
  *
  * Requires the server to be running (bun run start:server).
  */
 import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { getOption } from "./lib/cli";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // --- CLI args ---------------------------------------------------------------
 const args = process.argv.slice(2);
-function getArg(name: string, fallback: string): string {
-  const match = args.find((a) => a.startsWith(`--${name}=`));
-  return match ? match.slice(name.length + 3) : fallback;
-}
-
-const API_URL = getArg("url", "http://localhost:3000");
-const MAX_LENGTHS = getArg("maxLengths", "10,20,30")
+const API_URL = getOption(args, "url", "http://localhost:3000");
+const MAX_LENGTHS = getOption(args, "maxLengths", "10,20,30")
   .split(",")
   .map((s) => Number(s.trim()))
   .filter((n) => !isNaN(n) && n >= 2);
-const ITERATIONS = Number(getArg("iterations", "1"));
-const OUTPUT_PATH = getArg("output", "../src/data/eval-results.json");
+const ITERATIONS = Number(getOption(args, "iterations", "1"));
+const OUTPUT_PATH = getOption(args, "output", "../artifacts/evals/safety-classifier.json");
 
 // --- Types ------------------------------------------------------------------
 interface TestCase {
@@ -110,7 +106,7 @@ async function evalCase(
 
   let res: Response;
   try {
-    res = await fetch(`${API_URL}/safetyClassifier`, {
+    res = await fetch(`${API_URL}/safety-classifier`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ input: tc.text, maxLength }),

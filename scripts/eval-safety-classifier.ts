@@ -13,18 +13,14 @@
 import { readFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { getOption } from "./lib/cli";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // --- CLI args ---------------------------------------------------------------
 const args = process.argv.slice(2);
-function getArg(name: string, fallback: string): string {
-  const match = args.find((a) => a.startsWith(`--${name}=`));
-  return match ? match.slice(name.length + 3) : fallback;
-}
-
-const API_URL = getArg("url", "http://localhost:3000");
-const MAX_LENGTH = Number(getArg("maxLength", "20"));
+const API_URL = getOption(args, "url", "http://localhost:3000");
+const MAX_LENGTH = Number(getOption(args, "maxLength", "20"));
 
 // --- Types ------------------------------------------------------------------
 interface TestCase {
@@ -69,7 +65,7 @@ async function main() {
 
     let res: Response;
     try {
-      res = await fetch(`${API_URL}/safetyClassifier`, {
+      res = await fetch(`${API_URL}/safety-classifier`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

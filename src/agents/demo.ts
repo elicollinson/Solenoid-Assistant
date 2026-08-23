@@ -1,30 +1,30 @@
 
 import { Agent } from "../core/rawAgent";
-import { GeneratorGrader } from "./generatorGrader";
+import { createGraderReviewer } from "./graderReviewer";
 import { weatherTool, calculateTool } from "../tools/demo";
-import { Ollama } from "ollama";
+import { createChatProvider } from "../core/providerFactory";
+import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 
-export const demoAgent = new Agent({
-  client: new Ollama({
-    host: process.env.OLLAMA_API_URL || "https://ollama.com",
-    headers: { Authorization: `Bearer ${process.env.OLLAMA_API_KEY || ""}` },
-  }),
-  model: process.env.MODEL || "glm-5.2",
-  tools: [
-    weatherTool,
-    calculateTool
-  ],
-});
+export function createDemoAgent(config: RuntimeConfig = loadRuntimeConfig()): Agent {
+  return new Agent({
+    name: "demo-agent",
+    client: createChatProvider(config),
+    model: config.model,
+    tools: [weatherTool, calculateTool],
+  });
+}
 
-export const demoAgentGG = new GeneratorGrader({
-  client: new Ollama({
-    host: process.env.OLLAMA_API_URL || "https://ollama.com",
-    headers: { Authorization: `Bearer ${process.env.OLLAMA_API_KEY || ""}` },
-  }),
-  model: process.env.MODEL || "glm-5.2",
-  tools: [
-    weatherTool,
-    calculateTool
-  ],
-});
+export function createWeatherAgent(
+  config: RuntimeConfig = loadRuntimeConfig(),
+): Agent {
+  const client = createChatProvider(config);
+  return new Agent({
+    name: "weather-generator-grader",
+    client,
+    model: config.model,
+    tools: [weatherTool, calculateTool],
+    reviewers: [createGraderReviewer({ client, model: config.model })],
+  });
+}
 
+export const weatherAgent = createWeatherAgent();

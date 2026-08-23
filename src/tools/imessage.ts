@@ -15,7 +15,7 @@ const limitSchema = z
   .positive()
   .max(500)
   .default(200)
-  .describe("Maximum messages to return; keeps the most recent when the window has more (default 50)");
+  .describe("Maximum messages to return; keeps the most recent when the window has more (default 200)");
 
 // Shared fetch body: both tool variants funnel through here, differing only in
 // how the window was decided (model-chosen vs. caller-enforced).

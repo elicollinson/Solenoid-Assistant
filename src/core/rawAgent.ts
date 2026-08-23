@@ -22,6 +22,7 @@ import {
   type SpanKind,
 } from "./tracing";
 import { log } from "./logger";
+import type { Reviewer, ReviewResult } from "./reviewer";
 
 // Zod is the single source of truth for output structures, mirroring tools.ts:
 // the same schema drives the provider-side constraint AND client-side validation.
@@ -53,8 +54,8 @@ export function extractJson(raw: string): string {
 
 // How many times a schema-constrained turn may come back with no content
 // before the agent gives up. Tracked separately from `maxIterations`, which
-// bounds tool-calling rounds — a blank turn does no work, so it should not
-// consume that budget.
+// bounds completed tool or reviewer-revision rounds — a blank turn does no
+// work, so it should not consume that budget.
 export const MAX_BLANK_RETRIES = 2;
 
 export interface AgentOptions {
@@ -64,6 +65,7 @@ export interface AgentOptions {
   model: string;
   systemPrompt?: string;
   tools?: AgentTool[];
+  reviewers?: Reviewer[];
   maxIterations?: number | undefined;
   think?: ThinkLevel;
   // Keep `think` on for schema-constrained calls too. Default off: on backends
@@ -81,6 +83,7 @@ export class Agent {
   protected readonly model: string;
   protected readonly systemPrompt: string;
   protected readonly tools = new Map<string, AgentTool>();
+  protected readonly reviewers = new Map<string, Reviewer>();
   protected readonly maxIterations: number | undefined;
   protected readonly think: ThinkLevel;
   protected readonly thinkOnStructured: boolean;
@@ -96,10 +99,17 @@ export class Agent {
     this.name = opts.name ?? this.constructor.name;
     this.model = opts.model;
     this.systemPrompt = opts.systemPrompt ?? defaultSystemPrompt();
+    if (
+      opts.maxIterations !== undefined &&
+      (!Number.isInteger(opts.maxIterations) || opts.maxIterations < 1)
+    ) {
+      throw new Error("maxIterations must be a positive integer when provided");
+    }
     this.maxIterations = opts.maxIterations;
     this.think = opts.think ?? true;
     this.thinkOnStructured = opts.thinkOnStructured ?? false;
     for (const t of opts.tools ?? []) this.addTool(t);
+    for (const reviewer of opts.reviewers ?? []) this.addReviewer(reviewer);
     // Bind once so `agent.run` stays passable as a bare callback (the previous
     // arrow-function-field behavior) despite `run` now being an overloaded
     // method with a generic signature.
@@ -108,7 +118,22 @@ export class Agent {
 
   // Chainable registration. `this` return type lets you do agent.addTool(a).addTool(b).
   addTool(tool: AgentTool): this {
-    this.tools.set(tool.definition.function.name ?? "", tool);
+    const name = tool.definition.function.name.trim();
+    if (!name) throw new Error("Agent tools must have a non-empty name");
+    if (this.tools.has(name)) throw new Error(`Agent tool "${name}" is already registered`);
+    this.tools.set(name, tool);
+    return this;
+  }
+
+  // Reviewers are optional components. When present, every candidate must pass
+  // before the loop returns it; failed feedback is supplied for one more turn.
+  addReviewer(reviewer: Reviewer): this {
+    const name = reviewer.name.trim();
+    if (!name) throw new Error("Agent reviewers must have a non-empty name");
+    if (this.reviewers.has(name)) {
+      throw new Error(`Agent reviewer "${name}" is already registered`);
+    }
+    this.reviewers.set(name, reviewer);
     return this;
   }
 
@@ -210,6 +235,30 @@ export class Agent {
     return format && !this.thinkOnStructured ? false : this.think;
   }
 
+  protected async reviewCandidate(
+    messages: ChatMessage[],
+  ): Promise<Array<{ name: string; result: ReviewResult }>> {
+    const output = messages.at(-1)?.content ?? "";
+    const context = { output, messages: [...messages] };
+    const reviews: Array<{ name: string; result: ReviewResult }> = [];
+
+    for (const [name, reviewer] of this.reviewers) {
+      const result = await this.withChildSpan(
+        "EVALUATOR",
+        name,
+        { [SemanticConventions.INPUT_VALUE]: output },
+        async (span) => {
+          const review = await reviewer.review(context);
+          span.setAttribute(SemanticConventions.OUTPUT_VALUE, safeJson(review));
+          return review;
+        },
+      );
+      reviews.push({ name, result });
+    }
+
+    return reviews;
+  }
+
   protected async loop(messages: ChatMessage[], format?: OutputFormat): Promise<string> {
     const toolDefs = [...this.tools.values()].map((t) => t.definition);
     let i = 0;
@@ -249,17 +298,27 @@ export class Agent {
           });
           continue;
         }
-        return msg.content;
-      }
+        const failedReviews = (await this.reviewCandidate(messages)).filter(
+          ({ result }) => !result.passed,
+        );
+        if (!failedReviews.length) return msg.content;
 
-      for (const call of msg.toolCalls) {
-        const output = await this.invokeTool(call.name, call.arguments);
         messages.push({
-          role: "tool",
-          toolCallId: call.id,
-          toolName: call.name,
-          content: output,
+          role: "system",
+          content: failedReviews
+            .map(({ name, result }) => `${name} Feedback: ${result.feedback}`)
+            .join("\n"),
         });
+      } else {
+        for (const call of msg.toolCalls) {
+          const output = await this.invokeTool(call.name, call.arguments);
+          messages.push({
+            role: "tool",
+            toolCallId: call.id,
+            toolName: call.name,
+            content: output,
+          });
+        }
       }
       i++;
       if (this.maxIterations && i >= this.maxIterations) return "Stopped: hit max iterations.";

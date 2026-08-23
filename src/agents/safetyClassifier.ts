@@ -1,14 +1,16 @@
 
 import { Agent } from "../core/rawAgent";
-import { weatherTool, calculateTool } from "../tools/demo";
-import { Ollama } from "ollama";
+import { createChatProvider } from "../core/providerFactory";
+import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 
-export const injectionRiskClassifier = new Agent({
-  client: new Ollama({
-    host: process.env.OLLAMA_API_URL || "https://ollama.com",
-    headers: { Authorization: `Bearer ${process.env.OLLAMA_API_KEY || ""}` },
-  }),
-  model: process.env.MODEL || "glm-5.2",
-  tools: [],
-});
+export function createSafetyClassifierAgent(
+  config: RuntimeConfig = loadRuntimeConfig(),
+): Agent {
+  return new Agent({
+    name: "safety-classifier",
+    client: createChatProvider(config),
+    model: config.model,
+  });
+}
 
+export const injectionRiskClassifier = createSafetyClassifierAgent();

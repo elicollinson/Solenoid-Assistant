@@ -79,7 +79,13 @@ async function main(): Promise<void> {
   console.log("    NOTION_DS_GAMES=<id>");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
+  await mcpClient.close();
   process.exit(0);
 }
 
-main();
+main().catch((error) => {
+  log.error("Notion database discovery failed", {
+    error: error instanceof Error ? error.message : String(error),
+  });
+  process.exit(1);
+});

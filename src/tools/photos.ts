@@ -187,13 +187,13 @@ const DEFAULT_VISION_PROMPT =
  * vision model for structured description.
  *
  * This is the full pipeline: osxphotos query -> materialize iCloud-only
- * assets -> base64-encode -> Ollama vision chat with structured output. One
+ * assets -> base64-encode -> configured provider with structured output. One
  * bad image doesn't sink the batch — failures are recorded per-screenshot
  * with an `error` field and a null `description`.
  *
  * The vision model defaults to `process.env.IMAGE_MODEL` (falling back to
- * `process.env.MODEL`), using the same Ollama host/auth env vars as every
- * other client in the repo.
+ * `process.env.MODEL`), using the same provider and authentication settings as
+ * every other model client in the repo.
  */
 export async function describeScreenshots(
   params: DescribeScreenshotsParams = {},
@@ -420,8 +420,10 @@ export interface ClassifyScreenshotsResult {
 
 /** Zod schema for the optional vision model configuration (matches VisionOptions). */
 const visionOptionsSchema = z.object({
+  provider: z.enum(["ollama", "openai"]).optional(),
   model: z.string().optional(),
   host: z.string().optional(),
+  baseURL: z.string().optional(),
   apiKey: z.string().optional(),
 });
 
@@ -449,6 +451,10 @@ export type ClassifyScreenshotsParams = z.infer<
   typeof classifyScreenshotsParamsSchema
 >;
 
+export interface ClassifyScreenshotsDependencies {
+  describe?: typeof describeScreenshots;
+}
+
 /**
  * Query recent screenshots, describe each with a vision model, then classify
  * the descriptions using an agent that has web search tools.
@@ -464,6 +470,7 @@ export type ClassifyScreenshotsParams = z.infer<
 export async function classifyScreenshots(
   classifierAgent: Agent,
   rawParams: ClassifyScreenshotsParams = {},
+  dependencies: ClassifyScreenshotsDependencies = {},
 ): Promise<ClassifyScreenshotsResult> {
   const parsed = classifyScreenshotsParamsSchema.safeParse(rawParams);
   if (!parsed.success) {
@@ -481,7 +488,7 @@ export async function classifyScreenshots(
   } = params;
 
   // Step 1: get vision descriptions of each screenshot.
-  const described = await describeScreenshots({
+  const described = await (dependencies.describe ?? describeScreenshots)({
     hoursBack,
     fromTime,
     limit,
@@ -496,7 +503,10 @@ export async function classifyScreenshots(
   }
 
   // Step 2: classify each description using the agent with web tools.
-  let failed = described.failed;
+  // Vision failures are already represented by null descriptions and are
+  // counted as part of the classification pipeline below. Start from zero so
+  // each screenshot contributes at most one failure.
+  let failed = 0;
 
   const classified: ClassifiedScreenshot[] = [];
   for (const s of described.screenshots) {

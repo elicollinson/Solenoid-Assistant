@@ -1,5 +1,13 @@
-import { type Tool } from "ollama"
-import { z } from "zod"
+import { z } from "zod";
+
+export interface FunctionToolDefinition {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
 
 // ---------------------------------------------------------------------------
 // A tool bundles everything about one capability in ONE place: the Zod schema
@@ -8,7 +16,7 @@ import { z } from "zod"
 // ---------------------------------------------------------------------------
 
 export interface AgentTool<S extends z.ZodType = z.ZodType> {
-  definition: Tool;
+  definition: FunctionToolDefinition;
   schema: S;
   execute: (args: z.infer<S>) => unknown | Promise<unknown>;
 }
@@ -29,7 +37,7 @@ export function defineTool<S extends z.ZodType>(config: {
         description: config.description,
         // Zod 4: derive the model-facing JSON schema straight from the Zod schema.
         // (Zod 3? use the `zod-to-json-schema` package instead.)
-        parameters: z.toJSONSchema(config.schema) as Tool["function"]["parameters"],
+        parameters: z.toJSONSchema(config.schema) as Record<string, unknown>,
       },
     },
   };

@@ -7,15 +7,16 @@
 // and URL.
 //
 // The factory is async because it must connect to the remote MCP server before
-// the tools are available. The returned `mcpClient` must be kept alive for the
-// agent's tools to function — closing it invalidates the tool callbacks.
+// the tools are available. The returned resource owns that connection; callers
+// close the resource when they finish using the agent.
 
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { Agent } from "../core/rawAgent";
-import { Ollama } from "ollama";
 import { contentCardSourcingPrompt, contentCardSchema, type ContentCard } from "../prompts";
 import { connectToTavilyMcp } from "../mcp/tavilyClient";
 import { loadMcpTools, type ToolFilter } from "../mcp/adapter";
+import { createChatProvider } from "../core/providerFactory";
+import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
+import { agentResource, type AgentResource } from "./resource";
 
 // Default filter: search + extract are enough to source a content card.
 export const DEFAULT_TAVILY_TOOL_FILTER: ToolFilter = [
@@ -32,12 +33,8 @@ export interface CreateContentCardSourcingOptions {
   model?: string;
   /** Override max tool-calling iterations. */
   maxIterations?: number;
-}
-
-export interface ContentCardSourcingAgent {
-  agent: Agent;
-  /** The live MCP client — keep this reference alive while the agent is in use. */
-  mcpClient: Client;
+  /** Runtime dependency override, primarily for app composition and tests. */
+  config?: RuntimeConfig;
 }
 
 /**
@@ -48,7 +45,8 @@ export interface ContentCardSourcingAgent {
  * name, type, description, coverImageUrl, and url.
  *
  * @example
- *   const { agent, mcpClient } = await createContentCardSourcingAgent();
+ *   const resource = await createContentCardSourcingAgent();
+ *   const { agent } = resource;
  *   const card = await agent.run("The Witcher 3", contentCardSchema);
  *   // → { name: "The Witcher 3: Wild Hunt", type: "Game", description: ..., ... }
  *
@@ -58,23 +56,27 @@ export interface ContentCardSourcingAgent {
  */
 export async function createContentCardSourcingAgent(
   opts: CreateContentCardSourcingOptions = {},
-): Promise<ContentCardSourcingAgent> {
-  const mcpClient = await connectToTavilyMcp();
-
-  const tools = await loadMcpTools(mcpClient, opts.toolFilter ?? DEFAULT_TAVILY_TOOL_FILTER);
-
-  const agent = new Agent({
-    client: new Ollama({
-      host: process.env.OLLAMA_API_URL || "https://ollama.com",
-      headers: { Authorization: `Bearer ${process.env.OLLAMA_API_KEY || ""}` },
-    }),
-    systemPrompt: opts.systemPrompt ?? contentCardSourcingPrompt,
-    model: opts.model ?? process.env.MODEL ?? "glm-5.2",
-    tools,
-    maxIterations: opts.maxIterations,
-  });
-
-  return { agent, mcpClient };
+): Promise<AgentResource> {
+  const config = opts.config ?? loadRuntimeConfig();
+  const mcpClient = await connectToTavilyMcp(config.tavily.apiKey);
+  try {
+    const tools = await loadMcpTools(
+      mcpClient,
+      opts.toolFilter ?? DEFAULT_TAVILY_TOOL_FILTER,
+    );
+    const agent = new Agent({
+      name: "content-card-sourcing",
+      client: createChatProvider(config),
+      systemPrompt: opts.systemPrompt ?? contentCardSourcingPrompt,
+      model: opts.model ?? config.model,
+      tools,
+      maxIterations: opts.maxIterations,
+    });
+    return agentResource(agent, () => mcpClient.close());
+  } catch (error) {
+    await mcpClient.close().catch(() => {});
+    throw error;
+  }
 }
 
 export { contentCardSchema, type ContentCard };

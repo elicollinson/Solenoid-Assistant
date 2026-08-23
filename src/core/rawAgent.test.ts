@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { Agent, MAX_BLANK_RETRIES, extractJson } from "./rawAgent";
+import { defineTool } from "./tools";
 import type { ChatMessage, ChatOptions, ChatProvider } from "./providers";
+import type { Reviewer } from "./reviewer";
 
 // Replays a fixed list of assistant turns, one per chat() call, and records the
 // message history it was handed each time. `traced: true` skips the tracing
@@ -144,5 +146,59 @@ describe("think on structured calls", () => {
 
     await agent.run("grade it", schema);
     expect(client.optsSeen[0]!.think).toBe(true);
+  });
+});
+
+describe("agent construction", () => {
+  test("rejects invalid iteration limits and duplicate component names", () => {
+    const client = new ScriptedProvider([]);
+    expect(() => new Agent({ client, model: "test", maxIterations: 0 })).toThrow(
+      /positive integer/,
+    );
+
+    const tool = defineTool({
+      name: "same",
+      description: "same",
+      schema: z.object({}),
+      execute: () => null,
+    });
+    expect(() => new Agent({ client, model: "test", tools: [tool, tool] })).toThrow(
+      /already registered/,
+    );
+
+    const reviewer: Reviewer = {
+      name: "same",
+      review: async () => ({ passed: true, feedback: "" }),
+    };
+    expect(() => new Agent({ client, model: "test", reviewers: [reviewer, reviewer] })).toThrow(
+      /already registered/,
+    );
+  });
+});
+
+describe("optional reviewers", () => {
+  test("revises failed candidates with reviewer feedback and returns a passing revision", async () => {
+    const client = new ScriptedProvider([
+      { content: "first draft" },
+      { content: "revised draft" },
+    ]);
+    const outputs: string[] = [];
+    const reviewer: Reviewer = {
+      name: "Quality",
+      review: async ({ output }) => {
+        outputs.push(output);
+        return output === "revised draft"
+          ? { passed: true, feedback: "Looks good" }
+          : { passed: false, feedback: "Be more specific" };
+      },
+    };
+    const agent = new Agent({ client, model: "test", reviewers: [reviewer] });
+
+    expect(await agent.run("write it")).toBe("revised draft");
+    expect(outputs).toEqual(["first draft", "revised draft"]);
+    expect(client.calls[1]?.at(-1)).toEqual({
+      role: "system",
+      content: "Quality Feedback: Be more specific",
+    });
   });
 });

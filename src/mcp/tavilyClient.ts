@@ -15,6 +15,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { loadRuntimeConfig } from "../core/config";
 import { log } from "../core/logger";
 
 // ---------------------------------------------------------------------------
@@ -32,7 +33,7 @@ export const TAVILY_MCP_SERVER_BASE = "https://mcp.tavily.com/mcp";
  * The key comes from TAVILY_API_KEY in .env (Bun auto-loads it).
  */
 export function buildTavilyMcpUrl(apiKey?: string): string {
-  const key = apiKey ?? process.env.TAVILY_API_KEY;
+  const key = apiKey ?? loadRuntimeConfig().tavily.apiKey;
   if (!key) {
     throw new Error(
       "TAVILY_API_KEY is not set. Add it to .env (get one at https://app.tavily.com).",
@@ -115,7 +116,7 @@ export class TavilyMcpClient {
 
   /** Initialize from .env. */
   initialize(): void {
-    this.apiKey = process.env.TAVILY_API_KEY;
+    this.apiKey = loadRuntimeConfig().tavily.apiKey;
     if (!this.apiKey) {
       throw new Error(
         "TAVILY_API_KEY is not set. Add it to .env (get one at https://app.tavily.com).",

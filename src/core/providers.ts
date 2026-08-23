@@ -1,10 +1,11 @@
 // Provider adapters: one normalized chat interface, three backends.
 // Tool definitions stay in the OpenAI-style function shape (ollama's `Tool`
 // type, produced by defineTool) — each adapter converts to its wire format.
-import { Ollama, type Message as OllamaMessage, type Tool } from "ollama";
+import { Ollama, type Message as OllamaMessage, type Tool as OllamaTool } from "ollama";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { tracedChat } from "./tracing/tracedProvider";
+import type { FunctionToolDefinition } from "./tools";
 
 export type ThinkLevel = boolean | "low" | "medium" | "high";
 
@@ -49,7 +50,7 @@ export interface OutputFormat {
 
 export interface ChatOptions {
   model: string;
-  tools: Tool[];
+  tools: FunctionToolDefinition[];
   think?: ThinkLevel;
   format?: OutputFormat;
 }
@@ -112,7 +113,7 @@ export class OllamaProvider extends BaseChatProvider {
     const res = await this.client.chat({
       model: opts.model,
       messages: ollamaMessages,
-      tools: opts.tools,
+      tools: opts.tools as OllamaTool[],
       think: opts.think,
       format: opts.format?.schema, // ollama constrains decoding to the schema
     });
@@ -170,8 +171,13 @@ export class OpenAIProvider extends BaseChatProvider {
       tools: opts.tools.length
         ? (opts.tools as OpenAI.Chat.Completions.ChatCompletionTool[])
         : undefined,
-      // Reasoning models accept an effort hint; a bare `true` uses the default.
-      ...(typeof opts.think === "string" ? { reasoning_effort: opts.think } : {}),
+      // A bare `true` uses the backend default. `false` maps to the OpenAI-
+      // compatible `none` value (LM Studio uses this to disable reasoning).
+      ...(opts.think === false
+        ? { reasoning_effort: "none" as const }
+        : typeof opts.think === "string"
+          ? { reasoning_effort: opts.think }
+          : {}),
       ...(opts.format
         ? {
             response_format: {
@@ -188,9 +194,12 @@ export class OpenAIProvider extends BaseChatProvider {
 
     const msg = res.choices[0]?.message;
     if (!msg) throw new Error("OpenAI returned no choices");
+    const reasoningContent = (msg as unknown as { reasoning_content?: unknown })
+      .reasoning_content;
     return {
       role: "assistant",
       content: msg.content ?? "",
+      thinking: typeof reasoningContent === "string" ? reasoningContent : undefined,
       toolCalls: msg.tool_calls
         ?.filter((c) => c.type === "function")
         .map((c) => ({
@@ -246,7 +255,7 @@ export class AnthropicProvider extends BaseChatProvider {
       ...(system ? { system } : {}),
       messages: this.toAnthropic(messages),
       tools: opts.tools.map((t) => ({
-        name: t.function.name ?? "",
+        name: t.function.name,
         description: t.function.description,
         input_schema: t.function.parameters as Anthropic.Tool.InputSchema,
       })),

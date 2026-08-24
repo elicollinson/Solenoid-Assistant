@@ -31,8 +31,8 @@ export interface CreateContentCardSourcingOptions {
   systemPrompt?: string;
   /** Override the model. */
   model?: string;
-  /** Override max tool-calling iterations. */
-  maxIterations?: number;
+  /** Whole-run timeout. Defaults to fifteen minutes. */
+  timeoutMs?: number;
   /** Runtime dependency override, primarily for app composition and tests. */
   config?: RuntimeConfig;
 }
@@ -70,7 +70,7 @@ export async function createContentCardSourcingAgent(
       systemPrompt: opts.systemPrompt ?? contentCardSourcingPrompt,
       model: opts.model ?? config.model,
       tools,
-      maxIterations: opts.maxIterations,
+      timeoutMs: opts.timeoutMs,
     });
     return agentResource(agent, () => mcpClient.close());
   } catch (error) {

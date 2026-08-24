@@ -38,7 +38,11 @@ export function createChatProvider(
   config: RuntimeConfig = loadRuntimeConfig(),
 ): ChatProvider {
   if (config.llmProvider === "openai") {
-    return new OpenAIProvider(createOpenAIClient({}, config));
+    return new OpenAIProvider(createOpenAIClient({}, config), {
+      structuredOutputStrategy: config.structuredOutputStrategy,
+    });
   }
-  return new OllamaProvider(createOllamaClient({}, config));
+  return new OllamaProvider(createOllamaClient({}, config), {
+    structuredOutputStrategy: config.structuredOutputStrategy,
+  });
 }

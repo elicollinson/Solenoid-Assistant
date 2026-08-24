@@ -51,8 +51,8 @@ export interface CreateRecommendationIngestionOptions {
   systemPrompt?: string;
   /** Override the model. */
   model?: string;
-  /** Override max tool-calling iterations. */
-  maxIterations?: number;
+  /** Whole-run timeout. Defaults to fifteen minutes. */
+  timeoutMs?: number;
   /**
    * An externally-provided MCP client. When set, the caller owns the client
    * and must keep it alive (and close it when done). When omitted, the agent
@@ -135,7 +135,7 @@ export async function createRecommendationIngestionAgent(
     systemPrompt: opts.systemPrompt ?? recommendationIngestionPrompt(config),
     model: opts.model ?? config.model,
     tools,
-    maxIterations: opts.maxIterations,
+    timeoutMs: opts.timeoutMs,
   });
 
   // The factory never owns the Notion connection: it either uses the shared

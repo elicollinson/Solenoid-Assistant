@@ -4,6 +4,7 @@ import type { ChatMessage } from "./providers";
 export interface ReviewContext {
   readonly output: string;
   readonly messages: readonly ChatMessage[];
+  readonly signal?: AbortSignal;
 }
 
 /** The small contract the agent loop needs to accept or revise a candidate. */

@@ -31,7 +31,7 @@ export function createGraderReviewer(options: GraderReviewerOptions): Reviewer {
 
   return {
     name: "Grader",
-    async review({ output, messages }): Promise<GradeResult> {
+    async review({ output, messages, signal }): Promise<GradeResult> {
       const promptMessages = [...messages];
       const prompt =
         typeof configuredPrompt === "function"
@@ -43,6 +43,7 @@ export function createGraderReviewer(options: GraderReviewerOptions): Reviewer {
         tools: [],
         think: options.thinkOnStructured ? (options.think ?? true) : false,
         format,
+        signal,
       });
 
       try {

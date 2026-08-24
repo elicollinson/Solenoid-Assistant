@@ -23,6 +23,23 @@ export function safeJson(v: unknown): string {
   }
 }
 
+/** Serialize a transcript for tracing without provider-native or image bytes. */
+export function safeMessagesJson(messages: ChatMessage[]): string {
+  return safeJson(
+    messages.map(({ images, raw: _raw, ...message }) => ({
+      ...message,
+      ...(images?.length
+        ? {
+            images: images.map((image) => ({
+              mimeType: image.mimeType,
+              base64Length: image.data.length,
+            })),
+          }
+        : {}),
+    })),
+  );
+}
+
 // Run `fn` inside an active span of the given OpenInference kind. The span is
 // set as the active context (AsyncLocalStorage), so nested spans and log
 // events attach to it automatically. Errors are recorded and rethrown.
@@ -67,6 +84,7 @@ export async function withSpanKind<T>(
 // which Phoenix renders in place of content — reasoning must never displace
 // the answer in the UI.
 const MESSAGE_REASONING = "message.reasoning";
+const MESSAGE_FINISH_REASON = "message.finish_reason";
 
 // Reasoning traces can run to thousands of tokens; enough to diagnose a turn
 // is enough to store.
@@ -84,6 +102,25 @@ function messageAttributes(prefix: string, m: ChatMessage): Attributes {
       m.thinking.length > MAX_REASONING_CHARS
         ? `${m.thinking.slice(0, MAX_REASONING_CHARS)}… [truncated ${m.thinking.length - MAX_REASONING_CHARS} chars]`
         : m.thinking;
+  }
+  if (m.finishReason) {
+    attrs[`${prefix}.${MESSAGE_FINISH_REASON}`] = m.finishReason;
+  }
+  if (m.images?.length) {
+    let contentIndex = 0;
+    if (m.content) {
+      const contentPrefix = `${prefix}.${SemanticConventions.MESSAGE_CONTENTS}.${contentIndex++}`;
+      attrs[`${contentPrefix}.${SemanticConventions.MESSAGE_CONTENT_TYPE}`] = "text";
+      attrs[`${contentPrefix}.${SemanticConventions.MESSAGE_CONTENT_TEXT}`] = m.content;
+    }
+    for (const image of m.images) {
+      const contentPrefix = `${prefix}.${SemanticConventions.MESSAGE_CONTENTS}.${contentIndex++}`;
+      attrs[`${contentPrefix}.${SemanticConventions.MESSAGE_CONTENT_TYPE}`] = "image";
+      // Keep image payloads out of Phoenix while retaining enough metadata to
+      // diagnose multimodal requests.
+      attrs[`${contentPrefix}.${SemanticConventions.MESSAGE_CONTENT_IMAGE}.${SemanticConventions.IMAGE_URL}`] =
+        `data:${image.mimeType};base64,[omitted ${image.data.length} chars]`;
+    }
   }
   m.toolCalls?.forEach((c, j) => {
     const t = `${prefix}.${SemanticConventions.MESSAGE_TOOL_CALLS}.${j}`;
@@ -113,6 +150,8 @@ export function llmRequestAttributes(opts: ChatOptions, providerName: string): A
     [SemanticConventions.LLM_INVOCATION_PARAMETERS]: safeJson({
       think: opts.think,
       format: opts.format?.name,
+      turn: opts.turn,
+      phase: opts.phase,
     }),
   };
   opts.tools.forEach((t, i) => {

@@ -30,8 +30,8 @@ export interface CreateClassifierAgentOptions {
   systemPrompt?: string;
   /** Override the model. */
   model?: string;
-  /** Override max tool-calling iterations. */
-  maxIterations?: number;
+  /** Whole-run timeout. Defaults to fifteen minutes. */
+  timeoutMs?: number;
   /** Runtime dependency override, primarily for app composition and tests. */
   config?: RuntimeConfig;
 }
@@ -73,7 +73,7 @@ export async function createClassifierAgent(
       systemPrompt: opts.systemPrompt ?? classifierWithSearchPrompt,
       model: opts.model ?? config.model,
       tools,
-      maxIterations: opts.maxIterations,
+      timeoutMs: opts.timeoutMs,
     });
     return agentResource(agent, () => mcpClient.close());
   } catch (error) {

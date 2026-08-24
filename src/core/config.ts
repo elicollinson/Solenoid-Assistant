@@ -14,6 +14,7 @@ const runtimeConfigSchema = z.object({
   OLLAMA_API_KEY: optionalEnvString,
   OPENAI_BASE_URL: optionalEnvString,
   OPENAI_API_KEY: optionalEnvString,
+  STRUCTURED_OUTPUT_STRATEGY: z.enum(["native", "two-stage"]).optional(),
   PHOENIX_TRACING_ENABLED: optionalEnvString.default("true"),
   PHOENIX_COLLECTOR_ENDPOINT: optionalEnvString.default("http://localhost:6006"),
   PHOENIX_PROJECT_NAME: optionalEnvString.default("solenoid-assistant"),
@@ -31,6 +32,7 @@ export interface RuntimeConfig {
   llmProvider: "ollama" | "openai";
   model: string;
   imageModel: string;
+  structuredOutputStrategy: "native" | "two-stage";
   ollama: {
     host: string;
     apiKey?: string;
@@ -63,11 +65,24 @@ export function loadRuntimeConfig(
   env: Record<string, string | undefined> = process.env,
 ): RuntimeConfig {
   const parsed = runtimeConfigSchema.parse(env);
+  const ollamaCloud = (() => {
+    if (parsed.LLM_PROVIDER !== "ollama") return false;
+    try {
+      return new URL(parsed.OLLAMA_API_URL).hostname === "ollama.com";
+    } catch {
+      return false;
+    }
+  })();
   return {
     port: parsed.PORT,
     llmProvider: parsed.LLM_PROVIDER,
     model: parsed.MODEL,
     imageModel: parsed.IMAGE_MODEL ?? parsed.MODEL,
+    // Ollama Cloud does not reliably combine reasoning and constrained
+    // structured output. Local Ollama and OpenAI-compatible servers such as
+    // LM Studio use the native, single-run strategy by default.
+    structuredOutputStrategy:
+      parsed.STRUCTURED_OUTPUT_STRATEGY ?? (ollamaCloud ? "two-stage" : "native"),
     ollama: {
       host: parsed.OLLAMA_API_URL,
       ...(parsed.OLLAMA_API_KEY ? { apiKey: parsed.OLLAMA_API_KEY } : {}),

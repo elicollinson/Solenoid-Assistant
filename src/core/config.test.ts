@@ -9,6 +9,7 @@ describe("loadRuntimeConfig", () => {
     expect(config.model).toBe("glm-5.2");
     expect(config.imageModel).toBe("glm-5.2");
     expect(config.ollama.host).toBe("https://ollama.com");
+    expect(config.structuredOutputStrategy).toBe("two-stage");
   });
 
   test("normalizes blank optional values and validates the port", () => {
@@ -30,6 +31,21 @@ describe("loadRuntimeConfig", () => {
     expect(config.openai.apiKey).toBe("lm-studio");
     expect(config.model).toBe("qwen/qwen3.5-9b");
     expect(config.imageModel).toBe("qwen/qwen3.5-9b");
+    expect(config.structuredOutputStrategy).toBe("native");
+  });
+
+  test("selects structured-output behavior by backend with an explicit override", () => {
+    expect(
+      loadRuntimeConfig({ OLLAMA_API_URL: "http://localhost:11434" })
+        .structuredOutputStrategy,
+    ).toBe("native");
+    expect(
+      loadRuntimeConfig({
+        LLM_PROVIDER: "openai",
+        OPENAI_BASE_URL: "http://localhost:1234/v1",
+        STRUCTURED_OUTPUT_STRATEGY: "two-stage",
+      }).structuredOutputStrategy,
+    ).toBe("two-stage");
   });
 
   test("requires all Notion data source ids only when requested", () => {

@@ -46,6 +46,7 @@ The application reads and validates runtime settings through `src/core/config.ts
 | `OLLAMA_API_KEY` | unset | Ollama Cloud authentication |
 | `OPENAI_BASE_URL` | unset | OpenAI-compatible endpoint, such as LM Studio `/v1` |
 | `OPENAI_API_KEY` | `lm-studio` fallback | OpenAI-compatible authentication |
+| `STRUCTURED_OUTPUT_STRATEGY` | backend-dependent | Override `native` or `two-stage` schema completion |
 | `PHOENIX_TRACING_ENABLED` | `true` | Trace export |
 | `PHOENIX_COLLECTOR_ENDPOINT` | `http://localhost:6006` | Phoenix collector |
 | `PHOENIX_PROJECT_NAME` | `solenoid-assistant` | Phoenix project |
@@ -72,6 +73,12 @@ and vision requests share the existing provider implementation. When LM Studio
 has **Require Authentication** enabled, generate a token in Server Settings and
 set it as `OPENAI_API_KEY`; `lm-studio` is only a placeholder for servers with
 authentication disabled.
+
+Agent runs have a fifteen-minute deadline by default. LM Studio and local Ollama
+use native reasoning plus schema submission in one run. Ollama Cloud defaults
+to a two-stage path: an unconstrained reasoning/tool pass followed by a
+reasoning-disabled schema serialization pass. Set `STRUCTURED_OUTPUT_STRATEGY`
+only when a compatible backend needs an explicit override.
 
 ## HTTP endpoints
 

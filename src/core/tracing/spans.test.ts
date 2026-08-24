@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { inputMessageAttributes, outputMessageAttributes } from "./spans";
+import {
+  inputMessageAttributes,
+  outputMessageAttributes,
+  safeMessagesJson,
+} from "./spans";
 import type { ChatMessage } from "../providers";
 
 const assistant = (over: Partial<ChatMessage> = {}): ChatMessage => ({
@@ -52,5 +56,33 @@ describe("reasoning on LLM spans", () => {
 
     expect(attrs["llm.input_messages.1.message.reasoning"]).toBe("pondering");
     expect(attrs).not.toHaveProperty("llm.input_messages.0.message.reasoning");
+  });
+
+  test("records multimodal metadata without storing base64 image bytes", () => {
+    const attrs = inputMessageAttributes([
+      {
+        role: "user",
+        content: "inspect",
+        images: [{ mimeType: "image/png", data: "secret-base64" }],
+      },
+    ]);
+    const serialized = JSON.stringify(attrs);
+    expect(serialized).toContain("image/png");
+    expect(serialized).toContain("omitted 13 chars");
+    expect(serialized).not.toContain("secret-base64");
+    expect(safeMessagesJson([
+      {
+        role: "user",
+        content: "inspect",
+        images: [{ mimeType: "image/png", data: "secret-base64" }],
+      },
+    ])).not.toContain("secret-base64");
+  });
+
+  test("records the normalized finish reason", () => {
+    const attrs = outputMessageAttributes(
+      assistant({ content: "partial", finishReason: "length" }),
+    );
+    expect(attrs["llm.output_messages.0.message.finish_reason"]).toBe("length");
   });
 });

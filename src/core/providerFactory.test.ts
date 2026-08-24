@@ -4,7 +4,9 @@ import { createChatProvider, createOpenAIClient } from "./providerFactory";
 
 describe("providerFactory", () => {
   test("keeps Ollama as the default provider", () => {
-    expect(createChatProvider(loadRuntimeConfig({})).providerName).toBe("ollama");
+    const provider = createChatProvider(loadRuntimeConfig({}));
+    expect(provider.providerName).toBe("ollama");
+    expect(provider.structuredOutputStrategy).toBe("two-stage");
   });
 
   test("creates an OpenAI-compatible provider for LM Studio", () => {
@@ -13,6 +15,7 @@ describe("providerFactory", () => {
       OPENAI_BASE_URL: "http://192.168.0.187:1234/v1",
     });
     expect(createChatProvider(config).providerName).toBe("openai");
+    expect(createChatProvider(config).structuredOutputStrategy).toBe("native");
     expect(createOpenAIClient({}, config).baseURL).toBe("http://192.168.0.187:1234/v1");
   });
 

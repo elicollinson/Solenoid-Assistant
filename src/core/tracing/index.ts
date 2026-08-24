@@ -5,6 +5,7 @@ export { initTracing, shutdownTracing, tracingEnabled } from "./init";
 export {
   withSpanKind,
   safeJson,
+  safeMessagesJson,
   inputMessageAttributes,
   outputMessageAttributes,
   llmRequestAttributes,

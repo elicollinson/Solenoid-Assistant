@@ -2,7 +2,7 @@ import { Agent } from "../core/rawAgent";
 import { createGraderReviewer } from "./graderReviewer";
 import { createReadImessagesTool, type ReadWindow } from "../tools/imessage";
 import { getTimeTool } from "../tools/time";
-import { createChatProvider } from "../core/providerFactory";
+import { createModelRoutes } from "../core/providerFactory";
 import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 
 /**
@@ -17,12 +17,15 @@ export function createImessageIntakeAgent(
   window?: ReadWindow,
   config: RuntimeConfig = loadRuntimeConfig(),
 ): Agent {
-  const client = createChatProvider(config);
+  const routes = createModelRoutes(config);
+  const primary = routes[0];
   return new Agent({
     name: "imessage-intake",
-    client,
-    model: config.model,
+    routes,
     tools: [createReadImessagesTool(window), getTimeTool],
-    reviewers: [createGraderReviewer({ client, model: config.model })],
+    reviewers: [createGraderReviewer({
+      client: primary.client,
+      model: primary.model,
+    })],
   });
 }

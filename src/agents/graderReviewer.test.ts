@@ -31,8 +31,7 @@ function reviewedAgent(client: ScriptedProvider, graderPrompt?: string | ((vars:
   messages: ChatMessage[];
 }) => string)): Agent {
   return new Agent({
-    client,
-    model: "test-model",
+    routes: [{ client, model: "test-model" }],
     reviewers: [createGraderReviewer({ client, model: "test-model", graderPrompt })],
   });
 }
@@ -67,12 +66,12 @@ describe("grader reviewer", () => {
     });
   });
 
-  test("retains base-agent structured-output blank retries", async () => {
+  test("retains base-agent structured-output continuation", async () => {
     const client = new ScriptedProvider(["", '{"ok":true}', passingGrade]);
 
     expect(await reviewedAgent(client).run("write it", z.object({ ok: z.boolean() }))).toEqual({
       ok: true,
     });
-    expect(client.calls[1]?.at(-1)?.content).toContain("JSON object");
+    expect(client.calls[1]?.at(-1)?.content).toContain("submit_result");
   });
 });

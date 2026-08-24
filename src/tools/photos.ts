@@ -166,7 +166,7 @@ export interface DescribeScreenshotsParams {
   schema?: z.ZodType;
   /** Where iCloud-only screenshots get downloaded to. */
   workDir?: string;
-  /** Parallel in-flight vision requests. Default 4. */
+  /** Parallel in-flight vision requests. Default 1 for local inference. */
   concurrency?: number;
   /** Vision model options (model name, host, API key). */
   vision?: VisionOptions;
@@ -205,7 +205,7 @@ export async function describeScreenshots(
     prompt = DEFAULT_VISION_PROMPT,
     schema = ScreenshotDescriptionSchema,
     workDir = path.join(process.cwd(), ".screenshots"),
-    concurrency = 4,
+    concurrency = 1,
     vision = {},
     onProgress,
   } = params;
@@ -262,6 +262,7 @@ export async function describeScreenshots(
   });
   let done = 0;
   let failed = 0;
+  const visionQueueStartedAt = Date.now();
 
   const results = await mapWithConcurrency(
     photos,
@@ -295,6 +296,10 @@ export async function describeScreenshots(
       }
 
       try {
+        log.debug("describeScreenshots: vision item dequeued", {
+          uuid: photo.uuid,
+          queueDurationMs: Date.now() - visionQueueStartedAt,
+        });
         const description = await describeImage(
           filePath,
           prompt,
@@ -420,11 +425,13 @@ export interface ClassifyScreenshotsResult {
 
 /** Zod schema for the optional vision model configuration (matches VisionOptions). */
 const visionOptionsSchema = z.object({
-  provider: z.enum(["ollama", "openai"]).optional(),
+  provider: z.enum(["ollama", "openai", "openrouter"]).optional(),
   model: z.string().optional(),
   host: z.string().optional(),
   baseURL: z.string().optional(),
   apiKey: z.string().optional(),
+  structuredOutputStrategy: z.enum(["native", "two-stage"]).optional(),
+  timeoutMs: z.number().positive().optional(),
 });
 
 /**
@@ -441,7 +448,7 @@ export const classifyScreenshotsParamsSchema = z.object({
   limit: z.number().min(1).max(500).optional(),
   /** Where iCloud-only screenshots get downloaded to. */
   workDir: z.string().optional(),
-  /** Parallel in-flight vision requests. Default 4. */
+  /** Parallel in-flight vision requests. Default 1 for local inference. */
   concurrency: z.number().min(1).optional(),
   /** Vision model options (model name, host, API key). */
   vision: visionOptionsSchema.optional(),
@@ -483,7 +490,7 @@ export async function classifyScreenshots(
     fromTime,
     limit = 50,
     workDir = path.join(process.cwd(), ".screenshots"),
-    concurrency = 4,
+    concurrency = 1,
     vision = {},
   } = params;
 

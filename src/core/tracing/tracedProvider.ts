@@ -9,7 +9,7 @@ import {
   inputMessageAttributes,
   llmRequestAttributes,
   outputMessageAttributes,
-  safeJson,
+  safeMessagesJson,
   withSpanKind,
 } from "./spans";
 
@@ -25,7 +25,7 @@ export function tracedChat(
     {
       ...llmRequestAttributes(opts, providerName),
       ...inputMessageAttributes(messages),
-      [SemanticConventions.INPUT_VALUE]: safeJson(messages),
+      [SemanticConventions.INPUT_VALUE]: safeMessagesJson(messages),
       [SemanticConventions.INPUT_MIME_TYPE]: "application/json",
     },
     async (span) => {
@@ -45,6 +45,7 @@ export function tracedChat(
         ...(msg.usage?.totalTokens != null
           ? { [SemanticConventions.LLM_TOKEN_COUNT_TOTAL]: msg.usage.totalTokens }
           : {}),
+        ...(msg.finishReason ? { "llm.finish_reason": msg.finishReason } : {}),
       });
       return msg;
     },
@@ -54,9 +55,11 @@ export function tracedChat(
 export class TracedChatProvider implements ChatProvider {
   readonly traced = true;
   readonly providerName: string;
+  readonly structuredOutputStrategy;
 
   constructor(private readonly inner: ChatProvider) {
     this.providerName = inner.providerName ?? inner.constructor.name;
+    this.structuredOutputStrategy = inner.structuredOutputStrategy;
   }
 
   chat(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage> {

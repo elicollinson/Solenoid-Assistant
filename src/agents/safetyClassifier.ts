@@ -1,6 +1,6 @@
 
 import { Agent } from "../core/rawAgent";
-import { createChatProvider } from "../core/providerFactory";
+import { createModelRoutes } from "../core/providerFactory";
 import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 
 export function createSafetyClassifierAgent(
@@ -8,8 +8,7 @@ export function createSafetyClassifierAgent(
 ): Agent {
   return new Agent({
     name: "safety-classifier",
-    client: createChatProvider(config),
-    model: config.model,
+    routes: createModelRoutes(config),
   });
 }
 

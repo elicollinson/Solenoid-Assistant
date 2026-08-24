@@ -1,23 +1,39 @@
 // Provider adapters: one normalized chat interface, three backends.
 // Tool definitions stay in the OpenAI-style function shape (ollama's `Tool`
 // type, produced by defineTool) — each adapter converts to its wire format.
-import { Ollama, type Message as OllamaMessage, type Tool as OllamaTool } from "ollama";
+import {
+  Ollama,
+  type ChatResponse as OllamaChatResponse,
+  type Message as OllamaMessage,
+  type Tool as OllamaTool,
+} from "ollama";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { tracedChat } from "./tracing/tracedProvider";
 import type { FunctionToolDefinition } from "./tools";
 
 export type ThinkLevel = boolean | "low" | "medium" | "high";
+export type StructuredOutputStrategy = "native" | "two-stage";
+
+export interface ChatImage {
+  /** Raw base64 payload, without a data-URL prefix. */
+  data: string;
+  mimeType: string;
+}
 
 export interface ToolCall {
   id: string;
   name: string;
-  arguments: unknown; // always a parsed object, never a JSON string
+  // Parsed object when valid; malformed provider JSON is preserved so the
+  // schema/tool boundary can return repair feedback on the next turn.
+  arguments: unknown;
 }
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
+  /** Multimodal image parts attached to a user message. */
+  images?: ChatImage[];
   thinking?: string;
   toolCalls?: ToolCall[]; // assistant messages only
   toolCallId?: string; // tool messages only
@@ -29,12 +45,24 @@ export interface ChatMessage {
   // Token counts for this call, normalized across providers (assistant
   // messages only). Surfaced onto LLM spans as llm.token_count.*.
   usage?: TokenUsage;
+  /** Provider stop signal, normalized without discarding the native value. */
+  finishReason?: string;
 }
 
 export interface TokenUsage {
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+}
+
+function parseToolArguments(raw: string): unknown {
+  try {
+    return JSON.parse(raw || "{}");
+  } catch {
+    // Preserve malformed arguments so the tool/schema boundary can reject
+    // them and return actionable feedback to the model on the next turn.
+    return raw;
+  }
 }
 
 // A provider-agnostic structured-output request. `schema` is plain JSON schema
@@ -53,6 +81,9 @@ export interface ChatOptions {
   tools: FunctionToolDefinition[];
   think?: ThinkLevel;
   format?: OutputFormat;
+  signal?: AbortSignal;
+  turn?: number;
+  phase?: "work" | "serialize";
 }
 
 export interface ChatProvider {
@@ -62,6 +93,8 @@ export interface ChatProvider {
   // True when the provider already emits its own LLM spans (BaseChatProvider
   // subclasses). Prevents double-wrapping by traceProvider().
   readonly traced?: boolean;
+  /** How schema-constrained tasks should be completed on this backend. */
+  readonly structuredOutputStrategy?: StructuredOutputStrategy;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +108,10 @@ export interface ChatProvider {
 export abstract class BaseChatProvider implements ChatProvider {
   abstract readonly providerName: string;
   readonly traced = true;
+
+  constructor(
+    readonly structuredOutputStrategy: StructuredOutputStrategy = "native",
+  ) {}
 
   chat(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage> {
     return tracedChat(this.providerName, messages, opts, () => this.chatInner(messages, opts));
@@ -90,8 +127,11 @@ export abstract class BaseChatProvider implements ChatProvider {
 export class OllamaProvider extends BaseChatProvider {
   readonly providerName = "ollama";
 
-  constructor(private readonly client: Ollama) {
-    super();
+  constructor(
+    private readonly client: Ollama,
+    options?: { structuredOutputStrategy?: StructuredOutputStrategy },
+  ) {
+    super(options?.structuredOutputStrategy);
   }
 
   protected async chatInner(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage> {
@@ -99,48 +139,89 @@ export class OllamaProvider extends BaseChatProvider {
     // Belt and braces: local Ollama enforces `format` via constrained decoding,
     // but Ollama Cloud silently ignores it (docs: "Ollama's Cloud platform does
     // not currently support structured outputs"), so also instruct the model.
-    // The appended message is a request, not a constraint, so on Cloud the model
-    // can still return prose, fenced JSON, or nothing at all. Blank replies are
-    // retried in Agent.loop, prose/fences are recovered by extractJson, and
-    // Agent.effectiveThink sends think:false on schema-constrained calls so the
-    // reasoning channel (where the JSON was disappearing to) never opens.
+    // The appended message is a request, not a decoding constraint, so the
+    // shared loop still validates and repairs the result. Ollama Cloud reaches
+    // this only during its reasoning-disabled serialization phase.
     if (opts.format) {
       ollamaMessages.push({
         role: "system",
         content: `Respond with a single JSON object matching this JSON schema, and nothing else — no markdown, no code fences, no commentary:\n${JSON.stringify(opts.format.schema)}`,
       });
     }
-    const res = await this.client.chat({
+    // Stream even though the normalized provider returns one message. The
+    // Ollama client only exposes per-request cancellation for streamed calls,
+    // which lets the five-minute agent deadline actually stop server work.
+    const stream = await this.client.chat({
       model: opts.model,
       messages: ollamaMessages,
       tools: opts.tools as OllamaTool[],
       think: opts.think,
       format: opts.format?.schema, // ollama constrains decoding to the schema
+      stream: true,
     });
-
-    const msg = res.message;
+    if (opts.signal?.aborted) {
+      stream.abort();
+      throw opts.signal.reason instanceof Error
+        ? opts.signal.reason
+        : new Error("Ollama request aborted");
+    }
+    const onAbort = () => stream.abort();
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    let final: OllamaChatResponse | undefined;
+    let content = "";
+    let thinking = "";
+    const nativeToolCalls: NonNullable<OllamaMessage["tool_calls"]> = [];
+    try {
+      for await (const chunk of stream) {
+        final = chunk;
+        content += chunk.message.content ?? "";
+        thinking += chunk.message.thinking ?? "";
+        if (chunk.message.tool_calls?.length) {
+          nativeToolCalls.push(...chunk.message.tool_calls);
+        }
+      }
+    } finally {
+      opts.signal?.removeEventListener("abort", onAbort);
+    }
+    if (opts.signal?.aborted) {
+      throw opts.signal.reason instanceof Error
+        ? opts.signal.reason
+        : new Error("Ollama request aborted");
+    }
+    if (!final) throw new Error("Ollama returned no response chunks");
+    const raw: OllamaMessage = {
+      role: "assistant",
+      content,
+      ...(thinking ? { thinking } : {}),
+      ...(nativeToolCalls.length ? { tool_calls: nativeToolCalls } : {}),
+    };
     return {
       role: "assistant",
-      content: msg.content,
-      thinking: msg.thinking,
-      toolCalls: msg.tool_calls?.map((c, i) => ({
+      content,
+      thinking: thinking || undefined,
+      toolCalls: nativeToolCalls.map((c, i) => ({
         id: `call_${i}`, // ollama tool calls carry no id; synthesize one
         name: c.function.name,
         arguments: c.function.arguments,
       })),
-      raw: msg,
+      raw,
       usage: {
-        promptTokens: res.prompt_eval_count,
-        completionTokens: res.eval_count,
-        totalTokens: (res.prompt_eval_count ?? 0) + (res.eval_count ?? 0),
+        promptTokens: final.prompt_eval_count,
+        completionTokens: final.eval_count,
+        totalTokens: (final.prompt_eval_count ?? 0) + (final.eval_count ?? 0),
       },
+      finishReason: final.done_reason,
     };
   }
 
   private toOllama(m: ChatMessage): OllamaMessage {
     if (m.role === "assistant" && m.raw) return m.raw as OllamaMessage;
     if (m.role === "tool") return { role: "tool", tool_name: m.toolName, content: m.content };
-    return { role: m.role, content: m.content };
+    return {
+      role: m.role,
+      content: m.content,
+      ...(m.images?.length ? { images: m.images.map((image) => image.data) } : {}),
+    };
   }
 }
 
@@ -149,10 +230,13 @@ export class OllamaProvider extends BaseChatProvider {
 // ---------------------------------------------------------------------------
 
 export class OpenAIProvider extends BaseChatProvider {
-  readonly providerName = "openai";
+  readonly providerName: string = "openai";
 
-  constructor(private readonly client: OpenAI) {
-    super();
+  constructor(
+    private readonly client: OpenAI,
+    options?: { structuredOutputStrategy?: StructuredOutputStrategy },
+  ) {
+    super(options?.structuredOutputStrategy);
   }
 
   protected async chatInner(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage> {
@@ -165,34 +249,38 @@ export class OpenAIProvider extends BaseChatProvider {
         content: `Respond with a single JSON object matching this JSON schema, and nothing else — no markdown, no code fences, no commentary:\n${JSON.stringify(opts.format.schema)}`,
       });
     }
-    const res = await this.client.chat.completions.create({
-      model: opts.model,
-      messages: openaiMessages,
-      tools: opts.tools.length
-        ? (opts.tools as OpenAI.Chat.Completions.ChatCompletionTool[])
-        : undefined,
-      // A bare `true` uses the backend default. `false` maps to the OpenAI-
-      // compatible `none` value (LM Studio uses this to disable reasoning).
-      ...(opts.think === false
-        ? { reasoning_effort: "none" as const }
-        : typeof opts.think === "string"
-          ? { reasoning_effort: opts.think }
-          : {}),
-      ...(opts.format
-        ? {
-            response_format: {
-              type: "json_schema" as const,
-              json_schema: {
-                name: opts.format.name,
-                schema: opts.format.schema,
-                ...(opts.format.strict !== undefined ? { strict: opts.format.strict } : {}),
+    const res = await this.client.chat.completions.create(
+      {
+        model: opts.model,
+        messages: openaiMessages,
+        tools: opts.tools.length
+          ? (opts.tools as OpenAI.Chat.Completions.ChatCompletionTool[])
+          : undefined,
+        // A bare `true` uses the backend default. `false` maps to the OpenAI-
+        // compatible `none` value (LM Studio uses this to disable reasoning).
+        ...(opts.think === false
+          ? { reasoning_effort: "none" as const }
+          : typeof opts.think === "string"
+            ? { reasoning_effort: opts.think }
+            : {}),
+        ...(opts.format
+          ? {
+              response_format: {
+                type: "json_schema" as const,
+                json_schema: {
+                  name: opts.format.name,
+                  schema: opts.format.schema,
+                  ...(opts.format.strict !== undefined ? { strict: opts.format.strict } : {}),
+                },
               },
-            },
-          }
-        : {}),
-    });
+            }
+          : {}),
+      },
+      { signal: opts.signal },
+    );
 
-    const msg = res.choices[0]?.message;
+    const choice = res.choices[0];
+    const msg = choice?.message;
     if (!msg) throw new Error("OpenAI returned no choices");
     const reasoningContent = (msg as unknown as { reasoning_content?: unknown })
       .reasoning_content;
@@ -205,7 +293,7 @@ export class OpenAIProvider extends BaseChatProvider {
         .map((c) => ({
           id: c.id,
           name: c.function.name,
-          arguments: JSON.parse(c.function.arguments || "{}"),
+          arguments: parseToolArguments(c.function.arguments),
         })),
       raw: msg,
       usage: {
@@ -213,6 +301,7 @@ export class OpenAIProvider extends BaseChatProvider {
         completionTokens: res.usage?.completion_tokens,
         totalTokens: res.usage?.total_tokens,
       },
+      finishReason: choice.finish_reason ?? undefined,
     };
   }
 
@@ -223,8 +312,27 @@ export class OpenAIProvider extends BaseChatProvider {
     if (m.role === "tool") {
       return { role: "tool", tool_call_id: m.toolCallId ?? "", content: m.content };
     }
+    if (m.role === "user" && m.images?.length) {
+      return {
+        role: "user",
+        content: [
+          ...(m.content ? [{ type: "text" as const, text: m.content }] : []),
+          ...m.images.map((image) => ({
+            type: "image_url" as const,
+            image_url: {
+              url: `data:${image.mimeType};base64,${image.data}`,
+            },
+          })),
+        ],
+      };
+    }
     return { role: m.role, content: m.content };
   }
+}
+
+/** OpenAI-compatible adapter labeled separately in logs and traces. */
+export class OpenRouterProvider extends OpenAIProvider {
+  override readonly providerName = "openrouter";
 }
 
 // ---------------------------------------------------------------------------
@@ -237,9 +345,12 @@ export class AnthropicProvider extends BaseChatProvider {
 
   constructor(
     private readonly client: Anthropic,
-    options?: { maxTokens?: number },
+    options?: {
+      maxTokens?: number;
+      structuredOutputStrategy?: StructuredOutputStrategy;
+    },
   ) {
-    super();
+    super(options?.structuredOutputStrategy);
     this.maxTokens = options?.maxTokens ?? 16000;
   }
 
@@ -249,33 +360,36 @@ export class AnthropicProvider extends BaseChatProvider {
       .map((m) => m.content)
       .join("\n\n");
 
-    const res = await this.client.messages.create({
-      model: opts.model,
-      max_tokens: this.maxTokens,
-      ...(system ? { system } : {}),
-      messages: this.toAnthropic(messages),
-      tools: opts.tools.map((t) => ({
-        name: t.function.name,
-        description: t.function.description,
-        input_schema: t.function.parameters as Anthropic.Tool.InputSchema,
-      })),
-      ...(opts.think
-        ? {
-            thinking: { type: "adaptive" as const, display: "summarized" as const },
-          }
-        : {}),
-      // effort and format share the single output_config param.
-      ...(typeof opts.think === "string" || opts.format
-        ? {
-            output_config: {
-              ...(typeof opts.think === "string" ? { effort: opts.think } : {}),
-              ...(opts.format
-                ? { format: { type: "json_schema" as const, schema: opts.format.schema } }
-                : {}),
-            },
-          }
-        : {}),
-    });
+    const res = await this.client.messages.create(
+      {
+        model: opts.model,
+        max_tokens: this.maxTokens,
+        ...(system ? { system } : {}),
+        messages: this.toAnthropic(messages),
+        tools: opts.tools.map((t) => ({
+          name: t.function.name,
+          description: t.function.description,
+          input_schema: t.function.parameters as Anthropic.Tool.InputSchema,
+        })),
+        ...(opts.think
+          ? {
+              thinking: { type: "adaptive" as const, display: "summarized" as const },
+            }
+          : {}),
+        // effort and format share the single output_config param.
+        ...(typeof opts.think === "string" || opts.format
+          ? {
+              output_config: {
+                ...(typeof opts.think === "string" ? { effort: opts.think } : {}),
+                ...(opts.format
+                  ? { format: { type: "json_schema" as const, schema: opts.format.schema } }
+                  : {}),
+              },
+            }
+          : {}),
+      },
+      { signal: opts.signal },
+    );
 
     const usage: TokenUsage = {
       promptTokens: res.usage.input_tokens,
@@ -289,6 +403,7 @@ export class AnthropicProvider extends BaseChatProvider {
         content: "The request was declined by the model's safety system.",
         raw: res.content,
         usage,
+        finishReason: res.stop_reason ?? undefined,
       };
     }
 
@@ -311,6 +426,7 @@ export class AnthropicProvider extends BaseChatProvider {
       toolCalls: toolCalls.length ? toolCalls : undefined,
       raw: res.content, // must be echoed back unchanged (thinking blocks included)
       usage,
+      finishReason: res.stop_reason ?? undefined,
     };
   }
 
@@ -346,7 +462,26 @@ export class AnthropicProvider extends BaseChatProvider {
         continue;
       }
 
-      out.push({ role: "user", content: m.content });
+      if (m.images?.length) {
+        out.push({
+          role: "user",
+          content: [
+            ...(m.content
+              ? [{ type: "text" as const, text: m.content }]
+              : []),
+            ...m.images.map((image) => ({
+              type: "image" as const,
+              source: {
+                type: "base64" as const,
+                media_type: image.mimeType as Anthropic.Base64ImageSource["media_type"],
+                data: image.data,
+              },
+            })),
+          ],
+        });
+      } else {
+        out.push({ role: "user", content: m.content });
+      }
     }
     return out;
   }

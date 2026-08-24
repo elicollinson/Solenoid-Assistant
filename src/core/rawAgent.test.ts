@@ -1,36 +1,49 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
-import { Agent, MAX_BLANK_RETRIES, extractJson } from "./rawAgent";
+import {
+  Agent,
+  AgentTimeoutError,
+  DEFAULT_AGENT_TIMEOUT_MS,
+  extractJson,
+  type ModelRouteInputChain,
+} from "./rawAgent";
 import { defineTool } from "./tools";
-import type { ChatMessage, ChatOptions, ChatProvider } from "./providers";
+import type {
+  ChatMessage,
+  ChatOptions,
+  ChatProvider,
+  StructuredOutputStrategy,
+} from "./providers";
 import type { Reviewer } from "./reviewer";
 
-// Replays a fixed list of assistant turns, one per chat() call, and records the
-// message history it was handed each time. `traced: true` skips the tracing
-// decorator so these tests exercise the loop alone.
 class ScriptedProvider implements ChatProvider {
   readonly providerName = "scripted";
   readonly traced = true;
   readonly calls: ChatMessage[][] = [];
   readonly optsSeen: ChatOptions[] = [];
 
-  constructor(private readonly script: Partial<ChatMessage>[]) {}
+  constructor(
+    private readonly script: Partial<ChatMessage>[],
+    readonly structuredOutputStrategy: StructuredOutputStrategy = "native",
+  ) {}
 
   async chat(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage> {
-    this.calls.push(messages.map((m) => ({ ...m })));
+    this.calls.push(messages.map((message) => ({ ...message })));
     this.optsSeen.push(opts);
     const next = this.script[this.calls.length - 1];
     if (!next) throw new Error(`no scripted response for call ${this.calls.length}`);
-    return { role: "assistant", content: "", ...next };
+    return { role: "assistant", content: "", finishReason: "stop", ...next };
   }
 }
 
 const schema = z.object({ ok: z.boolean() });
+const routes = (client: ChatProvider, model = "test-model") =>
+  [{ client, model }] as const;
 
-const agentWith = (script: Partial<ChatMessage>[]) => {
-  const client = new ScriptedProvider(script);
-  return { client, agent: new Agent({ client, model: "test-model" }) };
-};
+const submit = (args: unknown, id = "submit-1"): Partial<ChatMessage> => ({
+  finishReason: "tool_calls",
+  toolCalls: [{ id, name: "submit_result", arguments: args }],
+});
 
 describe("extractJson", () => {
   test("returns empty string when there is nothing to parse", () => {
@@ -38,122 +51,239 @@ describe("extractJson", () => {
     expect(extractJson("   \n\t ")).toBe("");
   });
 
-  test("passes through bare JSON", () => {
-    expect(extractJson('{"ok":true}')).toBe('{"ok":true}');
-    expect(extractJson("  [1,2]  ")).toBe("[1,2]");
-  });
-
   test("peels off code fences and surrounding prose", () => {
     expect(extractJson('```json\n{"ok":true}\n```')).toBe('{"ok":true}');
-    expect(extractJson('Here you go: {"ok":true} — hope that helps')).toBe('{"ok":true}');
+    expect(extractJson('Here you go: {"ok":true} — done')).toBe('{"ok":true}');
   });
 });
 
-describe("blank structured response", () => {
-  test("retries and succeeds when the model recovers", async () => {
-    const { client, agent } = agentWith([{ content: "" }, { content: '{"ok":true}' }]);
+describe("native structured trajectory", () => {
+  test("allows a reasoning-only turn before terminal structured submission", async () => {
+    const client = new ScriptedProvider([
+      { thinking: "I should inspect this carefully." },
+      submit({ ok: true }),
+    ]);
+    const agent = new Agent({ routes: routes(client) });
 
     expect(await agent.run("grade it", schema)).toEqual({ ok: true });
     expect(client.calls).toHaveLength(2);
-
-    // The retry nudge is appended as a user turn before the second call. It is
-    // deliberately positive-only — naming failure modes ("no reasoning") was
-    // observed to prime models into reproducing them.
-    const second = client.calls[1]!;
-    expect(second.at(-1)).toMatchObject({ role: "user" });
-    expect(second.at(-1)!.content).toContain("JSON object");
-    expect(second.at(-1)!.content).not.toMatch(/no reasoning|no prose|no code fences/);
+    expect(client.calls[1]?.at(-1)?.content).toContain("submit_result");
+    expect(client.optsSeen.map((options) => options.think)).toEqual([true, true]);
+    expect(client.optsSeen[0]?.tools.some((tool) => tool.function.name === "submit_result"))
+      .toBe(true);
   });
 
-  test("reasoning-only turns are retried too", async () => {
-    const { agent } = agentWith([
-      { content: "", thinking: "Let me average the scores..." },
-      { content: '{"ok":false}' },
-    ]);
-
-    expect(await agent.run("grade it", schema)).toEqual({ ok: false });
-  });
-
-  test("gives up after MAX_BLANK_RETRIES with a distinct error, not a parse error", async () => {
-    const blanks = Array.from({ length: MAX_BLANK_RETRIES + 1 }, () => ({ content: "" }));
-    const { client, agent } = agentWith(blanks);
-
-    // The regression this guards: an empty response used to reach JSON.parse
-    // and surface as "JSON Parse error: Unexpected EOF" with a blank
-    // "Model output:" tail, pointing at the parser instead of the empty turn.
-    const err = await agent.run("grade it", schema).catch((e: Error) => e);
-    expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).toContain("Structured output missing");
-    expect((err as Error).message).not.toContain("Unexpected EOF");
-    expect((err as Error).message).not.toContain("failed validation");
-
-    expect(client.calls).toHaveLength(MAX_BLANK_RETRIES + 1);
-  });
-
-  test("malformed-but-present output still reports as a validation failure", async () => {
-    const { agent } = agentWith([{ content: '{"ok":"not-a-boolean"}' }]);
-
-    const err = await agent.run("grade it", schema).catch((e: Error) => e);
-    expect((err as Error).message).toContain("failed validation");
-    expect((err as Error).message).not.toContain("Structured output missing");
-  });
-
-  test("unschemad calls are not retried — an empty answer is a valid string", async () => {
-    const { client, agent } = agentWith([{ content: "" }]);
-
-    expect(await agent.run("just chat")).toBe("");
-    expect(client.calls).toHaveLength(1);
-  });
-
-  test("retry nudges also go out without thinking enabled", async () => {
-    const { client, agent } = agentWith([{ content: "" }, { content: '{"ok":true}' }]);
-
-    await agent.run("grade it", schema);
-    expect(client.optsSeen.map((o) => o.think)).toEqual([false, false]);
-  });
-
-  test("blank turns do not consume the maxIterations budget", async () => {
-    // One tool round is allowed; the blank turn that follows must still get its
-    // retry rather than being cut off as though it had done work.
-    const client = new ScriptedProvider([{ content: "" }, { content: '{"ok":true}' }]);
-    const agent = new Agent({ client, model: "test-model", maxIterations: 1 });
+  test("accepts valid JSON content when a backend does not call the terminal tool", async () => {
+    const client = new ScriptedProvider([{ content: '{"ok":true}' }]);
+    const agent = new Agent({ routes: routes(client) });
 
     expect(await agent.run("grade it", schema)).toEqual({ ok: true });
   });
+
+  test("returns validation feedback and accepts a corrected submission", async () => {
+    const client = new ScriptedProvider([
+      { content: '{"ok":"yes"}' },
+      submit({ ok: false }),
+    ]);
+    const agent = new Agent({ routes: routes(client) });
+
+    expect(await agent.run("grade it", schema)).toEqual({ ok: false });
+    expect(client.calls[1]?.at(-1)?.content).toContain("required schema");
+  });
+
+  test("continues a token-limited turn instead of treating it as final", async () => {
+    const client = new ScriptedProvider([
+      { content: '{"ok":', finishReason: "length" },
+      submit({ ok: true }),
+    ]);
+    const agent = new Agent({ routes: routes(client) });
+
+    expect(await agent.run("grade it", schema)).toEqual({ ok: true });
+    expect(client.calls[1]?.at(-1)?.content).toContain("submit_result");
+  });
+
+  test("can explicitly disable reasoning for native structured work", async () => {
+    const client = new ScriptedProvider([submit({ ok: true })]);
+    const agent = new Agent({
+      routes: routes(client),
+      thinkOnStructured: false,
+    });
+
+    await agent.run("grade it", schema);
+    expect(client.optsSeen[0]?.think).toBe(false);
+  });
 });
 
-describe("think on structured calls", () => {
-  test("schema-constrained calls suppress thinking by default", async () => {
-    // With no reasoning channel open, the JSON has nowhere to go but content —
-    // this is what prevents blank structured replies at the source, rather
-    // than retrying them after the fact.
-    const { client, agent } = agentWith([{ content: '{"ok":true}' }]);
+describe("two-stage structured trajectory", () => {
+  test("reasons without constraints, then serializes without reasoning or tools", async () => {
+    const client = new ScriptedProvider(
+      [
+        { content: "The completed answer is yes." },
+        { content: '{"ok":true}' },
+      ],
+      "two-stage",
+    );
+    const agent = new Agent({ routes: routes(client) });
 
-    await agent.run("grade it", schema);
-    expect(client.optsSeen[0]!.think).toBe(false);
+    expect(await agent.run("grade it", schema)).toEqual({ ok: true });
+    expect(client.optsSeen.map((options) => options.phase)).toEqual(["work", "serialize"]);
+    expect(client.optsSeen.map((options) => options.think)).toEqual([true, false]);
+    expect(client.optsSeen[0]?.format).toBeUndefined();
+    expect(client.optsSeen[1]?.format?.name).toBe("agent_output");
+    expect(client.optsSeen[1]?.tools).toEqual([]);
+  });
+});
+
+describe("deadline and continuation", () => {
+  test("uses a five-minute default deadline", () => {
+    expect(DEFAULT_AGENT_TIMEOUT_MS).toBe(300_000);
   });
 
-  test("unschemad calls keep the agent's think level", async () => {
-    const { client, agent } = agentWith([{ content: "hi" }]);
+  test("returns a typed timeout when a provider call never completes", async () => {
+    const client: ChatProvider = {
+      traced: true,
+      providerName: "hanging",
+      chat: async () => new Promise<ChatMessage>(() => {}),
+    };
+    const agent = new Agent({ routes: routes(client), timeoutMs: 20 });
 
-    await agent.run("just chat");
-    expect(client.optsSeen[0]!.think).toBe(true);
+    const error = await agent.run("wait forever").catch((caught) => caught);
+    expect(error).toBeInstanceOf(AgentTimeoutError);
+    expect((error as AgentTimeoutError).code).toBe("AGENT_TIMEOUT");
+    expect((error as AgentTimeoutError).timeoutMs).toBe(20);
   });
 
-  test("thinkOnStructured opts a structured call back into thinking", async () => {
-    const client = new ScriptedProvider([{ content: '{"ok":true}' }]);
-    const agent = new Agent({ client, model: "test-model", thinkOnStructured: true });
+  test("retries transient provider failures within the same deadline", async () => {
+    let calls = 0;
+    const client: ChatProvider = {
+      traced: true,
+      providerName: "flaky",
+      chat: async () => {
+        calls++;
+        if (calls === 1) {
+          throw Object.assign(new Error("temporarily unavailable"), { status: 503 });
+        }
+        return {
+          role: "assistant",
+          content: "",
+          ...submit({ ok: true }),
+        };
+      },
+    };
+    const agent = new Agent({ routes: routes(client), timeoutMs: 1_000 });
 
-    await agent.run("grade it", schema);
-    expect(client.optsSeen[0]!.think).toBe(true);
+    expect(await agent.run("grade it", schema)).toEqual({ ok: true });
+    expect(calls).toBe(2);
+  });
+
+  test("keeps an unstructured empty answer valid when there is no reasoning", async () => {
+    const client = new ScriptedProvider([{ content: "" }]);
+    const agent = new Agent({ routes: routes(client) });
+    expect(await agent.run("say nothing")).toBe("");
+  });
+
+  test("advances through every route from the original input until one succeeds", async () => {
+    const primary = new ScriptedProvider([{ finishReason: "refusal" }]);
+    const second = new ScriptedProvider([{ finishReason: "refusal" }]);
+    const third = new ScriptedProvider([submit({ ok: true })]);
+    let reviewedRoute: string | undefined;
+    const reviewer: Reviewer = {
+      name: "route-check",
+      review: async ({ client, model }) => {
+        reviewedRoute = `${client?.providerName}/${model}`;
+        return { passed: true, feedback: "ok" };
+      },
+    };
+    const agent = new Agent({
+      routes: [
+        { client: primary, model: "primary-model" },
+        { client: second, model: "second-model" },
+        { client: third, model: "third-model" },
+      ],
+      reviewers: [reviewer],
+    });
+
+    expect(await agent.run("grade it", schema)).toEqual({ ok: true });
+    expect(primary.optsSeen[0]?.model).toBe("primary-model");
+    expect(second.optsSeen[0]?.model).toBe("second-model");
+    expect(third.optsSeen[0]?.model).toBe("third-model");
+    expect(third.calls[0]?.some((message) => message.finishReason === "refusal"))
+      .toBe(false);
+    expect(third.calls[0]?.some((message) => message.content === "grade it"))
+      .toBe(true);
+    expect(reviewedRoute).toBe("scripted/third-model");
+  });
+
+  test("gives each route attempt a fresh deadline", async () => {
+    const primary: ChatProvider = {
+      traced: true,
+      providerName: "hanging-primary",
+      chat: async () => new Promise<ChatMessage>(() => {}),
+    };
+    const fallback = new ScriptedProvider([{ content: "recovered" }]);
+    const agent = new Agent({
+      routes: [
+        { client: primary, model: "primary-model" },
+        { client: fallback, model: "fallback-model" },
+      ],
+      timeoutMs: 20,
+    });
+
+    expect(await agent.run("recover this")).toBe("recovered");
+  });
+});
+
+describe("tools and reviewers", () => {
+  test("does not impose a predefined tool-turn count", async () => {
+    const tool = defineTool({
+      name: "increment",
+      description: "Increment",
+      schema: z.object({ value: z.number() }),
+      execute: ({ value }) => value + 1,
+    });
+    const toolTurn = (id: string, value: number): Partial<ChatMessage> => ({
+      finishReason: "tool_calls",
+      toolCalls: [{ id, name: "increment", arguments: { value } }],
+    });
+    const client = new ScriptedProvider([
+      toolTurn("one", 1),
+      toolTurn("two", 2),
+      toolTurn("three", 3),
+      { content: "done" },
+    ]);
+    const agent = new Agent({ routes: routes(client), tools: [tool] });
+
+    expect(await agent.run("keep going")).toBe("done");
+    expect(client.calls).toHaveLength(4);
+  });
+
+  test("revises failed candidates with reviewer feedback", async () => {
+    const client = new ScriptedProvider([
+      { content: "first draft" },
+      { content: "revised draft" },
+    ]);
+    const reviewer: Reviewer = {
+      name: "Quality",
+      review: async ({ output }) => ({
+        passed: output === "revised draft",
+        feedback: output === "revised draft" ? "Looks good" : "Be more specific",
+      }),
+    };
+    const agent = new Agent({ routes: routes(client), reviewers: [reviewer] });
+
+    expect(await agent.run("write it")).toBe("revised draft");
+    expect(client.calls[1]?.at(-1)?.content).toContain("Be more specific");
   });
 });
 
 describe("agent construction", () => {
-  test("rejects invalid iteration limits and duplicate component names", () => {
+  test("rejects invalid deadlines and duplicate components", () => {
     const client = new ScriptedProvider([]);
-    expect(() => new Agent({ client, model: "test", maxIterations: 0 })).toThrow(
-      /positive integer/,
+    expect(() => new Agent({
+      routes: [] as unknown as ModelRouteInputChain,
+    })).toThrow(/At least one model route/);
+    expect(() => new Agent({ routes: routes(client, "test"), timeoutMs: 0 })).toThrow(
+      /positive finite/,
     );
 
     const tool = defineTool({
@@ -162,43 +292,18 @@ describe("agent construction", () => {
       schema: z.object({}),
       execute: () => null,
     });
-    expect(() => new Agent({ client, model: "test", tools: [tool, tool] })).toThrow(
+    expect(() => new Agent({ routes: routes(client, "test"), tools: [tool, tool] })).toThrow(
       /already registered/,
     );
 
-    const reviewer: Reviewer = {
-      name: "same",
-      review: async () => ({ passed: true, feedback: "" }),
-    };
-    expect(() => new Agent({ client, model: "test", reviewers: [reviewer, reviewer] })).toThrow(
-      /already registered/,
-    );
-  });
-});
-
-describe("optional reviewers", () => {
-  test("revises failed candidates with reviewer feedback and returns a passing revision", async () => {
-    const client = new ScriptedProvider([
-      { content: "first draft" },
-      { content: "revised draft" },
-    ]);
-    const outputs: string[] = [];
-    const reviewer: Reviewer = {
-      name: "Quality",
-      review: async ({ output }) => {
-        outputs.push(output);
-        return output === "revised draft"
-          ? { passed: true, feedback: "Looks good" }
-          : { passed: false, feedback: "Be more specific" };
-      },
-    };
-    const agent = new Agent({ client, model: "test", reviewers: [reviewer] });
-
-    expect(await agent.run("write it")).toBe("revised draft");
-    expect(outputs).toEqual(["first draft", "revised draft"]);
-    expect(client.calls[1]?.at(-1)).toEqual({
-      role: "system",
-      content: "Quality Feedback: Be more specific",
+    const reserved = defineTool({
+      name: "submit_result",
+      description: "reserved",
+      schema: z.object({}),
+      execute: () => null,
     });
+    expect(() => new Agent({ routes: routes(client, "test"), tools: [reserved] })).toThrow(
+      /reserved/,
+    );
   });
 });

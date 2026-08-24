@@ -1,9 +1,13 @@
-import type { ChatMessage } from "./providers";
+import type { ChatMessage, ChatProvider } from "./providers";
 
 /** The candidate and conversation snapshot supplied to an agent reviewer. */
 export interface ReviewContext {
   readonly output: string;
   readonly messages: readonly ChatMessage[];
+  readonly signal?: AbortSignal;
+  /** Provider route used by the candidate-producing attempt. */
+  readonly client?: ChatProvider;
+  readonly model?: string;
 }
 
 /** The small contract the agent loop needs to accept or revise a candidate. */

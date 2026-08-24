@@ -9,13 +9,46 @@ describe("loadRuntimeConfig", () => {
     expect(config.model).toBe("glm-5.2");
     expect(config.imageModel).toBe("glm-5.2");
     expect(config.ollama.host).toBe("https://ollama.com");
+    expect(config.structuredOutputStrategy).toBe("two-stage");
+    expect(config.openrouter.baseUrl).toBe("https://openrouter.ai/api/v1");
+    expect(config.openrouter.model).toBe("google/gemma-4-31b-it");
+    expect(config.openrouter.apiKey).toBeUndefined();
+    expect(config.modelRoutes).toEqual([{
+      provider: "ollama",
+      model: "glm-5.2",
+      structuredOutputStrategy: "two-stage",
+    }]);
   });
 
   test("normalizes blank optional values and validates the port", () => {
     expect(loadRuntimeConfig({ OLLAMA_API_KEY: "" }).ollama.apiKey).toBeUndefined();
     expect(loadRuntimeConfig({ OPENAI_API_KEY: "" }).openai.apiKey).toBeUndefined();
+    expect(loadRuntimeConfig({ OPENROUTER_API_KEY: "" }).openrouter.apiKey)
+      .toBeUndefined();
     expect(() => loadRuntimeConfig({ PORT: "70000" })).toThrow();
     expect(() => loadRuntimeConfig({ LLM_PROVIDER: "unknown" })).toThrow();
+  });
+
+  test("loads an ordered, non-empty model route chain", () => {
+    const config = loadRuntimeConfig({
+      LLM_ROUTES: JSON.stringify([
+        { provider: "openai", model: "qwen/qwen3.5-9b" },
+        { provider: "openrouter", model: "google/gemma-4-31b-it:free" },
+      ]),
+      OPENROUTER_API_KEY: "openrouter-key",
+    });
+    expect(config.openrouter.apiKey).toBe("openrouter-key");
+    expect(config.llmProvider).toBe("openai");
+    expect(config.model).toBe("qwen/qwen3.5-9b");
+    expect(config.modelRoutes.map(({ provider, model }) => ({ provider, model })))
+      .toEqual([
+        { provider: "openai", model: "qwen/qwen3.5-9b" },
+        { provider: "openrouter", model: "google/gemma-4-31b-it:free" },
+      ]);
+    expect(() => loadRuntimeConfig({ LLM_ROUTES: "[]" })).toThrow();
+    expect(() => loadRuntimeConfig({ LLM_ROUTES: "not-json" })).toThrow(
+      /valid JSON/,
+    );
   });
 
   test("loads an OpenAI-compatible endpoint", () => {
@@ -30,6 +63,21 @@ describe("loadRuntimeConfig", () => {
     expect(config.openai.apiKey).toBe("lm-studio");
     expect(config.model).toBe("qwen/qwen3.5-9b");
     expect(config.imageModel).toBe("qwen/qwen3.5-9b");
+    expect(config.structuredOutputStrategy).toBe("native");
+  });
+
+  test("selects structured-output behavior by backend with an explicit override", () => {
+    expect(
+      loadRuntimeConfig({ OLLAMA_API_URL: "http://localhost:11434" })
+        .structuredOutputStrategy,
+    ).toBe("native");
+    expect(
+      loadRuntimeConfig({
+        LLM_PROVIDER: "openai",
+        OPENAI_BASE_URL: "http://localhost:1234/v1",
+        STRUCTURED_OUTPUT_STRATEGY: "two-stage",
+      }).structuredOutputStrategy,
+    ).toBe("two-stage");
   });
 
   test("requires all Notion data source ids only when requested", () => {

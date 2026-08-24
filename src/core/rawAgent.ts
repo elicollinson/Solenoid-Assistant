@@ -15,6 +15,7 @@ import {
   SemanticConventions,
   SpanStatusCode,
   safeJson,
+  safeMessagesJson,
   traceProvider,
   withSpanKind,
   type Attributes,
@@ -52,74 +53,129 @@ export function extractJson(raw: string): string {
   return trimmed;
 }
 
-// How many times a schema-constrained turn may come back with no content
-// before the agent gives up. Tracked separately from `maxIterations`, which
-// bounds completed tool or reviewer-revision rounds — a blank turn does no
-// work, so it should not consume that budget.
-export const MAX_BLANK_RETRIES = 2;
+export const DEFAULT_AGENT_TIMEOUT_MS = 5 * 60_000;
+const SUBMIT_RESULT_TOOL_NAME = "submit_result";
+
+export class AgentTimeoutError extends Error {
+  readonly code = "AGENT_TIMEOUT";
+
+  constructor(readonly timeoutMs: number) {
+    super(`Agent run timed out after ${timeoutMs}ms`);
+    this.name = "AgentTimeoutError";
+  }
+}
+
+export class AgentRunError extends Error {
+  readonly code = "AGENT_RUN_FAILED";
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AgentRunError";
+  }
+}
+
+export interface ModelRoute {
+  client: ChatProvider;
+  model: string;
+}
+
+/** Ordered route chain with its non-empty invariant represented in the type. */
+export type ModelRouteChain = readonly [ModelRoute, ...ModelRoute[]];
+
+export interface ModelRouteInput extends Omit<ModelRoute, "client"> {
+  client: ChatProvider | Ollama;
+}
+
+export type ModelRouteInputChain = readonly [ModelRouteInput, ...ModelRouteInput[]];
+
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new AgentRunError("Agent run was aborted");
+}
+
+interface LoopOptions {
+  signal: AbortSignal;
+  think: ThinkLevel;
+  phase: "work" | "serialize";
+  format?: OutputFormat;
+  schema?: z.ZodType;
+  submitResult?: boolean;
+  toolsEnabled?: boolean;
+}
 
 export interface AgentOptions {
-  // A ChatProvider (OllamaProvider | OpenAIProvider | AnthropicProvider), or a
-  // bare Ollama client which gets wrapped in OllamaProvider automatically.
-  client: ChatProvider | Ollama;
-  model: string;
+  /** Ordered, non-empty provider/model chain. Failed tasks advance one route. */
+  routes: ModelRouteInputChain;
   systemPrompt?: string;
   tools?: AgentTool[];
   reviewers?: Reviewer[];
-  maxIterations?: number | undefined;
   think?: ThinkLevel;
-  // Keep `think` on for schema-constrained calls too. Default off: on backends
-  // that don't enforce `format` (Ollama Cloud), reasoning models route the
-  // final JSON into the thinking channel and return empty content — with no
-  // reasoning channel open, the answer has nowhere to go but content. Opt in
-  // only for structured tasks that genuinely need extended reasoning.
+  // Native structured-output backends reason and submit a schema-validated
+  // result in the same run by default. Set false for models that need a terse
+  // non-reasoning structured pass. Two-stage backends always reason during the
+  // work phase and disable reasoning only for serialization.
   thinkOnStructured?: boolean;
+  /** Whole-run deadline, including model continuations and tool calls. */
+  timeoutMs?: number;
   // Name shown on the AGENT root span; defaults to the (sub)class name.
   name?: string;
 }
 
 export class Agent {
-  protected readonly client: ChatProvider;
-  protected readonly model: string;
+  protected readonly routes: readonly [
+    { client: ChatProvider; model: string },
+    ...Array<{ client: ChatProvider; model: string }>,
+  ];
   protected readonly systemPrompt: string;
   protected readonly tools = new Map<string, AgentTool>();
   protected readonly reviewers = new Map<string, Reviewer>();
-  protected readonly maxIterations: number | undefined;
   protected readonly think: ThinkLevel;
   protected readonly thinkOnStructured: boolean;
+  protected readonly timeoutMs: number;
   protected readonly name: string;
 
   constructor(opts: AgentOptions) {
-    // Built-in providers extend BaseChatProvider and trace their own chat
-    // calls; traceProvider() is a no-op for them and only wraps custom
-    // ChatProvider implementations so their LLM calls are traced too.
-    this.client = traceProvider(
-      opts.client instanceof Ollama ? new OllamaProvider(opts.client) : opts.client,
-    );
-    this.name = opts.name ?? this.constructor.name;
-    this.model = opts.model;
-    this.systemPrompt = opts.systemPrompt ?? defaultSystemPrompt();
-    if (
-      opts.maxIterations !== undefined &&
-      (!Number.isInteger(opts.maxIterations) || opts.maxIterations < 1)
-    ) {
-      throw new Error("maxIterations must be a positive integer when provided");
+    if (!opts.routes.length) {
+      throw new Error("At least one model route must be configured");
     }
-    this.maxIterations = opts.maxIterations;
+    // Built-in providers trace their own calls; traceProvider() only wraps
+    // custom providers. Normalize every route once at construction.
+    this.routes = opts.routes.map((route) => {
+      if (!route.model.trim()) throw new Error("Model route names cannot be empty");
+      return {
+        client: traceProvider(
+          route.client instanceof Ollama
+            ? new OllamaProvider(route.client)
+            : route.client,
+        ),
+        model: route.model,
+      };
+    }) as unknown as typeof this.routes;
+    this.name = opts.name ?? this.constructor.name;
+    this.systemPrompt = opts.systemPrompt ?? defaultSystemPrompt();
     this.think = opts.think ?? true;
-    this.thinkOnStructured = opts.thinkOnStructured ?? false;
+    this.thinkOnStructured = opts.thinkOnStructured ?? true;
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
+    if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0) {
+      throw new Error("timeoutMs must be a positive finite number");
+    }
     for (const t of opts.tools ?? []) this.addTool(t);
     for (const reviewer of opts.reviewers ?? []) this.addReviewer(reviewer);
     // Bind once so `agent.run` stays passable as a bare callback (the previous
     // arrow-function-field behavior) despite `run` now being an overloaded
     // method with a generic signature.
     this.run = this.run.bind(this);
+    this.runMessages = this.runMessages.bind(this);
   }
 
   // Chainable registration. `this` return type lets you do agent.addTool(a).addTool(b).
   addTool(tool: AgentTool): this {
     const name = tool.definition.function.name.trim();
     if (!name) throw new Error("Agent tools must have a non-empty name");
+    if (name === SUBMIT_RESULT_TOOL_NAME) {
+      throw new Error(`Agent tool name "${SUBMIT_RESULT_TOOL_NAME}" is reserved`);
+    }
     if (this.tools.has(name)) throw new Error(`Agent tool "${name}" is already registered`);
     this.tools.set(name, tool);
     return this;
@@ -158,53 +214,211 @@ export class Agent {
         ? (promptOrTemplate as PromptTemplate<any>)(vars)
         : promptOrTemplate;
 
+    return this.runTraced(
+      [
+        { role: "system", content: this.systemPrompt },
+        { role: "user", content: prompt },
+      ],
+      schema,
+      prompt,
+      "text/plain",
+    );
+  }
+
+  /** Run a provider-normalized multimodal transcript through the same loop. */
+  runMessages(messages: ChatMessage[]): Promise<string>;
+  runMessages<S extends z.ZodType>(
+    messages: ChatMessage[],
+    schema: S,
+  ): Promise<z.infer<S>>;
+  async runMessages(
+    messages: ChatMessage[],
+    schema?: z.ZodType,
+  ): Promise<unknown> {
+    const normalized = messages.some((message) => message.role === "system")
+      ? [...messages]
+      : [{ role: "system" as const, content: this.systemPrompt }, ...messages];
+    return this.runTraced(
+      normalized,
+      schema,
+      safeMessagesJson(normalized),
+      "application/json",
+    );
+  }
+
+  private runTraced(
+    messages: ChatMessage[],
+    schema: z.ZodType | undefined,
+    inputValue: string,
+    inputMimeType: "text/plain" | "application/json",
+  ): Promise<unknown> {
     // Traced entry: one AGENT root span per invocation. Subclasses customize
-    // behavior by overriding runInner/loop — never run — so the span (and the
-    // constructor's run binding) always stays intact.
+    // behavior by overriding runInner/loop — never run or runMessages — so the
+    // span and deadline always stay intact.
     return withSpanKind(
       "AGENT",
       this.name,
       {
-        [SemanticConventions.INPUT_VALUE]: prompt,
-        [SemanticConventions.INPUT_MIME_TYPE]: "text/plain",
+        [SemanticConventions.INPUT_VALUE]: inputValue,
+        [SemanticConventions.INPUT_MIME_TYPE]: inputMimeType,
+        "agent.timeout_ms": this.timeoutMs,
+        "agent.route_count": this.routes.length,
+        ...Object.fromEntries(this.routes.flatMap((route, index) => [
+          [`agent.routes.${index}.provider`, route.client.providerName ?? "unknown"],
+          [`agent.routes.${index}.model`, route.model],
+        ])),
         ...this.getTraceAttributes(),
       },
       async (span) => {
-        const result = await this.runInner(prompt, schema);
-        span.setAttribute(
-          SemanticConventions.OUTPUT_VALUE,
-          typeof result === "string" ? result : safeJson(result),
-        );
-        return result;
+        for (let index = 0; index < this.routes.length; index++) {
+          const route = this.routes[index]!;
+          try {
+            const result = await this.runAttempt(
+              route.client,
+              route.model,
+              messages,
+              schema,
+            );
+            span.setAttribute("agent.completed_route_index", index);
+            span.setAttribute(
+              SemanticConventions.OUTPUT_VALUE,
+              typeof result === "string" ? result : safeJson(result),
+            );
+            return result;
+          } catch (error) {
+            const nextRoute = this.routes[index + 1];
+            if (!nextRoute) throw error;
+            span.addEvent("agent.route_advanced", {
+              "route.failed_index": index,
+              "route.failed_provider": route.client.providerName ?? "unknown",
+              "route.failed_model": route.model,
+              "route.next_provider": nextRoute.client.providerName ?? "unknown",
+              "route.next_model": nextRoute.model,
+              "route.error": error instanceof Error ? error.message : String(error),
+            });
+            log.warn("[route] task failed; requeueing on the next model route", {
+              failedRouteIndex: index,
+              failedProvider: route.client.providerName ?? "unknown",
+              failedModel: route.model,
+              nextRouteIndex: index + 1,
+              nextProvider: nextRoute.client.providerName ?? "unknown",
+              nextModel: nextRoute.model,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        throw new AgentRunError("Model route chain was unexpectedly empty");
       },
     );
   }
 
-  protected async runInner(prompt: string, schema?: z.ZodType): Promise<unknown> {
-    const messages: ChatMessage[] = [
-      { role: "system", content: this.systemPrompt },
-      { role: "user", content: prompt },
-    ];
-    if (!schema) return this.loop(messages);
+  private async runAttempt(
+    client: ChatProvider,
+    model: string,
+    originalMessages: ChatMessage[],
+    schema: z.ZodType | undefined,
+  ): Promise<unknown> {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new AgentTimeoutError(this.timeoutMs)),
+      this.timeoutMs,
+    );
+    try {
+      // The loop mutates its transcript. Each provider attempt starts from the
+      // same original task rather than inheriting a failed model trajectory.
+      const messages = originalMessages.map((message) => ({
+        ...message,
+        ...(message.images ? { images: [...message.images] } : {}),
+        ...(message.toolCalls ? { toolCalls: [...message.toolCalls] } : {}),
+      }));
+      return await this.runInner(messages, schema, controller.signal, client, model);
+    } catch (error) {
+      if (controller.signal.aborted) throw abortReason(controller.signal);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
+  protected async runInner(
+    messages: ChatMessage[],
+    schema: z.ZodType | undefined,
+    signal: AbortSignal,
+    client: ChatProvider = this.routes[0].client,
+    model: string = this.routes[0].model,
+  ): Promise<unknown> {
+    if (!schema) {
+      return this.loop(messages, {
+        signal,
+        think: this.think,
+        phase: "work",
+      }, client, model);
+    }
     const format = toOutputFormat("agent_output", schema);
-    const raw = await this.loop(messages, format);
+    const strategy = client.structuredOutputStrategy ?? "native";
+    let raw: string;
+
+    if (strategy === "two-stage") {
+      const draft = await this.loop(messages, {
+        signal,
+        think: this.think,
+        phase: "work",
+      }, client, model);
+      raw = await this.loop(
+        [
+          {
+            role: "system",
+            content:
+              "Convert the supplied completed answer into the requested JSON schema. " +
+              "Preserve its facts and do not perform new research.",
+          },
+          { role: "user", content: draft },
+        ],
+        {
+          signal,
+          think: false,
+          phase: "serialize",
+          format,
+          schema,
+          toolsEnabled: false,
+        },
+        client,
+        model,
+      );
+    } else {
+      raw = await this.loop(
+        [
+          ...messages,
+          {
+            role: "system",
+            content:
+              `When the task is complete, call ${SUBMIT_RESULT_TOOL_NAME} with the final result.`,
+          },
+        ],
+        {
+          signal,
+          think: this.thinkOnStructured ? this.think : false,
+          phase: "work",
+          schema,
+          submitResult: true,
+        },
+        client,
+        model,
+      );
+    }
+
     const json = extractJson(raw);
-    // Distinct from a validation failure: there is no candidate JSON at all.
-    // Reported separately so the symptom points at the cause (a turn that
-    // produced no content) instead of at the parser.
     if (!json) {
-      throw new Error(
-        `Structured output missing: the model ended its turn without any content to parse ` +
-          `after ${MAX_BLANK_RETRIES} retries. This usually means it spent the turn on reasoning ` +
-          `instead of answering — check the message.reasoning attribute on the LLM span.`,
+      throw new AgentRunError(
+        "Structured output missing after the runner reported completion",
       );
     }
     try {
       return schema.parse(JSON.parse(json));
     } catch (err) {
-      throw new Error(
-        `Structured output failed validation: ${err instanceof Error ? err.message : String(err)}\nModel output: ${raw}`,
+      throw new AgentRunError(
+        `Structured output failed validation after the runner reported completion: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
       );
     }
   }
@@ -227,19 +441,14 @@ export class Agent {
     return withSpanKind(kind, name, attributes, fn);
   }
 
-  // The think level actually sent for a call: schema-constrained calls drop to
-  // `false` unless the agent opted in via `thinkOnStructured` (see AgentOptions).
-  // Shared so subclasses that override `loop` (or call `chat` directly with a
-  // format) apply the same rule instead of re-deriving it.
-  protected effectiveThink(format?: OutputFormat): ThinkLevel {
-    return format && !this.thinkOnStructured ? false : this.think;
-  }
-
   protected async reviewCandidate(
     messages: ChatMessage[],
+    output = messages.at(-1)?.content ?? "",
+    signal?: AbortSignal,
+    client: ChatProvider = this.routes[0].client,
+    model: string = this.routes[0].model,
   ): Promise<Array<{ name: string; result: ReviewResult }>> {
-    const output = messages.at(-1)?.content ?? "";
-    const context = { output, messages: [...messages] };
+    const context = { output, messages: [...messages], signal, client, model };
     const reviews: Array<{ name: string; result: ReviewResult }> = [];
 
     for (const [name, reviewer] of this.reviewers) {
@@ -248,7 +457,10 @@ export class Agent {
         name,
         { [SemanticConventions.INPUT_VALUE]: output },
         async (span) => {
-          const review = await reviewer.review(context);
+          const review = await this.awaitWithSignal(
+            reviewer.review(context),
+            signal ?? new AbortController().signal,
+          );
           span.setAttribute(SemanticConventions.OUTPUT_VALUE, safeJson(review));
           return review;
         },
@@ -259,59 +471,127 @@ export class Agent {
     return reviews;
   }
 
-  protected async loop(messages: ChatMessage[], format?: OutputFormat): Promise<string> {
-    const toolDefs = [...this.tools.values()].map((t) => t.definition);
-    let i = 0;
-    let blankRetries = 0;
-    while(true) {
-      const msg = await this.client.chat(messages, {
-        model: this.model,
-        tools: toolDefs,
-        think: this.effectiveThink(format),
-        format,
+  protected async loop(
+    messages: ChatMessage[],
+    options: LoopOptions,
+    client: ChatProvider = this.routes[0].client,
+    model: string = this.routes[0].model,
+  ): Promise<string> {
+    const toolDefs = options.toolsEnabled === false
+      ? []
+      : [...this.tools.values()].map((tool) => tool.definition);
+    if (options.submitResult && options.schema) {
+      const resultFormat = toOutputFormat("agent_output", options.schema);
+      toolDefs.push({
+        type: "function",
+        function: {
+          name: SUBMIT_RESULT_TOOL_NAME,
+          description: "Submit the completed, schema-valid final result.",
+          parameters: resultFormat.schema,
+        },
       });
+    }
 
-      if (msg.thinking) log.info(`\n[thinking] ${msg.thinking.slice(0, 200)}...`);
+    let turn = 0;
+    let retryDelayMs = 250;
+    while (true) {
+      if (options.signal.aborted) throw abortReason(options.signal);
+      turn++;
 
-      messages.push(msg); // keep the assistant turn (incl. its reasoning) in history
-
-      if (!msg.toolCalls?.length) {
-        // No tools requested => the model considers itself done. On a
-        // schema-constrained call that only counts if it actually produced
-        // content: backends that ignore `format` (Ollama Cloud) let a reasoning
-        // model spend the whole post-tool-result turn on `thinking` and return
-        // content: "". Re-prompt for the JSON rather than returning the empty
-        // string as a valid answer.
-        if (format && !msg.content.trim() && blankRetries < MAX_BLANK_RETRIES) {
-          blankRetries++;
-          log.warn(
-            `[retry] empty structured response, re-prompting for ${format.name} (${blankRetries}/${MAX_BLANK_RETRIES})`,
-          );
-          // Positive-only phrasing: an earlier nudge listed what to avoid
-          // ("no reasoning, no prose, no code fences") and models kept
-          // reproducing the named failure modes. State only the target shape.
-          messages.push({
-            role: "user",
-            content:
-              "Reply now with the JSON object matching the schema. Your entire " +
-              "reply is that raw JSON object, starting with { and ending with }.",
-          });
-          continue;
-        }
-        const failedReviews = (await this.reviewCandidate(messages)).filter(
-          ({ result }) => !result.passed,
+      let msg: ChatMessage;
+      try {
+        msg = await this.awaitWithSignal(
+          client.chat(messages, {
+            model,
+            tools: toolDefs,
+            think: options.think,
+            format: options.format,
+            signal: options.signal,
+            turn,
+            phase: options.phase,
+          }),
+          options.signal,
         );
-        if (!failedReviews.length) return msg.content;
-
-        messages.push({
-          role: "system",
-          content: failedReviews
-            .map(({ name, result }) => `${name} Feedback: ${result.feedback}`)
-            .join("\n"),
+        retryDelayMs = 250;
+      } catch (error) {
+        if (options.signal.aborted) throw abortReason(options.signal);
+        if (!this.isTransientProviderError(error)) throw error;
+        log.warn("[retry] transient model call failure", {
+          turn,
+          phase: options.phase,
+          retryInMs: retryDelayMs,
+          error: error instanceof Error ? error.message : String(error),
         });
-      } else {
+        await this.waitFor(retryDelayMs, options.signal);
+        retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
+        continue;
+      }
+
+      if (msg.thinking) {
+        log.info(`\n[thinking] ${msg.thinking.slice(0, 200)}...`);
+      }
+      messages.push(msg); // preserve native reasoning/tool payload for continuation
+
+      if (this.isRefusal(msg.finishReason)) {
+        throw new AgentRunError(
+          `Model declined the request (finish reason: ${msg.finishReason})`,
+        );
+      }
+
+      if (msg.toolCalls?.length) {
+        let submitted: string | undefined;
+        let submitFeedback: string | undefined;
+
         for (const call of msg.toolCalls) {
-          const output = await this.invokeTool(call.name, call.arguments);
+          if (
+            options.submitResult &&
+            options.schema &&
+            call.name === SUBMIT_RESULT_TOOL_NAME
+          ) {
+            if (msg.toolCalls.length > 1) {
+              messages.push({
+                role: "tool",
+                toolCallId: call.id,
+                toolName: call.name,
+                content:
+                  "Result deferred because this turn requested additional tools. " +
+                  "Use their results, then submit the final result in its own turn.",
+              });
+              continue;
+            }
+            const parsed = options.schema.safeParse(call.arguments);
+            if (parsed.success) {
+              submitted = JSON.stringify(parsed.data);
+              const failedReviews = (
+                await this.reviewCandidate(
+                  messages,
+                  submitted,
+                  options.signal,
+                  client,
+                  model,
+                )
+              ).filter(({ result }) => !result.passed);
+              if (!failedReviews.length) return submitted;
+              submitFeedback = failedReviews
+                .map(({ name, result }) => `${name} Feedback: ${result.feedback}`)
+                .join("\n");
+            } else {
+              submitFeedback = parsed.error.message;
+            }
+            messages.push({
+              role: "tool",
+              toolCallId: call.id,
+              toolName: call.name,
+              content: `Result rejected: ${submitFeedback}`,
+            });
+            continue;
+          }
+
+          const output = await this.invokeTool(
+            call.name,
+            call.arguments,
+            options.signal,
+          );
           messages.push({
             role: "tool",
             toolCallId: call.id,
@@ -319,13 +599,169 @@ export class Agent {
             content: output,
           });
         }
+
+        if (submitted && submitFeedback) {
+          messages.push({
+            role: "system",
+            content: submitFeedback,
+          });
+        }
+        continue;
       }
-      i++;
-      if (this.maxIterations && i >= this.maxIterations) return "Stopped: hit max iterations.";
+
+      const content = msg.content.trim();
+      if (
+        this.isIncomplete(msg.finishReason) ||
+        (!content && (Boolean(options.schema) || Boolean(msg.thinking)))
+      ) {
+        log.warn("[continue] model turn was incomplete", {
+          turn,
+          phase: options.phase,
+          finishReason: msg.finishReason ?? "unknown",
+          reasoningChars: msg.thinking?.length ?? 0,
+          contentChars: msg.content.length,
+        });
+        messages.push({
+          role: "user",
+          content: options.schema
+            ? options.submitResult
+              ? `Continue working. When complete, call ${SUBMIT_RESULT_TOOL_NAME} with the final result.`
+              : "Return the complete JSON object matching the schema."
+            : "Continue working and provide the complete final answer when ready.",
+        });
+        // A local server can occasionally return an immediate empty response.
+        // Pace those continuations so the deadline cannot turn into a hot loop.
+        if (!content && !msg.thinking) {
+          await this.waitFor(100, options.signal);
+        }
+        continue;
+      }
+
+      if (options.schema) {
+        const validation = this.validateStructured(content, options.schema);
+        if (!validation.ok) {
+          messages.push({
+            role: "user",
+            content: options.submitResult
+              ? `The candidate did not match the required schema: ${validation.error}. Continue working, then call ${SUBMIT_RESULT_TOOL_NAME}.`
+              : `The candidate did not match the required schema: ${validation.error}. Return the complete corrected JSON object.`,
+          });
+          continue;
+        }
+      }
+
+      const failedReviews = (await this.reviewCandidate(
+        messages,
+        content,
+        options.signal,
+        client,
+        model,
+      )).filter(
+        ({ result }) => !result.passed,
+      );
+      if (!failedReviews.length) return content;
+
+      messages.push({
+        role: "system",
+        content: failedReviews
+          .map(({ name, result }) => `${name} Feedback: ${result.feedback}`)
+          .join("\n"),
+      });
     }
   }
 
-  protected async invokeTool(name: string, rawArgs: unknown): Promise<string> {
+  private validateStructured(
+    raw: string,
+    schema: z.ZodType,
+  ): { ok: true } | { ok: false; error: string } {
+    const json = extractJson(raw);
+    if (!json) return { ok: false, error: "the response was empty" };
+    try {
+      schema.parse(JSON.parse(json));
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        ok: false,
+        error: message.length > 2_000 ? `${message.slice(0, 2_000)}…` : message,
+      };
+    }
+  }
+
+  private isIncomplete(finishReason: string | undefined): boolean {
+    return finishReason === "length" || finishReason === "max_tokens";
+  }
+
+  private isRefusal(finishReason: string | undefined): boolean {
+    return finishReason === "content_filter" || finishReason === "refusal";
+  }
+
+  private isTransientProviderError(error: unknown): boolean {
+    const candidate = error as {
+      status?: number;
+      statusCode?: number;
+      code?: string;
+      name?: string;
+      message?: string;
+      cause?: { code?: string };
+    };
+    const status = candidate?.status ?? candidate?.statusCode;
+    if (status === 408 || status === 409 || status === 429) return true;
+    if (typeof status === "number" && status >= 500) return true;
+    const code = candidate?.code ?? candidate?.cause?.code ?? "";
+    return [
+      "ECONNRESET",
+      "ECONNREFUSED",
+      "ETIMEDOUT",
+      "EPIPE",
+      "UND_ERR_CONNECT_TIMEOUT",
+    ].includes(code) || [
+      "TimeoutError",
+      "APIConnectionError",
+      "APIConnectionTimeoutError",
+    ].includes(candidate?.name ?? "") || (
+      candidate?.name === "TypeError" && candidate?.message?.includes("fetch failed") === true
+    );
+  }
+
+  private awaitWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+    if (signal.aborted) return Promise.reject(abortReason(signal));
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = () => reject(abortReason(signal));
+      signal.addEventListener("abort", onAbort, { once: true });
+      promise.then(
+        (value) => {
+          signal.removeEventListener("abort", onAbort);
+          resolve(value);
+        },
+        (error) => {
+          signal.removeEventListener("abort", onAbort);
+          reject(error);
+        },
+      );
+    });
+  }
+
+  private waitFor(ms: number, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.reject(abortReason(signal));
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(abortReason(signal));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  protected async invokeTool(
+    name: string,
+    rawArgs: unknown,
+    signal?: AbortSignal,
+  ): Promise<string> {
     const tool = this.tools.get(name);
     if (!tool) return `Error: unknown tool "${name}"`;
     return withSpanKind(
@@ -343,7 +779,10 @@ export class Agent {
           const args = tool.schema.parse(rawArgs); // validate at the boundary
           span.setAttribute(SemanticConventions.INPUT_VALUE, safeJson(args));
           log.info(`[tool] ${name}(${JSON.stringify(args)})`);
-          const result = await tool.execute(args);
+          const result = await this.awaitWithSignal(
+            Promise.resolve(tool.execute(args, { signal })),
+            signal ?? new AbortController().signal,
+          );
           const output = typeof result === "string" ? result : JSON.stringify(result);
           span.setAttributes({
             [SemanticConventions.OUTPUT_VALUE]: output,

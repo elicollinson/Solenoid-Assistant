@@ -10,11 +10,11 @@
 // the tools are available. The returned resource owns that connection; callers
 // close the resource when they finish using the agent.
 
-import { Agent } from "../core/rawAgent";
+import { Agent, type ModelRouteInputChain } from "../core/rawAgent";
 import { contentCardSourcingPrompt, contentCardSchema, type ContentCard } from "../prompts";
 import { connectToTavilyMcp } from "../mcp/tavilyClient";
 import { loadMcpTools, type ToolFilter } from "../mcp/adapter";
-import { createChatProvider } from "../core/providerFactory";
+import { createModelRoutes } from "../core/providerFactory";
 import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 import { agentResource, type AgentResource } from "./resource";
 
@@ -31,8 +31,10 @@ export interface CreateContentCardSourcingOptions {
   systemPrompt?: string;
   /** Override the model. */
   model?: string;
-  /** Override max tool-calling iterations. */
-  maxIterations?: number;
+  /** Override the complete ordered model route chain. */
+  routes?: ModelRouteInputChain;
+  /** Per-provider-attempt timeout. Defaults to five minutes. */
+  timeoutMs?: number;
   /** Runtime dependency override, primarily for app composition and tests. */
   config?: RuntimeConfig;
 }
@@ -66,11 +68,10 @@ export async function createContentCardSourcingAgent(
     );
     const agent = new Agent({
       name: "content-card-sourcing",
-      client: createChatProvider(config),
+      routes: opts.routes ?? createModelRoutes(config, { primaryModel: opts.model }),
       systemPrompt: opts.systemPrompt ?? contentCardSourcingPrompt,
-      model: opts.model ?? config.model,
       tools,
-      maxIterations: opts.maxIterations,
+      timeoutMs: opts.timeoutMs,
     });
     return agentResource(agent, () => mcpClient.close());
   } catch (error) {

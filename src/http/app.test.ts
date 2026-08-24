@@ -27,4 +27,20 @@ describe("HTTP app", () => {
       expect(response.status).toBe(422);
     }
   });
+
+  test("validates notion entry requests before performing a write", async () => {
+    const response = await app.handle(
+      new Request("http://localhost/notion-entry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "Test entry",
+          url: "https://example.com",
+          collection: "invalid",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(422);
+  });
 });

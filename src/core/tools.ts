@@ -18,14 +18,20 @@ export interface FunctionToolDefinition {
 export interface AgentTool<S extends z.ZodType = z.ZodType> {
   definition: FunctionToolDefinition;
   schema: S;
-  execute: (args: z.infer<S>) => unknown | Promise<unknown>;
+  execute: (
+    args: z.infer<S>,
+    context?: { signal?: AbortSignal },
+  ) => unknown | Promise<unknown>;
 }
 
 export function defineTool<S extends z.ZodType>(config: {
   name: string;
   description: string;
   schema: S;
-  execute: (args: z.infer<S>) => unknown | Promise<unknown>;
+  execute: (
+    args: z.infer<S>,
+    context?: { signal?: AbortSignal },
+  ) => unknown | Promise<unknown>;
 }): AgentTool<S> {
   return {
     schema: config.schema,

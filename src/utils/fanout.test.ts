@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
-import { Agent } from "../core/rawAgent";
+import { Agent, AgentTimeoutError } from "../core/rawAgent";
 import { fanout, fulfilled, rejected } from "./fanout";
 import type { ChatMessage, ChatProvider } from "../core/providers";
 import type { PromptTemplate } from "../prompts";
@@ -23,8 +23,13 @@ const schema = z.object({ item: z.string() });
 const prompt: PromptTemplate<{ item: string }> = ({ item }) => `grade ${item}`;
 const items = [{ item: "a" }, { item: "b" }, { item: "c" }];
 
-const agentThat = (reply: (userText: string) => Partial<ChatMessage>) =>
-  new Agent({ client: new KeyedProvider(reply), model: "test-model" });
+const agentThat = (
+  reply: (userText: string) => Partial<ChatMessage>,
+  timeoutMs?: number,
+) => new Agent({
+  routes: [{ client: new KeyedProvider(reply), model: "test-model" }],
+  timeoutMs,
+});
 
 describe("fanout", () => {
   test("one failing item no longer sinks the batch", async () => {
@@ -77,15 +82,18 @@ describe("fanout", () => {
     expect(reason.message).toBe("just a string");
   });
 
-  test("an empty structured response becomes a rejected item, not a poisoned batch", async () => {
-    const agent = agentThat((text) =>
-      text.includes("b") ? { content: "" } : { content: JSON.stringify({ item: "ok" }) },
+  test("a timed-out structured response becomes a rejected item, not a poisoned batch", async () => {
+    const agent = agentThat(
+      (text) => text.includes("b")
+        ? { content: "" }
+        : { content: JSON.stringify({ item: "ok" }) },
+      20,
     );
 
     const results = await fanout(items, agent, prompt, schema, 8);
 
     expect(fulfilled(results)).toHaveLength(2);
-    expect(rejected(results)[0]!.message).toContain("Structured output missing");
+    expect(rejected(results)[0]).toBeInstanceOf(AgentTimeoutError);
   });
 
   test("empty input yields empty output", async () => {

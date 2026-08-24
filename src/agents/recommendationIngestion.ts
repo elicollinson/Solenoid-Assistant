@@ -15,7 +15,7 @@
 // connected before the tools are available.
 
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { Agent } from "../core/rawAgent";
+import { Agent, type ModelRouteInputChain } from "../core/rawAgent";
 import {
   recommendationIngestionPrompt,
   recommendationIngestionSchema,
@@ -32,7 +32,7 @@ import {
   isNotionAuthError,
 } from "../mcp/notionCache";
 import { createNotionSearchTool } from "../notion/searchTool";
-import { createChatProvider } from "../core/providerFactory";
+import { createModelRoutes } from "../core/providerFactory";
 import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 import { agentResource, type AgentResource } from "./resource";
 
@@ -51,8 +51,10 @@ export interface CreateRecommendationIngestionOptions {
   systemPrompt?: string;
   /** Override the model. */
   model?: string;
-  /** Override max tool-calling iterations. */
-  maxIterations?: number;
+  /** Override the complete ordered model route chain. */
+  routes?: ModelRouteInputChain;
+  /** Per-provider-attempt timeout. Defaults to five minutes. */
+  timeoutMs?: number;
   /**
    * An externally-provided MCP client. When set, the caller owns the client
    * and must keep it alive (and close it when done). When omitted, the agent
@@ -131,11 +133,10 @@ export async function createRecommendationIngestionAgent(
 
   const agent = new Agent({
     name: "recommendation-ingestion",
-    client: createChatProvider(config),
+    routes: opts.routes ?? createModelRoutes(config, { primaryModel: opts.model }),
     systemPrompt: opts.systemPrompt ?? recommendationIngestionPrompt(config),
-    model: opts.model ?? config.model,
     tools,
-    maxIterations: opts.maxIterations,
+    timeoutMs: opts.timeoutMs,
   });
 
   // The factory never owns the Notion connection: it either uses the shared

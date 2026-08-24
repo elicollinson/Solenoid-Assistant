@@ -1,5 +1,5 @@
 import { Agent } from "../core/rawAgent";
-import { createChatProvider } from "../core/providerFactory";
+import { createModelRoutes } from "../core/providerFactory";
 import { loadRuntimeConfig } from "../core/config";
 import { log } from "../core/logger";
 import { createImessageIntakeAgent } from "../agents/imessageIntake";
@@ -21,8 +21,7 @@ const runtimeConfig = loadRuntimeConfig();
 
 const memoryGraderAgent = new Agent({
   name: "memory-grader",
-  client: createChatProvider(runtimeConfig),
-  model: runtimeConfig.model,
+  routes: createModelRoutes(runtimeConfig),
   systemPrompt: memoryGraderSystemPrompt,
 });
 

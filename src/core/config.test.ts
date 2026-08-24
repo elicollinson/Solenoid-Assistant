@@ -13,6 +13,13 @@ describe("loadRuntimeConfig", () => {
     expect(config.openrouter.baseUrl).toBe("https://openrouter.ai/api/v1");
     expect(config.openrouter.model).toBe("google/gemma-4-31b-it");
     expect(config.openrouter.apiKey).toBeUndefined();
+    expect(config.promptGuard).toEqual({
+      modelPath: "models/prompt-guard-2-86m",
+      device: "cpu",
+      threshold: 0.5,
+      batchSize: 16,
+      chunkOverlap: 32,
+    });
     expect(config.modelRoutes).toEqual([{
       provider: "ollama",
       model: "glm-5.2",
@@ -27,6 +34,9 @@ describe("loadRuntimeConfig", () => {
       .toBeUndefined();
     expect(() => loadRuntimeConfig({ PORT: "70000" })).toThrow();
     expect(() => loadRuntimeConfig({ LLM_PROVIDER: "unknown" })).toThrow();
+    expect(() => loadRuntimeConfig({ PROMPT_GUARD_THRESHOLD: "1.1" })).toThrow();
+    expect(() => loadRuntimeConfig({ PROMPT_GUARD_BATCH_SIZE: "0" })).toThrow();
+    expect(() => loadRuntimeConfig({ PROMPT_GUARD_DEVICE: "coreml" })).toThrow();
   });
 
   test("loads an ordered, non-empty model route chain", () => {

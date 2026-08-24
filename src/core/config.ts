@@ -19,6 +19,22 @@ const runtimeConfigSchema = z.object({
   OPENROUTER_API_KEY: optionalEnvString,
   OPENROUTER_MODEL: optionalEnvString.default("google/gemma-4-31b-it"),
   STRUCTURED_OUTPUT_STRATEGY: z.enum(["native", "two-stage"]).optional(),
+  PROMPT_GUARD_MODEL_PATH: optionalEnvString.default(
+    "models/prompt-guard-2-86m",
+  ),
+  PROMPT_GUARD_DEVICE: z.enum(["cpu", "webgpu"]).default("cpu"),
+  PROMPT_GUARD_THRESHOLD: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().min(0).max(1).default(0.5),
+  ),
+  PROMPT_GUARD_BATCH_SIZE: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().int().min(1).max(128).default(16),
+  ),
+  PROMPT_GUARD_CHUNK_OVERLAP: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().int().min(0).max(509).default(32),
+  ),
   PHOENIX_TRACING_ENABLED: optionalEnvString.default("true"),
   PHOENIX_COLLECTOR_ENDPOINT: optionalEnvString.default("http://localhost:6006"),
   PHOENIX_PROJECT_NAME: optionalEnvString.default("solenoid-assistant"),
@@ -50,6 +66,13 @@ export interface RuntimeConfig {
     baseUrl: string;
     apiKey?: string;
     model: string;
+  };
+  promptGuard: {
+    modelPath: string;
+    device: "cpu" | "webgpu";
+    threshold: number;
+    batchSize: number;
+    chunkOverlap: number;
   };
   phoenix: {
     enabled: boolean;
@@ -168,6 +191,13 @@ export function loadRuntimeConfig(
       baseUrl: parsed.OPENROUTER_BASE_URL,
       ...(parsed.OPENROUTER_API_KEY ? { apiKey: parsed.OPENROUTER_API_KEY } : {}),
       model: parsed.OPENROUTER_MODEL,
+    },
+    promptGuard: {
+      modelPath: parsed.PROMPT_GUARD_MODEL_PATH,
+      device: parsed.PROMPT_GUARD_DEVICE,
+      threshold: parsed.PROMPT_GUARD_THRESHOLD,
+      batchSize: parsed.PROMPT_GUARD_BATCH_SIZE,
+      chunkOverlap: parsed.PROMPT_GUARD_CHUNK_OVERLAP,
     },
     phoenix: {
       enabled: parsed.PHOENIX_TRACING_ENABLED !== "false",

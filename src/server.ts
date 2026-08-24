@@ -3,6 +3,7 @@ import { log } from "./core/logger";
 import { initTracing, shutdownTracing } from "./core/tracing";
 import { initNotionMcpCache, shutdownNotionMcpCache } from "./mcp/notionCache";
 import { installShutdownHandler } from "./core/shutdown";
+import { disposePromptGuard } from "./safety/promptGuard";
 
 const config = loadRuntimeConfig();
 initTracing(config);
@@ -21,6 +22,7 @@ log.info(`API docs at http://localhost:${app.server?.port}/openapi`);
 
 installShutdownHandler(async () => {
   await app.stop();
+  await disposePromptGuard();
   await shutdownNotionMcpCache();
   await shutdownTracing();
 });

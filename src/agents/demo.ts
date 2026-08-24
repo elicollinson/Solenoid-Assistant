@@ -2,14 +2,13 @@
 import { Agent } from "../core/rawAgent";
 import { createGraderReviewer } from "./graderReviewer";
 import { weatherTool, calculateTool } from "../tools/demo";
-import { createChatProvider } from "../core/providerFactory";
+import { createModelRoutes } from "../core/providerFactory";
 import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 
 export function createDemoAgent(config: RuntimeConfig = loadRuntimeConfig()): Agent {
   return new Agent({
     name: "demo-agent",
-    client: createChatProvider(config),
-    model: config.model,
+    routes: createModelRoutes(config),
     tools: [weatherTool, calculateTool],
   });
 }
@@ -17,13 +16,16 @@ export function createDemoAgent(config: RuntimeConfig = loadRuntimeConfig()): Ag
 export function createWeatherAgent(
   config: RuntimeConfig = loadRuntimeConfig(),
 ): Agent {
-  const client = createChatProvider(config);
+  const routes = createModelRoutes(config);
+  const primary = routes[0];
   return new Agent({
     name: "weather-generator-grader",
-    client,
-    model: config.model,
+    routes,
     tools: [weatherTool, calculateTool],
-    reviewers: [createGraderReviewer({ client, model: config.model })],
+    reviewers: [createGraderReviewer({
+      client: primary.client,
+      model: primary.model,
+    })],
   });
 }
 

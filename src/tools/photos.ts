@@ -425,7 +425,7 @@ export interface ClassifyScreenshotsResult {
 
 /** Zod schema for the optional vision model configuration (matches VisionOptions). */
 const visionOptionsSchema = z.object({
-  provider: z.enum(["ollama", "openai"]).optional(),
+  provider: z.enum(["ollama", "openai", "openrouter"]).optional(),
   model: z.string().optional(),
   host: z.string().optional(),
   baseURL: z.string().optional(),

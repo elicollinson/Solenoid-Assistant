@@ -31,15 +31,21 @@ export function createGraderReviewer(options: GraderReviewerOptions): Reviewer {
 
   return {
     name: "Grader",
-    async review({ output, messages, signal }): Promise<GradeResult> {
+    async review({
+      output,
+      messages,
+      signal,
+      client = options.client,
+      model = options.model,
+    }): Promise<GradeResult> {
       const promptMessages = [...messages];
       const prompt =
         typeof configuredPrompt === "function"
           ? configuredPrompt({ output, messages: promptMessages })
           : configuredPrompt;
       const format = toOutputFormat("grade", gradeScoresSchema);
-      const response = await options.client.chat([{ role: "system", content: prompt }], {
-        model: options.model,
+      const response = await client.chat([{ role: "system", content: prompt }], {
+        model,
         tools: [],
         think: options.thinkOnStructured ? (options.think ?? true) : false,
         format,

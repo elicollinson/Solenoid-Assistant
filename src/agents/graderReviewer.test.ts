@@ -31,8 +31,7 @@ function reviewedAgent(client: ScriptedProvider, graderPrompt?: string | ((vars:
   messages: ChatMessage[];
 }) => string)): Agent {
   return new Agent({
-    client,
-    model: "test-model",
+    routes: [{ client, model: "test-model" }],
     reviewers: [createGraderReviewer({ client, model: "test-model", graderPrompt })],
   });
 }

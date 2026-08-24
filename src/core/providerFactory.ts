@@ -1,13 +1,24 @@
 import OpenAI from "openai";
-import { loadRuntimeConfig, type RuntimeConfig } from "./config";
+import {
+  loadRuntimeConfig,
+  type ModelRouteConfig,
+  type RuntimeConfig,
+} from "./config";
 import { createOllamaClient } from "./ollama";
 import {
   OllamaProvider,
   OpenAIProvider,
+  OpenRouterProvider,
   type ChatProvider,
 } from "./providers";
+import type { ModelRoute, ModelRouteChain } from "./rawAgent";
 
 export interface OpenAIClientOptions {
+  baseURL?: string;
+  apiKey?: string;
+}
+
+export interface OpenRouterClientOptions {
   baseURL?: string;
   apiKey?: string;
 }
@@ -33,16 +44,68 @@ export function createOpenAIClient(
   });
 }
 
+/** Build the OpenRouter OpenAI-compatible client without credential crossover. */
+export function createOpenRouterClient(
+  options: OpenRouterClientOptions = {},
+  config: RuntimeConfig = loadRuntimeConfig(),
+): OpenAI {
+  const apiKey = options.apiKey ?? config.openrouter.apiKey;
+  if (!apiKey) throw new Error("OPENROUTER_API_KEY must be set for OpenRouter routes");
+  return new OpenAI({
+    baseURL: options.baseURL ?? config.openrouter.baseUrl,
+    apiKey,
+  });
+}
+
 /** Select the configured provider while preserving Ollama as the default. */
 export function createChatProvider(
   config: RuntimeConfig = loadRuntimeConfig(),
 ): ChatProvider {
-  if (config.llmProvider === "openai") {
+  return createModelRoute(config.modelRoutes[0]!, config).client;
+}
+
+function createProviderForRoute(
+  route: ModelRouteConfig,
+  config: RuntimeConfig,
+): ChatProvider {
+  if (route.provider === "openrouter") {
+    return new OpenRouterProvider(
+      createOpenRouterClient({}, config),
+      { structuredOutputStrategy: route.structuredOutputStrategy },
+    );
+  }
+  if (route.provider === "openai") {
     return new OpenAIProvider(createOpenAIClient({}, config), {
-      structuredOutputStrategy: config.structuredOutputStrategy,
+      structuredOutputStrategy: route.structuredOutputStrategy,
     });
   }
   return new OllamaProvider(createOllamaClient({}, config), {
-    structuredOutputStrategy: config.structuredOutputStrategy,
+    structuredOutputStrategy: route.structuredOutputStrategy,
   });
+}
+
+/** Resolve one declarative route using its provider-specific connection. */
+export function createModelRoute(
+  route: ModelRouteConfig,
+  config: RuntimeConfig = loadRuntimeConfig(),
+): ModelRoute {
+  return {
+    client: createProviderForRoute(route, config),
+    model: route.model,
+  };
+}
+
+/** Resolve the configured ordered model route chain into provider clients. */
+export function createModelRoutes(
+  config: RuntimeConfig = loadRuntimeConfig(),
+  options: { primaryModel?: string } = {},
+): ModelRouteChain {
+  const routes = config.modelRoutes.map((route, index) => ({
+    ...createModelRoute(route, config),
+    ...(index === 0 && options.primaryModel
+      ? { model: options.primaryModel }
+      : {}),
+  }));
+  if (!routes[0]) throw new Error("At least one model route must be configured");
+  return routes as unknown as ModelRouteChain;
 }

@@ -30,6 +30,19 @@ bun run start:server
 bun run start:worker
 ```
 
+Catch up screenshot-to-Notion ingestion directly, without the HTTP server's
+255-second idle-timeout ceiling:
+
+```bash
+bun run catchup:screenshots --from 2026-08-22T09:12:07-04:00
+# or
+bun run catchup:screenshots --hours-back 48 --limit 100
+```
+
+The command can run for the duration of the complete batch. Each model route
+still has its configured five-minute timeout, and failed work advances to the
+next configured route. Add `--json` to print the complete structured result.
+
 The server defaults to `http://localhost:3000`; OpenAPI documentation is available at `/openapi`.
 
 ## Runtime configuration
@@ -39,13 +52,16 @@ The application reads and validates runtime settings through `src/core/config.ts
 | Variable | Default | Used by |
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP server |
-| `LLM_PROVIDER` | `ollama` | Selects `ollama` or `openai` for all model calls |
+| `LLM_PROVIDER` | `ollama` | Legacy single route: `ollama`, `openai`, or `openrouter` |
+| `LLM_ROUTES` | unset | Ordered, non-empty JSON array of provider/model routes |
 | `MODEL` | `glm-5.2` | Text agents |
 | `IMAGE_MODEL` | `MODEL` | Screenshot vision calls |
 | `OLLAMA_API_URL` | `https://ollama.com` | Ollama client |
 | `OLLAMA_API_KEY` | unset | Ollama Cloud authentication |
 | `OPENAI_BASE_URL` | unset | OpenAI-compatible endpoint, such as LM Studio `/v1` |
 | `OPENAI_API_KEY` | `lm-studio` fallback | OpenAI-compatible authentication |
+| `OPENROUTER_API_KEY` | unset | Authentication for `openrouter` routes |
+| `OPENROUTER_MODEL` | `google/gemma-4-31b-it` | Legacy automatic OpenRouter route model |
 | `STRUCTURED_OUTPUT_STRATEGY` | backend-dependent | Override `native` or `two-stage` schema completion |
 | `PHOENIX_TRACING_ENABLED` | `true` | Trace export |
 | `PHOENIX_COLLECTOR_ENDPOINT` | `http://localhost:6006` | Phoenix collector |
@@ -65,6 +81,8 @@ OPENAI_BASE_URL=http://192.168.0.187:1234/v1
 OPENAI_API_KEY=<LM Studio API token>
 MODEL=qwen/qwen3.5-9b
 IMAGE_MODEL=qwen/qwen3.5-9b
+LLM_ROUTES=[{"provider":"openai","model":"qwen/qwen3.5-9b"},{"provider":"openrouter","model":"google/gemma-4-31b-it"}]
+OPENROUTER_API_KEY=<OpenRouter API key>
 ```
 
 The application uses LM Studio's OpenAI-compatible `/v1/chat/completions`
@@ -74,11 +92,18 @@ has **Require Authentication** enabled, generate a token in Server Settings and
 set it as `OPENAI_API_KEY`; `lm-studio` is only a placeholder for servers with
 authentication disabled.
 
-Agent runs have a fifteen-minute deadline by default. LM Studio and local Ollama
-use native reasoning plus schema submission in one run. Ollama Cloud defaults
-to a two-stage path: an unconstrained reasoning/tool pass followed by a
-reasoning-disabled schema serialization pass. Set `STRUCTURED_OUTPUT_STRATEGY`
-only when a compatible backend needs an explicit override.
+`LLM_ROUTES` is ordered and must contain at least one route. Each route gets a
+fresh five-minute attempt; when an attempt fails, the task restarts from its
+original input on the next route. The setup above tries LM Studio first and
+OpenRouter's `google/gemma-4-31b-it` second. If `LLM_ROUTES` is omitted, the
+legacy `LLM_PROVIDER` + `MODEL` pair supplies the first route and a configured
+OpenRouter key adds the previous automatic fallback route.
+
+LM Studio and local Ollama use native reasoning plus schema submission in one
+run. Ollama Cloud defaults to a two-stage path: an unconstrained reasoning/tool
+pass followed by a reasoning-disabled schema serialization pass. A route may
+set `structuredOutputStrategy` to `native` or `two-stage`; the global
+`STRUCTURED_OUTPUT_STRATEGY` remains an override for routes that omit it.
 
 ## HTTP endpoints
 

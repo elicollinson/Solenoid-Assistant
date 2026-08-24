@@ -53,7 +53,7 @@ export function extractJson(raw: string): string {
   return trimmed;
 }
 
-export const DEFAULT_AGENT_TIMEOUT_MS = 15 * 60_000;
+export const DEFAULT_AGENT_TIMEOUT_MS = 5 * 60_000;
 const SUBMIT_RESULT_TOOL_NAME = "submit_result";
 
 export class AgentTimeoutError extends Error {
@@ -74,6 +74,20 @@ export class AgentRunError extends Error {
   }
 }
 
+export interface ModelRoute {
+  client: ChatProvider;
+  model: string;
+}
+
+/** Ordered route chain with its non-empty invariant represented in the type. */
+export type ModelRouteChain = readonly [ModelRoute, ...ModelRoute[]];
+
+export interface ModelRouteInput extends Omit<ModelRoute, "client"> {
+  client: ChatProvider | Ollama;
+}
+
+export type ModelRouteInputChain = readonly [ModelRouteInput, ...ModelRouteInput[]];
+
 function abortReason(signal: AbortSignal): Error {
   return signal.reason instanceof Error
     ? signal.reason
@@ -91,10 +105,8 @@ interface LoopOptions {
 }
 
 export interface AgentOptions {
-  // A ChatProvider (OllamaProvider | OpenAIProvider | AnthropicProvider), or a
-  // bare Ollama client which gets wrapped in OllamaProvider automatically.
-  client: ChatProvider | Ollama;
-  model: string;
+  /** Ordered, non-empty provider/model chain. Failed tasks advance one route. */
+  routes: ModelRouteInputChain;
   systemPrompt?: string;
   tools?: AgentTool[];
   reviewers?: Reviewer[];
@@ -111,8 +123,10 @@ export interface AgentOptions {
 }
 
 export class Agent {
-  protected readonly client: ChatProvider;
-  protected readonly model: string;
+  protected readonly routes: readonly [
+    { client: ChatProvider; model: string },
+    ...Array<{ client: ChatProvider; model: string }>,
+  ];
   protected readonly systemPrompt: string;
   protected readonly tools = new Map<string, AgentTool>();
   protected readonly reviewers = new Map<string, Reviewer>();
@@ -122,14 +136,23 @@ export class Agent {
   protected readonly name: string;
 
   constructor(opts: AgentOptions) {
-    // Built-in providers extend BaseChatProvider and trace their own chat
-    // calls; traceProvider() is a no-op for them and only wraps custom
-    // ChatProvider implementations so their LLM calls are traced too.
-    this.client = traceProvider(
-      opts.client instanceof Ollama ? new OllamaProvider(opts.client) : opts.client,
-    );
+    if (!opts.routes.length) {
+      throw new Error("At least one model route must be configured");
+    }
+    // Built-in providers trace their own calls; traceProvider() only wraps
+    // custom providers. Normalize every route once at construction.
+    this.routes = opts.routes.map((route) => {
+      if (!route.model.trim()) throw new Error("Model route names cannot be empty");
+      return {
+        client: traceProvider(
+          route.client instanceof Ollama
+            ? new OllamaProvider(route.client)
+            : route.client,
+        ),
+        model: route.model,
+      };
+    }) as unknown as typeof this.routes;
     this.name = opts.name ?? this.constructor.name;
-    this.model = opts.model;
     this.systemPrompt = opts.systemPrompt ?? defaultSystemPrompt();
     this.think = opts.think ?? true;
     this.thinkOnStructured = opts.thinkOnStructured ?? true;
@@ -239,47 +262,100 @@ export class Agent {
         [SemanticConventions.INPUT_VALUE]: inputValue,
         [SemanticConventions.INPUT_MIME_TYPE]: inputMimeType,
         "agent.timeout_ms": this.timeoutMs,
-        "agent.structured_output_strategy":
-          this.client.structuredOutputStrategy ?? "native",
+        "agent.route_count": this.routes.length,
+        ...Object.fromEntries(this.routes.flatMap((route, index) => [
+          [`agent.routes.${index}.provider`, route.client.providerName ?? "unknown"],
+          [`agent.routes.${index}.model`, route.model],
+        ])),
         ...this.getTraceAttributes(),
       },
       async (span) => {
-        const controller = new AbortController();
-        const timer = setTimeout(
-          () => controller.abort(new AgentTimeoutError(this.timeoutMs)),
-          this.timeoutMs,
-        );
-        try {
-          const result = await this.runInner(messages, schema, controller.signal);
-          span.setAttribute(
-            SemanticConventions.OUTPUT_VALUE,
-            typeof result === "string" ? result : safeJson(result),
-          );
-          return result;
-        } catch (error) {
-          if (controller.signal.aborted) throw abortReason(controller.signal);
-          throw error;
-        } finally {
-          clearTimeout(timer);
+        for (let index = 0; index < this.routes.length; index++) {
+          const route = this.routes[index]!;
+          try {
+            const result = await this.runAttempt(
+              route.client,
+              route.model,
+              messages,
+              schema,
+            );
+            span.setAttribute("agent.completed_route_index", index);
+            span.setAttribute(
+              SemanticConventions.OUTPUT_VALUE,
+              typeof result === "string" ? result : safeJson(result),
+            );
+            return result;
+          } catch (error) {
+            const nextRoute = this.routes[index + 1];
+            if (!nextRoute) throw error;
+            span.addEvent("agent.route_advanced", {
+              "route.failed_index": index,
+              "route.failed_provider": route.client.providerName ?? "unknown",
+              "route.failed_model": route.model,
+              "route.next_provider": nextRoute.client.providerName ?? "unknown",
+              "route.next_model": nextRoute.model,
+              "route.error": error instanceof Error ? error.message : String(error),
+            });
+            log.warn("[route] task failed; requeueing on the next model route", {
+              failedRouteIndex: index,
+              failedProvider: route.client.providerName ?? "unknown",
+              failedModel: route.model,
+              nextRouteIndex: index + 1,
+              nextProvider: nextRoute.client.providerName ?? "unknown",
+              nextModel: nextRoute.model,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
+        throw new AgentRunError("Model route chain was unexpectedly empty");
       },
     );
+  }
+
+  private async runAttempt(
+    client: ChatProvider,
+    model: string,
+    originalMessages: ChatMessage[],
+    schema: z.ZodType | undefined,
+  ): Promise<unknown> {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new AgentTimeoutError(this.timeoutMs)),
+      this.timeoutMs,
+    );
+    try {
+      // The loop mutates its transcript. Each provider attempt starts from the
+      // same original task rather than inheriting a failed model trajectory.
+      const messages = originalMessages.map((message) => ({
+        ...message,
+        ...(message.images ? { images: [...message.images] } : {}),
+        ...(message.toolCalls ? { toolCalls: [...message.toolCalls] } : {}),
+      }));
+      return await this.runInner(messages, schema, controller.signal, client, model);
+    } catch (error) {
+      if (controller.signal.aborted) throw abortReason(controller.signal);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   protected async runInner(
     messages: ChatMessage[],
     schema: z.ZodType | undefined,
     signal: AbortSignal,
+    client: ChatProvider = this.routes[0].client,
+    model: string = this.routes[0].model,
   ): Promise<unknown> {
     if (!schema) {
       return this.loop(messages, {
         signal,
         think: this.think,
         phase: "work",
-      });
+      }, client, model);
     }
     const format = toOutputFormat("agent_output", schema);
-    const strategy = this.client.structuredOutputStrategy ?? "native";
+    const strategy = client.structuredOutputStrategy ?? "native";
     let raw: string;
 
     if (strategy === "two-stage") {
@@ -287,7 +363,7 @@ export class Agent {
         signal,
         think: this.think,
         phase: "work",
-      });
+      }, client, model);
       raw = await this.loop(
         [
           {
@@ -306,6 +382,8 @@ export class Agent {
           schema,
           toolsEnabled: false,
         },
+        client,
+        model,
       );
     } else {
       raw = await this.loop(
@@ -324,6 +402,8 @@ export class Agent {
           schema,
           submitResult: true,
         },
+        client,
+        model,
       );
     }
 
@@ -365,8 +445,10 @@ export class Agent {
     messages: ChatMessage[],
     output = messages.at(-1)?.content ?? "",
     signal?: AbortSignal,
+    client: ChatProvider = this.routes[0].client,
+    model: string = this.routes[0].model,
   ): Promise<Array<{ name: string; result: ReviewResult }>> {
-    const context = { output, messages: [...messages], signal };
+    const context = { output, messages: [...messages], signal, client, model };
     const reviews: Array<{ name: string; result: ReviewResult }> = [];
 
     for (const [name, reviewer] of this.reviewers) {
@@ -392,6 +474,8 @@ export class Agent {
   protected async loop(
     messages: ChatMessage[],
     options: LoopOptions,
+    client: ChatProvider = this.routes[0].client,
+    model: string = this.routes[0].model,
   ): Promise<string> {
     const toolDefs = options.toolsEnabled === false
       ? []
@@ -417,8 +501,8 @@ export class Agent {
       let msg: ChatMessage;
       try {
         msg = await this.awaitWithSignal(
-          this.client.chat(messages, {
-            model: this.model,
+          client.chat(messages, {
+            model,
             tools: toolDefs,
             think: options.think,
             format: options.format,
@@ -479,7 +563,13 @@ export class Agent {
             if (parsed.success) {
               submitted = JSON.stringify(parsed.data);
               const failedReviews = (
-                await this.reviewCandidate(messages, submitted, options.signal)
+                await this.reviewCandidate(
+                  messages,
+                  submitted,
+                  options.signal,
+                  client,
+                  model,
+                )
               ).filter(({ result }) => !result.passed);
               if (!failedReviews.length) return submitted;
               submitFeedback = failedReviews
@@ -564,6 +654,8 @@ export class Agent {
         messages,
         content,
         options.signal,
+        client,
+        model,
       )).filter(
         ({ result }) => !result.passed,
       );

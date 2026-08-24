@@ -8,6 +8,7 @@
     "start:server": "bun run src/server.ts",
     "start:worker": "bun run src/worker.ts",
     "backfill": "bun run scripts/backfill-extraction.ts",
+    "catchup:screenshots": "bun run scripts/catchup-screenshot-ingestion.ts",
     "eval:safety": "bun run scripts/eval-safety-classifier.ts",
     "eval:safety:expanded": "bun run scripts/eval-safety-classifier-expanded.ts",
     "eval:notinject": "bun run scripts/eval-pint-benchmark.ts",

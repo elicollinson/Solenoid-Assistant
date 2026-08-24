@@ -7,13 +7,17 @@ const optionalEnvString = z.preprocess(
 
 const runtimeConfigSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
-  LLM_PROVIDER: z.enum(["ollama", "openai"]).default("ollama"),
+  LLM_PROVIDER: z.enum(["ollama", "openai", "openrouter"]).default("ollama"),
+  LLM_ROUTES: optionalEnvString,
   MODEL: optionalEnvString.default("glm-5.2"),
   IMAGE_MODEL: optionalEnvString,
   OLLAMA_API_URL: optionalEnvString.default("https://ollama.com"),
   OLLAMA_API_KEY: optionalEnvString,
   OPENAI_BASE_URL: optionalEnvString,
   OPENAI_API_KEY: optionalEnvString,
+  OPENROUTER_BASE_URL: optionalEnvString.default("https://openrouter.ai/api/v1"),
+  OPENROUTER_API_KEY: optionalEnvString,
+  OPENROUTER_MODEL: optionalEnvString.default("google/gemma-4-31b-it"),
   STRUCTURED_OUTPUT_STRATEGY: z.enum(["native", "two-stage"]).optional(),
   PHOENIX_TRACING_ENABLED: optionalEnvString.default("true"),
   PHOENIX_COLLECTOR_ENDPOINT: optionalEnvString.default("http://localhost:6006"),
@@ -29,10 +33,11 @@ const runtimeConfigSchema = z.object({
 
 export interface RuntimeConfig {
   port: number;
-  llmProvider: "ollama" | "openai";
+  llmProvider: ModelProviderName;
   model: string;
   imageModel: string;
   structuredOutputStrategy: "native" | "two-stage";
+  modelRoutes: [ModelRouteConfig, ...ModelRouteConfig[]];
   ollama: {
     host: string;
     apiKey?: string;
@@ -40,6 +45,11 @@ export interface RuntimeConfig {
   openai: {
     baseUrl?: string;
     apiKey?: string;
+  };
+  openrouter: {
+    baseUrl: string;
+    apiKey?: string;
+    model: string;
   };
   phoenix: {
     enabled: boolean;
@@ -61,28 +71,91 @@ export interface RuntimeConfig {
   };
 }
 
+export type ModelProviderName = "ollama" | "openai" | "openrouter";
+
+export interface ModelRouteConfig {
+  provider: ModelProviderName;
+  model: string;
+  structuredOutputStrategy: "native" | "two-stage";
+}
+
+const modelRouteInputSchema = z.object({
+  provider: z.enum(["ollama", "openai", "openrouter"]),
+  model: z.string().trim().min(1),
+  structuredOutputStrategy: z.enum(["native", "two-stage"]).optional(),
+});
+
+function defaultStructuredOutputStrategy(
+  provider: ModelProviderName,
+  ollamaHost: string,
+): "native" | "two-stage" {
+  if (provider !== "ollama") return "native";
+  try {
+    return new URL(ollamaHost).hostname === "ollama.com" ? "two-stage" : "native";
+  } catch {
+    return "native";
+  }
+}
+
+function parseModelRoutes(
+  raw: string,
+  globalStrategy: "native" | "two-stage" | undefined,
+  ollamaHost: string,
+): [ModelRouteConfig, ...ModelRouteConfig[]] {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `LLM_ROUTES must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const routes = z.array(modelRouteInputSchema).min(1).parse(json);
+  return routes.map((route) => ({
+    provider: route.provider,
+    model: route.model,
+    structuredOutputStrategy:
+      route.structuredOutputStrategy ??
+      globalStrategy ??
+      defaultStructuredOutputStrategy(route.provider, ollamaHost),
+  })) as [ModelRouteConfig, ...ModelRouteConfig[]];
+}
+
 export function loadRuntimeConfig(
   env: Record<string, string | undefined> = process.env,
 ): RuntimeConfig {
   const parsed = runtimeConfigSchema.parse(env);
-  const ollamaCloud = (() => {
-    if (parsed.LLM_PROVIDER !== "ollama") return false;
-    try {
-      return new URL(parsed.OLLAMA_API_URL).hostname === "ollama.com";
-    } catch {
-      return false;
-    }
-  })();
+  const legacyPrimaryRoute: ModelRouteConfig = {
+    provider: parsed.LLM_PROVIDER,
+    model: parsed.MODEL,
+    structuredOutputStrategy:
+      parsed.STRUCTURED_OUTPUT_STRATEGY ??
+      defaultStructuredOutputStrategy(parsed.LLM_PROVIDER, parsed.OLLAMA_API_URL),
+  };
+  const modelRoutes: [ModelRouteConfig, ...ModelRouteConfig[]] = parsed.LLM_ROUTES
+    ? parseModelRoutes(
+        parsed.LLM_ROUTES,
+        parsed.STRUCTURED_OUTPUT_STRATEGY,
+        parsed.OLLAMA_API_URL,
+      )
+    : [
+        legacyPrimaryRoute,
+        ...(parsed.OPENROUTER_API_KEY && parsed.LLM_PROVIDER !== "openrouter"
+          ? [{
+              provider: "openrouter" as const,
+              model: parsed.OPENROUTER_MODEL,
+              structuredOutputStrategy: "native" as const,
+            }]
+          : []),
+      ];
+  const primaryRoute = modelRoutes[0]!;
   return {
     port: parsed.PORT,
-    llmProvider: parsed.LLM_PROVIDER,
-    model: parsed.MODEL,
-    imageModel: parsed.IMAGE_MODEL ?? parsed.MODEL,
-    // Ollama Cloud does not reliably combine reasoning and constrained
-    // structured output. Local Ollama and OpenAI-compatible servers such as
-    // LM Studio use the native, single-run strategy by default.
-    structuredOutputStrategy:
-      parsed.STRUCTURED_OUTPUT_STRATEGY ?? (ollamaCloud ? "two-stage" : "native"),
+    llmProvider: primaryRoute.provider,
+    model: primaryRoute.model,
+    imageModel: parsed.IMAGE_MODEL ?? primaryRoute.model,
+    structuredOutputStrategy: primaryRoute.structuredOutputStrategy,
+    modelRoutes,
     ollama: {
       host: parsed.OLLAMA_API_URL,
       ...(parsed.OLLAMA_API_KEY ? { apiKey: parsed.OLLAMA_API_KEY } : {}),
@@ -90,6 +163,11 @@ export function loadRuntimeConfig(
     openai: {
       ...(parsed.OPENAI_BASE_URL ? { baseUrl: parsed.OPENAI_BASE_URL } : {}),
       ...(parsed.OPENAI_API_KEY ? { apiKey: parsed.OPENAI_API_KEY } : {}),
+    },
+    openrouter: {
+      baseUrl: parsed.OPENROUTER_BASE_URL,
+      ...(parsed.OPENROUTER_API_KEY ? { apiKey: parsed.OPENROUTER_API_KEY } : {}),
+      model: parsed.OPENROUTER_MODEL,
     },
     phoenix: {
       enabled: parsed.PHOENIX_TRACING_ENABLED !== "false",

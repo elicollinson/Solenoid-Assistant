@@ -150,7 +150,7 @@ export class OllamaProvider extends BaseChatProvider {
     }
     // Stream even though the normalized provider returns one message. The
     // Ollama client only exposes per-request cancellation for streamed calls,
-    // which lets the fifteen-minute agent deadline actually stop server work.
+    // which lets the five-minute agent deadline actually stop server work.
     const stream = await this.client.chat({
       model: opts.model,
       messages: ollamaMessages,
@@ -230,7 +230,7 @@ export class OllamaProvider extends BaseChatProvider {
 // ---------------------------------------------------------------------------
 
 export class OpenAIProvider extends BaseChatProvider {
-  readonly providerName = "openai";
+  readonly providerName: string = "openai";
 
   constructor(
     private readonly client: OpenAI,
@@ -328,6 +328,11 @@ export class OpenAIProvider extends BaseChatProvider {
     }
     return { role: m.role, content: m.content };
   }
+}
+
+/** OpenAI-compatible adapter labeled separately in logs and traces. */
+export class OpenRouterProvider extends OpenAIProvider {
+  override readonly providerName = "openrouter";
 }
 
 // ---------------------------------------------------------------------------

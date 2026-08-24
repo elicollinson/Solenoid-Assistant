@@ -11,19 +11,27 @@ import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 import { z } from "zod";
 import pLimit from "p-limit";
+import { Ollama } from "ollama";
 import {
   Agent,
   DEFAULT_AGENT_TIMEOUT_MS,
+  type ModelRouteInputChain,
 } from "../core/rawAgent";
 import { log } from "../core/logger";
 import { createOllamaClient } from "../core/ollama";
 import { loadRuntimeConfig } from "../core/config";
-import { createOpenAIClient } from "../core/providerFactory";
-import { OllamaProvider, OpenAIProvider } from "../core/providers";
+import {
+  createModelRoute,
+  createOpenAIClient,
+  createOpenRouterClient,
+} from "../core/providerFactory";
+import { OllamaProvider, OpenAIProvider, OpenRouterProvider } from "../core/providers";
 
 export interface VisionOptions {
+  /** Override the complete ordered model route chain. */
+  routes?: ModelRouteInputChain;
   /** Provider override. Defaults to `LLM_PROVIDER`. */
-  provider?: "ollama" | "openai";
+  provider?: "ollama" | "openai" | "openrouter";
   /**
    * Model name. Defaults to `process.env.IMAGE_MODEL`, falling back to
    * `process.env.MODEL` — set IMAGE_MODEL to a vision-capable cloud model.
@@ -37,7 +45,7 @@ export interface VisionOptions {
   apiKey?: string;
   /** Override native vs. two-stage structured output behavior. */
   structuredOutputStrategy?: "native" | "two-stage";
-  /** Whole vision-run timeout. Defaults to fifteen minutes per image. */
+  /** Per-provider-attempt timeout. Defaults to five minutes per image. */
   timeoutMs?: number;
 }
 
@@ -76,8 +84,13 @@ export async function describeImage<S extends z.ZodType>(
   opts: VisionOptions = {},
 ): Promise<z.infer<S>> {
   const config = loadRuntimeConfig();
-  const provider = opts.provider ?? config.llmProvider;
-  const model = opts.model ?? config.imageModel;
+  const explicitClient = opts.routes?.[0].client;
+  const provider = explicitClient
+    ? explicitClient instanceof Ollama
+      ? "ollama"
+      : explicitClient.providerName ?? explicitClient.constructor.name
+    : opts.provider ?? config.llmProvider;
+  const model = opts.routes?.[0].model ?? opts.model ?? config.imageModel;
 
   const imageBuffer = await readFile(imagePath);
   const base64 = imageBuffer.toString("base64");
@@ -92,27 +105,46 @@ export async function describeImage<S extends z.ZodType>(
   });
 
   try {
-    const structuredOutputStrategy =
-      opts.structuredOutputStrategy ?? config.structuredOutputStrategy;
-    const chatProvider = provider === "openai"
-      ? new OpenAIProvider(
-          createOpenAIClient(
-            { baseURL: opts.baseURL, apiKey: opts.apiKey },
-            config,
-          ),
-          { structuredOutputStrategy },
-        )
-      : new OllamaProvider(
-          createOllamaClient(
-            { host: opts.host, apiKey: opts.apiKey },
-            config,
-          ),
-          { structuredOutputStrategy },
-        );
+    let routes: ModelRouteInputChain;
+    if (opts.routes) {
+      routes = opts.routes;
+    } else {
+      const structuredOutputStrategy =
+        opts.structuredOutputStrategy ?? config.structuredOutputStrategy;
+      const chatProvider = provider === "openai"
+        ? new OpenAIProvider(
+            createOpenAIClient(
+              { baseURL: opts.baseURL, apiKey: opts.apiKey },
+              config,
+            ),
+            { structuredOutputStrategy },
+          )
+        : provider === "openrouter"
+          ? new OpenRouterProvider(
+              createOpenRouterClient(
+                {
+                  baseURL: opts.baseURL ?? config.openrouter.baseUrl,
+                  apiKey: opts.apiKey ?? config.openrouter.apiKey,
+                },
+                config,
+              ),
+              { structuredOutputStrategy },
+            )
+          : new OllamaProvider(
+              createOllamaClient(
+                { host: opts.host, apiKey: opts.apiKey },
+                config,
+              ),
+              { structuredOutputStrategy },
+            );
+      routes = [
+        { client: chatProvider, model },
+        ...config.modelRoutes.slice(1).map((route) => createModelRoute(route, config)),
+      ];
+    }
     const agent = new Agent({
       name: "vision-description",
-      client: chatProvider,
-      model,
+      routes,
       systemPrompt:
         "Analyze the supplied image carefully and complete the requested task.",
       timeoutMs: opts.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS,

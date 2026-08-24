@@ -27,8 +27,7 @@ const agentThat = (
   reply: (userText: string) => Partial<ChatMessage>,
   timeoutMs?: number,
 ) => new Agent({
-  client: new KeyedProvider(reply),
-  model: "test-model",
+  routes: [{ client: new KeyedProvider(reply), model: "test-model" }],
   timeoutMs,
 });
 

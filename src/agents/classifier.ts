@@ -9,11 +9,11 @@
 // the tools are available. The returned resource owns that connection; callers
 // close the resource when they finish using the agent.
 
-import { Agent } from "../core/rawAgent";
+import { Agent, type ModelRouteInputChain } from "../core/rawAgent";
 import { classifierWithSearchPrompt, ClassificationResultSchema, type ClassificationResult } from "../prompts";
 import { connectToTavilyMcp } from "../mcp/tavilyClient";
 import { loadMcpTools, type ToolFilter } from "../mcp/adapter";
-import { createChatProvider } from "../core/providerFactory";
+import { createModelRoutes } from "../core/providerFactory";
 import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 import { agentResource, type AgentResource } from "./resource";
 
@@ -30,7 +30,9 @@ export interface CreateClassifierAgentOptions {
   systemPrompt?: string;
   /** Override the model. */
   model?: string;
-  /** Whole-run timeout. Defaults to fifteen minutes. */
+  /** Override the complete ordered model route chain. */
+  routes?: ModelRouteInputChain;
+  /** Per-provider-attempt timeout. Defaults to five minutes. */
   timeoutMs?: number;
   /** Runtime dependency override, primarily for app composition and tests. */
   config?: RuntimeConfig;
@@ -69,9 +71,8 @@ export async function createClassifierAgent(
     );
     const agent = new Agent({
       name: "screenshot-classifier",
-      client: createChatProvider(config),
+      routes: opts.routes ?? createModelRoutes(config, { primaryModel: opts.model }),
       systemPrompt: opts.systemPrompt ?? classifierWithSearchPrompt,
-      model: opts.model ?? config.model,
       tools,
       timeoutMs: opts.timeoutMs,
     });

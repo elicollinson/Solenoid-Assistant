@@ -42,7 +42,10 @@ describe("grader reviewer", () => {
     const agent = reviewedAgent(client, ({ output }) => `CUSTOM GRADER: ${output}`);
 
     expect(await agent.run("write it")).toBe("candidate");
-    expect(client.calls[1]?.[0]?.content).toBe("CUSTOM GRADER: candidate");
+    expect(client.calls[1]?.[0]).toEqual({
+      role: "user",
+      content: "CUSTOM GRADER: candidate",
+    });
   });
 
   test("computes pass/fail in code and revises a failed candidate", async () => {

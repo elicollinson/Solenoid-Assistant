@@ -44,7 +44,7 @@ export function createGraderReviewer(options: GraderReviewerOptions): Reviewer {
           ? configuredPrompt({ output, messages: promptMessages })
           : configuredPrompt;
       const format = toOutputFormat("grade", gradeScoresSchema);
-      const response = await client.chat([{ role: "system", content: prompt }], {
+      const response = await client.chat([{ role: "user", content: prompt }], {
         model,
         tools: [],
         think: options.thinkOnStructured ? (options.think ?? true) : false,

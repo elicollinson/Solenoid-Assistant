@@ -278,6 +278,11 @@ export const screenshotRoutes = new Elysia({ name: "routes.screenshots" })
                   }),
                 }),
               ),
+              status: t.Union([
+                t.Literal("classified"),
+                t.Literal("failed"),
+                t.Literal("quarantined"),
+              ]),
               error: t.Optional(t.String()),
             }),
           ),

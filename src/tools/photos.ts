@@ -402,17 +402,27 @@ const CLASSIFICATION_VISION_PROMPT =
   "is visible — titles, names, descriptions, images? Quote any prominent text verbatim. " +
   "Focus on identifying what media or product (if any) is being shown.";
 
-export interface ClassifiedScreenshot {
+interface ClassifiedScreenshotBase {
   uuid: string;
   filename: string;
   /** ISO 8601 capture date. */
   date: string;
   /** Path to the image file that was sent to the model. */
   path: string;
-  /** The classifier's result, or null if this one failed. */
-  classification: ClassificationResult | null;
-  error?: string;
 }
+
+/** Per-screenshot classification outcome, kept distinct from its error text. */
+export type ClassifiedScreenshot =
+  | (ClassifiedScreenshotBase & {
+      status: "classified";
+      classification: ClassificationResult;
+      error?: never;
+    })
+  | (ClassifiedScreenshotBase & {
+      status: "failed" | "quarantined";
+      classification: null;
+      error: string;
+    });
 
 export interface ClassifyScreenshotsResult {
   windowStart: string;
@@ -537,6 +547,7 @@ export async function classifyScreenshots(
       if (!screenshot.description) {
         return {
           ...base,
+          status: "failed",
           classification: null,
           error: screenshot.error ?? "Vision description failed",
         };
@@ -554,7 +565,7 @@ export async function classifyScreenshots(
         promptForClassifier,
         ClassificationResultSchema,
       ) as ClassificationResult;
-      return { ...base, classification };
+      return { ...base, status: "classified", classification };
     },
   });
 
@@ -569,8 +580,16 @@ export async function classifyScreenshots(
       classification: null,
     };
     return result.status === "quarantined"
-      ? { ...base, error: "Classification quarantined by prompt-injection screening" }
-      : { ...base, error: `Classification failed: ${result.reason.message}` };
+      ? {
+          ...base,
+          status: "quarantined",
+          error: "Classification quarantined by prompt-injection screening",
+        }
+      : {
+          ...base,
+          status: "failed",
+          error: `Classification failed: ${result.reason.message}`,
+        };
   });
   const visionFailures = classified.filter((screenshot, index) =>
     described.screenshots[index]?.description === null && screenshot.classification === null

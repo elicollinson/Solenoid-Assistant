@@ -81,18 +81,34 @@ export interface ScreenshotIngestionResult {
   screenshots: ScreenshotIngestionItem[];
 }
 
+export interface ScreenshotIngestionDependencies {
+  classify?: typeof classifyRecentScreenshots;
+  createContentResource?: typeof createContentCardSourcingAgent;
+  createRecommendationResource?: typeof createRecommendationIngestionAgent;
+  loadProcessed?: typeof loadProcessed;
+  saveProcessed?: typeof saveProcessed;
+}
+
 export async function ingestRecentScreenshots(
   params: ClassifyScreenshotsParams,
+  dependencies: ScreenshotIngestionDependencies = {},
 ): Promise<ScreenshotIngestionResult> {
-  const classified = await classifyRecentScreenshots(params);
+  const classified = await (
+    dependencies.classify ?? classifyRecentScreenshots
+  )(params);
   let contentResource: AgentResource | undefined;
   let recommendationResource: AgentResource | undefined;
 
   try {
-    contentResource = await createContentCardSourcingAgent();
-    recommendationResource = await createRecommendationIngestionAgent();
+    contentResource = await (
+      dependencies.createContentResource ?? createContentCardSourcingAgent
+    )();
+    recommendationResource = await (
+      dependencies.createRecommendationResource ??
+      createRecommendationIngestionAgent
+    )();
 
-    const processed = await loadProcessed();
+    const processed = await (dependencies.loadProcessed ?? loadProcessed)();
     const contentAgent = contentResource.agent;
     const recommendationAgent = recommendationResource.agent;
     const batch = await runIsolated({
@@ -101,24 +117,25 @@ export async function ingestRecentScreenshots(
       concurrency: 1,
       name: "screenshot-ingestion",
       execute: async (screenshot): Promise<ScreenshotIngestionItem> => {
-      const classification = screenshot.classification;
       const base = {
         uuid: screenshot.uuid,
         filename: screenshot.filename,
         date: screenshot.date,
         path: screenshot.path,
-        classification,
+        classification: screenshot.classification,
         contentCard: null,
         ingestion: null,
       } satisfies Omit<ScreenshotIngestionItem, "status" | "error">;
 
-      if (!classification) {
+      if (screenshot.status !== "classified") {
         return {
           ...base,
-          status: "skipped",
+          status:
+            screenshot.status === "quarantined" ? "quarantined" : "failed",
           error: screenshot.error,
         };
       }
+      const classification = screenshot.classification;
 
       const existing = processed[screenshot.uuid];
       if (existing) {
@@ -169,7 +186,7 @@ export async function ingestRecentScreenshots(
         );
         // Persist after each successful side effect. If a later scanner
         // failure aborts the batch, completed Notion writes remain recorded.
-        await saveProcessed(processed);
+        await (dependencies.saveProcessed ?? saveProcessed)(processed);
       }
       return {
         ...base,
@@ -207,10 +224,12 @@ export async function ingestRecentScreenshots(
       windowEnd: classified.windowEnd,
       returned: classified.returned,
       totalInWindow: classified.totalInWindow,
-      failed: classified.failed + screenshots.filter(
+      failed: screenshots.filter(
         ({ status }) => status === "failed",
       ).length,
-      quarantined: classified.quarantined + batch.quarantined,
+      quarantined: screenshots.filter(
+        ({ status }) => status === "quarantined",
+      ).length,
       screenshots,
     };
   } finally {

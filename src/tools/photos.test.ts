@@ -89,11 +89,15 @@ describe("classifyScreenshots", () => {
     expect(result.failed).toBe(0);
     expect(result.screenshots[0]).toMatchObject({
       uuid: "unsafe-id",
+      status: "quarantined",
       classification: null,
     });
-    expect(result.screenshots[1]?.classification).toEqual({
-      classification: "Book",
-      name: "Safe Book",
+    expect(result.screenshots[1]).toMatchObject({
+      status: "classified",
+      classification: {
+        classification: "Book",
+        name: "Safe Book",
+      },
     });
   });
 

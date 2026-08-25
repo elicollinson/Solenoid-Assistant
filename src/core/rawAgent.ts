@@ -24,6 +24,10 @@ import {
 } from "./tracing";
 import { log } from "./logger";
 import type { Reviewer, ReviewResult } from "./reviewer";
+import {
+  inspectPromptInjection,
+  type PromptTextParts,
+} from "../safety/promptGuard";
 
 // Zod is the single source of truth for output structures, mirroring tools.ts:
 // the same schema drives the provider-side constraint AND client-side validation.
@@ -74,6 +78,61 @@ export class AgentRunError extends Error {
   }
 }
 
+export type PromptInjectionBoundary =
+  | "input"
+  | "tool_output"
+  | "model_output"
+  | "reviewer_output";
+
+export class PromptInjectionDetectedError extends Error {
+  readonly code = "PROMPT_INJECTION_DETECTED";
+
+  constructor(readonly boundary: PromptInjectionBoundary) {
+    super(`Prompt injection detected at ${boundary} boundary`);
+    this.name = "PromptInjectionDetectedError";
+  }
+}
+
+export class PromptInjectionScreeningError extends Error {
+  readonly code = "PROMPT_INJECTION_SCREENING_FAILED";
+
+  constructor() {
+    super("Prompt injection screening failed");
+    this.name = "PromptInjectionScreeningError";
+  }
+}
+
+type CodedError = { code?: unknown; boundary?: unknown };
+
+export function isPromptInjectionDetectedError(
+  error: unknown,
+): error is PromptInjectionDetectedError {
+  const candidate = error as CodedError | null;
+  return candidate?.code === "PROMPT_INJECTION_DETECTED" &&
+    ["input", "tool_output", "model_output", "reviewer_output"].includes(
+      String(candidate.boundary),
+    );
+}
+
+export function isPromptInjectionScreeningError(
+  error: unknown,
+): error is PromptInjectionScreeningError {
+  return (error as CodedError | null)?.code ===
+    "PROMPT_INJECTION_SCREENING_FAILED";
+}
+
+export interface PromptInjectionScreeningResult {
+  flagged: boolean;
+  label?: string;
+  score?: number;
+  chunkCount?: number;
+  maliciousChunkIndex?: number | null;
+}
+
+export type PromptInjectionScreener = (
+  parts: PromptTextParts,
+) => Promise<PromptInjectionScreeningResult>;
+
 export interface ModelRoute {
   client: ChatProvider;
   model: string;
@@ -120,6 +179,13 @@ export interface AgentOptions {
   timeoutMs?: number;
   // Name shown on the AGENT root span; defaults to the (sub)class name.
   name?: string;
+  /**
+   * Screen inputs and every untrusted output boundary. Enabled by default.
+   * A custom function is accepted for deterministic tests and alternate local
+   * scanner implementations; `false` is reserved for workflows whose purpose
+   * is to classify prompt-injection examples.
+   */
+  promptInjectionScreening?: boolean | PromptInjectionScreener;
 }
 
 export class Agent {
@@ -134,6 +200,7 @@ export class Agent {
   protected readonly thinkOnStructured: boolean;
   protected readonly timeoutMs: number;
   protected readonly name: string;
+  private readonly promptInjectionScreener?: PromptInjectionScreener;
 
   constructor(opts: AgentOptions) {
     if (!opts.routes.length) {
@@ -157,6 +224,11 @@ export class Agent {
     this.think = opts.think ?? true;
     this.thinkOnStructured = opts.thinkOnStructured ?? true;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
+    this.promptInjectionScreener = opts.promptInjectionScreening === false
+      ? undefined
+      : typeof opts.promptInjectionScreening === "function"
+        ? opts.promptInjectionScreening
+        : inspectPromptInjection;
     if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0) {
       throw new Error("timeoutMs must be a positive finite number");
     }
@@ -270,6 +342,12 @@ export class Agent {
         ...this.getTraceAttributes(),
       },
       async (span) => {
+        await this.screenPromptInjection(
+          messages
+            .filter((message) => message.role !== "system")
+            .map((message) => message.content),
+          "input",
+        );
         for (let index = 0; index < this.routes.length; index++) {
           const route = this.routes[index]!;
           try {
@@ -286,6 +364,12 @@ export class Agent {
             );
             return result;
           } catch (error) {
+            if (
+              isPromptInjectionDetectedError(error) ||
+              isPromptInjectionScreeningError(error)
+            ) {
+              throw error;
+            }
             const nextRoute = this.routes[index + 1];
             if (!nextRoute) throw error;
             span.addEvent("agent.route_advanced", {
@@ -461,6 +545,7 @@ export class Agent {
             reviewer.review(context),
             signal ?? new AbortController().signal,
           );
+          await this.screenPromptInjection([review.feedback], "reviewer_output");
           span.setAttribute(SemanticConventions.OUTPUT_VALUE, safeJson(review));
           return review;
         },
@@ -526,6 +611,15 @@ export class Agent {
         retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
         continue;
       }
+
+      await this.screenPromptInjection(
+        [
+          msg.content,
+          ...(msg.thinking ? [msg.thinking] : []),
+          ...(msg.toolCalls ?? []).map((call) => safeJson(call.arguments)),
+        ],
+        "model_output",
+      );
 
       if (msg.thinking) {
         log.info(`\n[thinking] ${msg.thinking.slice(0, 200)}...`);
@@ -784,6 +878,7 @@ export class Agent {
             signal ?? new AbortController().signal,
           );
           const output = typeof result === "string" ? result : JSON.stringify(result);
+          await this.screenPromptInjection([output], "tool_output");
           span.setAttributes({
             [SemanticConventions.OUTPUT_VALUE]: output,
             [SemanticConventions.OUTPUT_MIME_TYPE]:
@@ -791,6 +886,12 @@ export class Agent {
           });
           return output;
         } catch (err) {
+          if (
+            isPromptInjectionDetectedError(err) ||
+            isPromptInjectionScreeningError(err)
+          ) {
+            throw err;
+          }
           span.recordException(err instanceof Error ? err : new Error(String(err)));
           span.setStatus({ code: SpanStatusCode.ERROR });
           // Feed errors back to the model so it can self-correct rather than crashing.
@@ -798,5 +899,74 @@ export class Agent {
         }
       },
     );
+  }
+
+  private async screenPromptInjection(
+    parts: readonly string[],
+    boundary: PromptInjectionBoundary,
+  ): Promise<void> {
+    if (!this.promptInjectionScreener || parts.every((part) => part.length === 0)) {
+      return;
+    }
+
+    // PromptGuardScanner joins parts with a newline before tokenization. Keep
+    // that exact, untruncated string as the primary span input; input_parts
+    // additionally preserves the original boundaries for trace debugging.
+    const inputValue = parts.join("\n");
+    const assessment = await withSpanKind(
+      "GUARDRAIL",
+      "prompt-injection-detection",
+      {
+        [SemanticConventions.INPUT_VALUE]: inputValue,
+        [SemanticConventions.INPUT_MIME_TYPE]: "text/plain",
+        "metadata.guardrail_type": "prompt_injection_detection",
+        "metadata.boundary": boundary,
+        "metadata.input_part_count": parts.length,
+        "metadata.input_parts": safeJson(parts),
+      },
+      async (span) => {
+        let result: PromptInjectionScreeningResult;
+        try {
+          result = await this.promptInjectionScreener!(
+            parts as PromptTextParts,
+          );
+        } catch {
+          span.setAttributes({
+            [SemanticConventions.OUTPUT_VALUE]: safeJson({
+              status: "ERROR",
+              reason: "prompt_injection_screening_failed",
+            }),
+            [SemanticConventions.OUTPUT_MIME_TYPE]: "application/json",
+            "metadata.action": "error",
+          });
+          throw new PromptInjectionScreeningError();
+        }
+
+        span.setAttributes({
+          [SemanticConventions.OUTPUT_VALUE]: safeJson(result),
+          [SemanticConventions.OUTPUT_MIME_TYPE]: "application/json",
+          "metadata.action": result.flagged ? "block" : "allow",
+          "metadata.flagged": result.flagged,
+        });
+        if (result.label !== undefined) {
+          span.setAttribute("metadata.label", result.label);
+        }
+        if (result.score !== undefined) {
+          span.setAttribute("metadata.score", result.score);
+        }
+        if (result.chunkCount !== undefined) {
+          span.setAttribute("metadata.chunk_count", result.chunkCount);
+        }
+        if (result.maliciousChunkIndex != null) {
+          span.setAttribute(
+            "metadata.malicious_chunk_index",
+            result.maliciousChunkIndex,
+          );
+        }
+        return result;
+      },
+    );
+
+    if (assessment.flagged) throw new PromptInjectionDetectedError(boundary);
   }
 }

@@ -18,6 +18,7 @@ import {
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { log } from "../core/logger";
+import { runIsolated } from "../utils/fanout";
 
 /**
  * Format a Date as osxphotos expects for `--from-date` / `--to-date`:
@@ -401,17 +402,27 @@ const CLASSIFICATION_VISION_PROMPT =
   "is visible — titles, names, descriptions, images? Quote any prominent text verbatim. " +
   "Focus on identifying what media or product (if any) is being shown.";
 
-export interface ClassifiedScreenshot {
+interface ClassifiedScreenshotBase {
   uuid: string;
   filename: string;
   /** ISO 8601 capture date. */
   date: string;
   /** Path to the image file that was sent to the model. */
   path: string;
-  /** The classifier's result, or null if this one failed. */
-  classification: ClassificationResult | null;
-  error?: string;
 }
+
+/** Per-screenshot classification outcome, kept distinct from its error text. */
+export type ClassifiedScreenshot =
+  | (ClassifiedScreenshotBase & {
+      status: "classified";
+      classification: ClassificationResult;
+      error?: never;
+    })
+  | (ClassifiedScreenshotBase & {
+      status: "failed" | "quarantined";
+      classification: null;
+      error: string;
+    });
 
 export interface ClassifyScreenshotsResult {
   windowStart: string;
@@ -420,6 +431,8 @@ export interface ClassifyScreenshotsResult {
   totalInWindow: number;
   /** Number of screenshots that failed (vision or classification). */
   failed: number;
+  /** Number excluded because prompt-injection screening detected unsafe content. */
+  quarantined: number;
   screenshots: ClassifiedScreenshot[];
 }
 
@@ -506,67 +519,88 @@ export async function classifyScreenshots(
   });
 
   if (described.screenshots.length === 0) {
-    return described as unknown as ClassifyScreenshotsResult;
+    return {
+      windowStart: described.windowStart,
+      windowEnd: described.windowEnd,
+      returned: described.returned,
+      totalInWindow: described.totalInWindow,
+      failed: described.failed,
+      quarantined: 0,
+      screenshots: [],
+    };
   }
 
-  // Step 2: classify each description using the agent with web tools.
-  // Vision failures are already represented by null descriptions and are
-  // counted as part of the classification pipeline below. Start from zero so
-  // each screenshot contributes at most one failure.
-  let failed = 0;
+  // Step 2: each screenshot UUID is an isolation unit. A worker pool makes it
+  // possible to stop scheduling immediately if the shared scanner fails.
+  const batch = await runIsolated({
+    items: described.screenshots,
+    key: (screenshot) => screenshot.uuid,
+    concurrency,
+    name: "screenshot-classification",
+    execute: async (screenshot): Promise<ClassifiedScreenshot> => {
+      const base = {
+        uuid: screenshot.uuid,
+        filename: screenshot.filename,
+        date: screenshot.date,
+        path: screenshot.path,
+      };
+      if (!screenshot.description) {
+        return {
+          ...base,
+          status: "failed",
+          classification: null,
+          error: screenshot.error ?? "Vision description failed",
+        };
+      }
 
-  const classified: ClassifiedScreenshot[] = [];
-  for (const s of described.screenshots) {
-    const base = {
-      uuid: s.uuid,
-      filename: s.filename,
-      date: s.date,
-      path: s.path,
-    };
-
-    if (!s.description) {
-      failed++;
-      classified.push({
-        ...base,
-        classification: null,
-        error: s.error ?? "Vision description failed",
-      });
-      continue;
-    }
-
-    // Build a prompt from the vision description for the classifier agent.
-    const desc = s.description;
-    const promptForClassifier = [
-      `App/website: ${desc.app}`,
-      `Summary: ${desc.summary}`,
-      ...(desc.prominentText.length > 0
-        ? [`Prominent text: ${desc.prominentText.join(" | ")}`]
-        : []),
-    ].join("\n");
-
-    try {
-      const classification = (await classifierAgent.run(
+      const description = screenshot.description;
+      const promptForClassifier = [
+        `App/website: ${description.app}`,
+        `Summary: ${description.summary}`,
+        ...(description.prominentText.length > 0
+          ? [`Prominent text: ${description.prominentText.join(" | ")}`]
+          : []),
+      ].join("\n");
+      const classification = await classifierAgent.run(
         promptForClassifier,
         ClassificationResultSchema,
-      )) as ClassificationResult;
+      ) as ClassificationResult;
+      return { ...base, status: "classified", classification };
+    },
+  });
 
-      classified.push({
-        ...base,
-        classification,
-      });
-    } catch (err) {
-      failed++;
-      const msg = err instanceof Error ? err.message : String(err);
-      log.warn(`classifyScreenshots: classification failed for ${s.uuid}`, {
-        uuid: s.uuid,
-        error: msg,
-      });
-      classified.push({
-        ...base,
-        classification: null,
-        error: `Classification failed: ${msg}`,
-      });
-    }
+  const classified = batch.results.map((result): ClassifiedScreenshot => {
+    if (result.status === "fulfilled") return result.value;
+    const screenshot = described.screenshots[result.index]!;
+    const base = {
+      uuid: screenshot.uuid,
+      filename: screenshot.filename,
+      date: screenshot.date,
+      path: screenshot.path,
+      classification: null,
+    };
+    return result.status === "quarantined"
+      ? {
+          ...base,
+          status: "quarantined",
+          error: "Classification quarantined by prompt-injection screening",
+        }
+      : {
+          ...base,
+          status: "failed",
+          error: `Classification failed: ${result.reason.message}`,
+        };
+  });
+  const visionFailures = classified.filter((screenshot, index) =>
+    described.screenshots[index]?.description === null && screenshot.classification === null
+  ).length;
+  const failed = visionFailures + batch.failed;
+  if (batch.failed > 0 || batch.quarantined > 0) {
+    log.warn("classifyScreenshots: partial classification result", {
+      failed: batch.failed,
+      quarantined: batch.quarantined,
+      total: batch.results.length,
+    });
   }
 
   return {
@@ -575,6 +609,7 @@ export async function classifyScreenshots(
     returned: classified.length,
     totalInWindow: described.totalInWindow,
     failed,
+    quarantined: batch.quarantined,
     screenshots: classified,
   };
 }

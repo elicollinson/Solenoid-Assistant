@@ -161,9 +161,33 @@ const attacked = await containsPromptInjection([
 ```
 
 Model loading is lazy and shared within a process. Inference failures throw
-instead of being silently interpreted as benign. The existing
-`/safety-classifier` agent endpoint is unchanged; the local function can be
-evaluated independently before replacing that workflow.
+instead of being silently interpreted as benign. `Agent` screening is enabled
+by default at input, tool-output, model-output, and reviewer-output boundaries.
+The `/safety-classifier` agent opts out explicitly because its purpose is to
+process prompt-injection examples.
+
+### Isolation-aware iteration
+
+Iterative workflows use `runIsolated()` from `src/utils/fanout.ts`. Each item
+declares a unique isolation key and receives one callback invocation. Prompt
+injection terminates that invocation, is reported as `quarantined`, and does
+not prevent siblings from completing. Ordinary errors are reported as
+`rejected`. A Prompt Guard infrastructure failure rejects the batch and stops
+new work from starting; already-running callbacks may finish.
+
+Workflow rules:
+
+1. Partition external collections before they enter an agent.
+2. Process one isolation unit per `Agent.run()` invocation.
+3. Aggregate fulfilled results only; keep quarantine and failure distinct.
+4. Perform item side effects only after that item's model processing succeeds.
+5. Let the nearest iterator contain detections in nested iteration.
+6. Always propagate scanner infrastructure failure outward.
+
+Batch traces contain item counts, concurrency, outcome counts, fatal category,
+and per-item indexes/statuses only. Isolation keys and content are omitted
+because keys may contain PII. The legacy `fanout()` API is implemented through
+`runIsolated()` and maps quarantine to rejection for compatibility.
 
 ## Code organization
 

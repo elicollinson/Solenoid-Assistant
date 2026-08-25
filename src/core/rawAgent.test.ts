@@ -4,7 +4,11 @@ import {
   Agent,
   AgentTimeoutError,
   DEFAULT_AGENT_TIMEOUT_MS,
+  PromptInjectionDetectedError,
+  PromptInjectionScreeningError,
   extractJson,
+  isPromptInjectionDetectedError,
+  isPromptInjectionScreeningError,
   type ModelRouteInputChain,
 } from "./rawAgent";
 import { defineTool } from "./tools";
@@ -63,7 +67,7 @@ describe("native structured trajectory", () => {
       { thinking: "I should inspect this carefully." },
       submit({ ok: true }),
     ]);
-    const agent = new Agent({ routes: routes(client) });
+    const agent = new Agent({ routes: routes(client), promptInjectionScreening: false });
 
     expect(await agent.run("grade it", schema)).toEqual({ ok: true });
     expect(client.calls).toHaveLength(2);
@@ -75,7 +79,7 @@ describe("native structured trajectory", () => {
 
   test("accepts valid JSON content when a backend does not call the terminal tool", async () => {
     const client = new ScriptedProvider([{ content: '{"ok":true}' }]);
-    const agent = new Agent({ routes: routes(client) });
+    const agent = new Agent({ routes: routes(client), promptInjectionScreening: false });
 
     expect(await agent.run("grade it", schema)).toEqual({ ok: true });
   });
@@ -85,7 +89,7 @@ describe("native structured trajectory", () => {
       { content: '{"ok":"yes"}' },
       submit({ ok: false }),
     ]);
-    const agent = new Agent({ routes: routes(client) });
+    const agent = new Agent({ routes: routes(client), promptInjectionScreening: false });
 
     expect(await agent.run("grade it", schema)).toEqual({ ok: false });
     expect(client.calls[1]?.at(-1)?.content).toContain("required schema");
@@ -96,7 +100,7 @@ describe("native structured trajectory", () => {
       { content: '{"ok":', finishReason: "length" },
       submit({ ok: true }),
     ]);
-    const agent = new Agent({ routes: routes(client) });
+    const agent = new Agent({ routes: routes(client), promptInjectionScreening: false });
 
     expect(await agent.run("grade it", schema)).toEqual({ ok: true });
     expect(client.calls[1]?.at(-1)?.content).toContain("submit_result");
@@ -107,6 +111,7 @@ describe("native structured trajectory", () => {
     const agent = new Agent({
       routes: routes(client),
       thinkOnStructured: false,
+      promptInjectionScreening: false,
     });
 
     await agent.run("grade it", schema);
@@ -123,7 +128,7 @@ describe("two-stage structured trajectory", () => {
       ],
       "two-stage",
     );
-    const agent = new Agent({ routes: routes(client) });
+    const agent = new Agent({ routes: routes(client), promptInjectionScreening: false });
 
     expect(await agent.run("grade it", schema)).toEqual({ ok: true });
     expect(client.optsSeen.map((options) => options.phase)).toEqual(["work", "serialize"]);
@@ -145,7 +150,7 @@ describe("deadline and continuation", () => {
       providerName: "hanging",
       chat: async () => new Promise<ChatMessage>(() => {}),
     };
-    const agent = new Agent({ routes: routes(client), timeoutMs: 20 });
+    const agent = new Agent({ routes: routes(client), timeoutMs: 20, promptInjectionScreening: false });
 
     const error = await agent.run("wait forever").catch((caught) => caught);
     expect(error).toBeInstanceOf(AgentTimeoutError);
@@ -170,7 +175,7 @@ describe("deadline and continuation", () => {
         };
       },
     };
-    const agent = new Agent({ routes: routes(client), timeoutMs: 1_000 });
+    const agent = new Agent({ routes: routes(client), timeoutMs: 1_000, promptInjectionScreening: false });
 
     expect(await agent.run("grade it", schema)).toEqual({ ok: true });
     expect(calls).toBe(2);
@@ -178,7 +183,7 @@ describe("deadline and continuation", () => {
 
   test("keeps an unstructured empty answer valid when there is no reasoning", async () => {
     const client = new ScriptedProvider([{ content: "" }]);
-    const agent = new Agent({ routes: routes(client) });
+    const agent = new Agent({ routes: routes(client), promptInjectionScreening: false });
     expect(await agent.run("say nothing")).toBe("");
   });
 
@@ -201,6 +206,7 @@ describe("deadline and continuation", () => {
         { client: third, model: "third-model" },
       ],
       reviewers: [reviewer],
+      promptInjectionScreening: false,
     });
 
     expect(await agent.run("grade it", schema)).toEqual({ ok: true });
@@ -227,9 +233,134 @@ describe("deadline and continuation", () => {
         { client: fallback, model: "fallback-model" },
       ],
       timeoutMs: 20,
+      promptInjectionScreening: false,
     });
 
     expect(await agent.run("recover this")).toBe("recovered");
+  });
+});
+
+describe("prompt-injection screening", () => {
+  const benign = async () => ({ flagged: false });
+
+  test("detection is terminal and does not advance model routes", async () => {
+    const primary = new ScriptedProvider([{ content: "should not run" }]);
+    const fallback = new ScriptedProvider([{ content: "should not run" }]);
+    const rejectedText = "private rejected payload";
+    const agent = new Agent({
+      routes: [
+        { client: primary, model: "primary" },
+        { client: fallback, model: "fallback" },
+      ],
+      promptInjectionScreening: async ([text]) => ({
+        flagged: text.includes(rejectedText),
+      }),
+    });
+
+    const error = await agent.run(rejectedText).catch((caught) => caught);
+    expect(error).toBeInstanceOf(PromptInjectionDetectedError);
+    expect(isPromptInjectionDetectedError(error)).toBe(true);
+    expect((error as Error).message).not.toContain(rejectedText);
+    expect((error as PromptInjectionDetectedError).boundary).toBe("input");
+    expect(primary.calls).toHaveLength(0);
+    expect(fallback.calls).toHaveLength(0);
+  });
+
+  test("malicious model output terminates the route chain", async () => {
+    const primary = new ScriptedProvider([{ content: "malicious output" }]);
+    const fallback = new ScriptedProvider([{ content: "fallback" }]);
+    const agent = new Agent({
+      routes: [
+        { client: primary, model: "primary" },
+        { client: fallback, model: "fallback" },
+      ],
+      promptInjectionScreening: async ([text]) => ({
+        flagged: text === "malicious output",
+      }),
+    });
+
+    const error = await agent.run("benign input").catch((caught) => caught);
+    expect(isPromptInjectionDetectedError(error)).toBe(true);
+    expect((error as PromptInjectionDetectedError).boundary).toBe("model_output");
+    expect(primary.calls).toHaveLength(1);
+    expect(fallback.calls).toHaveLength(0);
+  });
+
+  test("tool and reviewer outputs are independently screened", async () => {
+    const tool = defineTool({
+      name: "external",
+      description: "external data",
+      schema: z.object({}),
+      execute: () => "unsafe tool result",
+    });
+    const toolClient = new ScriptedProvider([{
+      finishReason: "tool_calls",
+      toolCalls: [{ id: "tool-1", name: "external", arguments: {} }],
+    }]);
+    const toolAgent = new Agent({
+      routes: routes(toolClient),
+      tools: [tool],
+      promptInjectionScreening: async ([text]) => ({
+        flagged: text === "unsafe tool result",
+      }),
+    });
+    const toolError = await toolAgent.run("benign").catch((caught) => caught);
+    expect((toolError as PromptInjectionDetectedError).boundary).toBe("tool_output");
+
+    const reviewer: Reviewer = {
+      name: "unsafe-reviewer",
+      review: async () => ({ passed: false, feedback: "unsafe feedback" }),
+    };
+    const reviewAgent = new Agent({
+      routes: routes(new ScriptedProvider([{ content: "candidate" }])),
+      reviewers: [reviewer],
+      promptInjectionScreening: async ([text]) => ({
+        flagged: text === "unsafe feedback",
+      }),
+    });
+    const reviewError = await reviewAgent.run("benign").catch((caught) => caught);
+    expect((reviewError as PromptInjectionDetectedError).boundary).toBe("reviewer_output");
+  });
+
+  test("scanner failure is typed, safe, and terminal", async () => {
+    const primary = new ScriptedProvider([{ content: "unused" }]);
+    const fallback = new ScriptedProvider([{ content: "unused" }]);
+    const agent = new Agent({
+      routes: [
+        { client: primary, model: "primary" },
+        { client: fallback, model: "fallback" },
+      ],
+      promptInjectionScreening: async () => {
+        throw new Error("backend accidentally echoed sensitive input");
+      },
+    });
+
+    const error = await agent.run("sensitive input").catch((caught) => caught);
+    expect(error).toBeInstanceOf(PromptInjectionScreeningError);
+    expect(isPromptInjectionScreeningError(error)).toBe(true);
+    expect((error as Error).message).toBe("Prompt injection screening failed");
+    expect(primary.calls).toHaveLength(0);
+    expect(fallback.calls).toHaveLength(0);
+  });
+
+  test("screening can be explicitly disabled", async () => {
+    const client = new ScriptedProvider([{ content: "ok" }]);
+    const agent = new Agent({
+      routes: routes(client),
+      promptInjectionScreening: false,
+    });
+    expect(await agent.run("anything")).toBe("ok");
+    expect(await benign()).toEqual({ flagged: false });
+  });
+
+  test("type guards work across package boundaries without instanceof", () => {
+    expect(isPromptInjectionDetectedError({
+      code: "PROMPT_INJECTION_DETECTED",
+      boundary: "input",
+    })).toBe(true);
+    expect(isPromptInjectionScreeningError({
+      code: "PROMPT_INJECTION_SCREENING_FAILED",
+    })).toBe(true);
   });
 });
 
@@ -251,7 +382,7 @@ describe("tools and reviewers", () => {
       toolTurn("three", 3),
       { content: "done" },
     ]);
-    const agent = new Agent({ routes: routes(client), tools: [tool] });
+    const agent = new Agent({ routes: routes(client), tools: [tool], promptInjectionScreening: false });
 
     expect(await agent.run("keep going")).toBe("done");
     expect(client.calls).toHaveLength(4);
@@ -269,7 +400,7 @@ describe("tools and reviewers", () => {
         feedback: output === "revised draft" ? "Looks good" : "Be more specific",
       }),
     };
-    const agent = new Agent({ routes: routes(client), reviewers: [reviewer] });
+    const agent = new Agent({ routes: routes(client), reviewers: [reviewer], promptInjectionScreening: false });
 
     expect(await agent.run("write it")).toBe("revised draft");
     expect(client.calls[1]?.at(-1)?.content).toContain("Be more specific");

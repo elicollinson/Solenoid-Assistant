@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
-import { Agent, AgentTimeoutError } from "../core/rawAgent";
-import { fanout, fulfilled, rejected } from "./fanout";
+import {
+  Agent,
+  AgentTimeoutError,
+  PromptInjectionDetectedError,
+  PromptInjectionScreeningError,
+} from "../core/rawAgent";
+import { fanout, fulfilled, rejected, runIsolated } from "./fanout";
 import type { ChatMessage, ChatProvider } from "../core/providers";
 import type { PromptTemplate } from "../prompts";
 
@@ -29,6 +34,7 @@ const agentThat = (
 ) => new Agent({
   routes: [{ client: new KeyedProvider(reply), model: "test-model" }],
   timeoutMs,
+  promptInjectionScreening: false,
 });
 
 describe("fanout", () => {
@@ -99,6 +105,159 @@ describe("fanout", () => {
   test("empty input yields empty output", async () => {
     const results = await fanout([], agentThat(() => ({ content: "{}" })), prompt, schema, 4);
     expect(results).toEqual([]);
+  });
+});
+
+describe("runIsolated", () => {
+  test("bounds concurrency and preserves positional results", async () => {
+    const input = Array.from({ length: 12 }, (_, index) => index);
+    let active = 0;
+    let peak = 0;
+    const batch = await runIsolated({
+      items: input,
+      key: (item) => `item-${item}`,
+      concurrency: 3,
+      execute: async (item) => {
+        active++;
+        peak = Math.max(peak, active);
+        await Bun.sleep((12 - item) % 4);
+        active--;
+        return item * 2;
+      },
+    });
+
+    expect(peak).toBeLessThanOrEqual(3);
+    expect(batch.results.map((result) => result.index)).toEqual(input);
+    expect(batch.results.map((result) =>
+      result.status === "fulfilled" ? result.value : null
+    )).toEqual(input.map((item) => item * 2));
+    expect(batch).toMatchObject({ completed: 12, quarantined: 0, failed: 0 });
+  });
+
+  test("quarantines detections at any agent boundary while siblings continue", async () => {
+    const batch = await runIsolated({
+      items: ["input", "model", "ok"],
+      key: (item) => item,
+      concurrency: 2,
+      execute: async (item) => {
+        if (item === "input") throw new PromptInjectionDetectedError("input");
+        if (item === "model") throw new PromptInjectionDetectedError("model_output");
+        return "done";
+      },
+    });
+
+    expect(batch.results).toEqual([
+      {
+        status: "quarantined",
+        key: "input",
+        index: 0,
+        reason: "prompt_injection",
+        boundary: "input",
+      },
+      {
+        status: "quarantined",
+        key: "model",
+        index: 1,
+        reason: "prompt_injection",
+        boundary: "model_output",
+      },
+      { status: "fulfilled", key: "ok", index: 2, value: "done" },
+    ]);
+    expect(batch).toMatchObject({ completed: 1, quarantined: 2, failed: 0 });
+  });
+
+  test("records ordinary errors and continues", async () => {
+    const batch = await runIsolated({
+      items: [0, 1, 2],
+      key: (item) => item,
+      concurrency: 2,
+      execute: (item) => {
+        if (item === 1) throw "ordinary failure";
+        return item;
+      },
+    });
+    expect(batch.completed).toBe(2);
+    expect(batch.failed).toBe(1);
+    expect(batch.results[1]?.status).toBe("rejected");
+    expect((batch.results[1] as { reason: Error }).reason.message).toBe(
+      "ordinary failure",
+    );
+  });
+
+  test("scanner failure stops scheduling new work and rejects the batch", async () => {
+    const started: number[] = [];
+    const promise = runIsolated({
+      items: [0, 1, 2, 3, 4],
+      key: (item) => item,
+      concurrency: 2,
+      execute: async (item) => {
+        started.push(item);
+        if (item === 0) throw new PromptInjectionScreeningError();
+        await Bun.sleep(5);
+        return item;
+      },
+    });
+
+    await expect(promise).rejects.toBeInstanceOf(PromptInjectionScreeningError);
+    expect(started.every((item) => item < 2)).toBe(true);
+  });
+
+  test("rejects duplicate and invalid keys before executing anything", async () => {
+    let executions = 0;
+    const duplicate = runIsolated({
+      items: ["a", "b"],
+      key: () => "same",
+      concurrency: 1,
+      execute: () => executions++,
+    });
+    await expect(duplicate).rejects.toThrow(/Duplicate isolation key/);
+
+    const invalid = runIsolated({
+      items: ["a"],
+      key: () => "" as string,
+      concurrency: 1,
+      execute: () => executions++,
+    });
+    await expect(invalid).rejects.toThrow(/Invalid isolation key/);
+    expect(executions).toBe(0);
+  });
+
+  test("empty input returns an empty summary", async () => {
+    const batch = await runIsolated({
+      items: [] as string[],
+      key: (item) => item,
+      concurrency: 8,
+      execute: (item) => item,
+    });
+    expect(batch).toEqual({
+      results: [],
+      completed: 0,
+      quarantined: 0,
+      failed: 0,
+    });
+  });
+
+  test("nested iterators contain detection at the nearest boundary", async () => {
+    const outer = await runIsolated({
+      items: ["conversation-a", "conversation-b"],
+      key: (item) => item,
+      concurrency: 2,
+      execute: async (conversation) => runIsolated({
+        items: conversation === "conversation-a" ? ["safe", "bad"] : ["safe"],
+        key: (item, index) => `${conversation}-${index}-${item}`,
+        concurrency: 2,
+        execute: (item) => {
+          if (item === "bad") throw new PromptInjectionDetectedError("input");
+          return item;
+        },
+      }),
+    });
+
+    expect(outer.completed).toBe(2);
+    expect(outer.quarantined).toBe(0);
+    const inner = outer.results[0];
+    expect(inner?.status).toBe("fulfilled");
+    if (inner?.status === "fulfilled") expect(inner.value.quarantined).toBe(1);
   });
 });
 

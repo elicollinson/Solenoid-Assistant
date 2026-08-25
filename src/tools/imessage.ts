@@ -19,7 +19,38 @@ const limitSchema = z
 
 // Shared fetch body: both tool variants funnel through here, differing only in
 // how the window was decided (model-chosen vs. caller-enforced).
-function readWindow(start: Date, end: Date, limit: number) {
+export interface ReadTrustedMessageWindowParams extends ReadWindow {
+  limit?: number;
+}
+
+export interface TrustedMessageView {
+  sender: string;
+  senderName: string | null;
+  body: string;
+  conversationId: string;
+  isFromMe: boolean;
+  service: string;
+  timestamp: string;
+  hasAttachments: boolean;
+}
+
+export interface TrustedMessageWindowResult {
+  returned: number;
+  totalTrustedInWindow: number;
+  totalInWindow: number;
+  droppedUntrusted: number;
+  messages: TrustedMessageView[];
+}
+
+export function readTrustedMessageWindow(
+  params: ReadTrustedMessageWindowParams = {},
+): TrustedMessageWindowResult {
+  const end = params.end ?? new Date();
+  const start = params.start ?? new Date(end.getTime() - 24 * 3600_000);
+  const limit = params.limit ?? 200;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+    throw new RangeError("iMessage read limit must be an integer between 1 and 500");
+  }
   // Trusted-only by design (spec contactsRead §3): there is deliberately no
   // parameter to include unknown senders — an injected prompt must not be
   // able to ask its way past the trust boundary.
@@ -71,7 +102,7 @@ export function createReadImessagesTool(window?: ReadWindow): AgentTool {
         ` This tool is bound to the window ${start.toISOString()} to ${end.toISOString()} ` +
         "(inclusive); every call returns messages from that window only.",
       schema: z.object({ limit: limitSchema }),
-      execute: ({ limit }) => readWindow(start, end, limit),
+      execute: ({ limit }) => readTrustedMessageWindow({ start, end, limit }),
     });
   }
 
@@ -109,7 +140,7 @@ export function createReadImessagesTool(window?: ReadWindow): AgentTool {
       const startDate = start
         ? new Date(start)
         : new Date(endDate.getTime() - hoursBack * 3600_000);
-      return readWindow(startDate, endDate, limit);
+      return readTrustedMessageWindow({ start: startDate, end: endDate, limit });
     },
   });
 }

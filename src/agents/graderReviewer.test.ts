@@ -32,6 +32,7 @@ function reviewedAgent(client: ScriptedProvider, graderPrompt?: string | ((vars:
 }) => string)): Agent {
   return new Agent({
     routes: [{ client, model: "test-model" }],
+    promptInjectionScreening: false,
     reviewers: [createGraderReviewer({ client, model: "test-model", graderPrompt })],
   });
 }

@@ -29,3 +29,19 @@ export function createImessageIntakeAgent(
     })],
   });
 }
+
+/** Intake agent for an already-retrieved, single-conversation prompt. */
+export function createImessageConversationAgent(
+  config: RuntimeConfig = loadRuntimeConfig(),
+): Agent {
+  const routes = createModelRoutes(config);
+  const primary = routes[0];
+  return new Agent({
+    name: "imessage-conversation-intake",
+    routes,
+    reviewers: [createGraderReviewer({
+      client: primary.client,
+      model: primary.model,
+    })],
+  });
+}

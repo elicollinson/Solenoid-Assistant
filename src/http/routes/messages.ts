@@ -46,6 +46,11 @@ const messageContract = {
       conversationSummaries: t.Array(t.String()),
       memoryContext: t.Array(t.String()),
       okfUpdate: t.Unknown(),
+      screening: t.Object({
+        processedConversations: t.Number(),
+        quarantinedConversations: t.Number(),
+        failedConversations: t.Number(),
+      }),
     }),
     400: t.Object({ error: t.String() }),
     502: t.Object({ error: t.String() }),

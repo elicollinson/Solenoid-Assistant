@@ -20,6 +20,7 @@ import {
   markAsIngested,
   saveProcessed,
 } from "../utils/screenshotsProcessed";
+import { runIsolated } from "../utils/fanout";
 
 function classificationToCollection(
   classification: ClassificationResult["classification"],
@@ -51,7 +52,12 @@ export async function classifyRecentScreenshots(
   }
 }
 
-export type ScreenshotIngestionStatus = "ingested" | "rejected" | "failed" | "skipped";
+export type ScreenshotIngestionStatus =
+  | "ingested"
+  | "quarantined"
+  | "rejected"
+  | "failed"
+  | "skipped";
 
 export interface ScreenshotIngestionItem {
   uuid: string;
@@ -71,6 +77,7 @@ export interface ScreenshotIngestionResult {
   returned: number;
   totalInWindow: number;
   failed: number;
+  quarantined: number;
   screenshots: ScreenshotIngestionItem[];
 }
 
@@ -86,10 +93,14 @@ export async function ingestRecentScreenshots(
     recommendationResource = await createRecommendationIngestionAgent();
 
     const processed = await loadProcessed();
-    let dirty = false;
-    const screenshots: ScreenshotIngestionItem[] = [];
-
-    for (const screenshot of classified.screenshots) {
+    const contentAgent = contentResource.agent;
+    const recommendationAgent = recommendationResource.agent;
+    const batch = await runIsolated({
+      items: classified.screenshots,
+      key: (screenshot) => screenshot.uuid,
+      concurrency: 1,
+      name: "screenshot-ingestion",
+      execute: async (screenshot): Promise<ScreenshotIngestionItem> => {
       const classification = screenshot.classification;
       const base = {
         uuid: screenshot.uuid,
@@ -102,56 +113,40 @@ export async function ingestRecentScreenshots(
       } satisfies Omit<ScreenshotIngestionItem, "status" | "error">;
 
       if (!classification) {
-        screenshots.push({
+        return {
           ...base,
           status: "skipped",
           error: screenshot.error,
-        });
-        continue;
+        };
       }
 
       const existing = processed[screenshot.uuid];
       if (existing) {
-        screenshots.push({
+        return {
           ...base,
           status: "skipped",
           error:
             `Already ingested on ${existing.ingestedAt} as ` +
             `"${existing.classification}: ${existing.name}"`,
-        });
-        continue;
+        };
       }
 
       if (classification.classification === "Rejected") {
-        screenshots.push({ ...base, status: "rejected" });
-        continue;
+        return { ...base, status: "rejected" };
       }
 
       if (!classification.name.trim() || classification.name === "Unknown") {
-        screenshots.push({
+        return {
           ...base,
           status: "skipped",
           error: "Classifier returned an empty or Unknown name",
-        });
-        continue;
+        };
       }
 
-      let contentCard: ContentCard;
-      try {
-        contentCard = await contentResource.agent.run(
-          classification.name,
-          contentCardSchema,
-        );
-      } catch (error) {
-        screenshots.push({
-          ...base,
-          status: "failed",
-          error: `Content card sourcing failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        });
-        continue;
-      }
+      const contentCard = await contentAgent.run(
+        classification.name,
+        contentCardSchema,
+      ) as ContentCard;
 
       const input: RecommendationIngestionInput = {
         name: contentCard.name,
@@ -161,46 +156,61 @@ export async function ingestRecentScreenshots(
         collection: classificationToCollection(classification.classification),
       };
 
-      try {
-        const ingestion = await recommendationResource.agent.run(
-          JSON.stringify(input),
-          recommendationIngestionSchema,
+      const ingestion = await recommendationAgent.run(
+        JSON.stringify(input),
+        recommendationIngestionSchema,
+      );
+      if (ingestion.status !== "error") {
+        markAsIngested(
+          processed,
+          screenshot.uuid,
+          classification.classification,
+          classification.name,
         );
-        if (ingestion.status !== "error") {
-          markAsIngested(
-            processed,
-            screenshot.uuid,
-            classification.classification,
-            classification.name,
-          );
-          dirty = true;
-        }
-        screenshots.push({
-          ...base,
-          contentCard,
-          ingestion,
-          status: ingestion.status === "error" ? "failed" : "ingested",
-          error: ingestion.error ?? undefined,
-        });
-      } catch (error) {
-        screenshots.push({
-          ...base,
-          contentCard,
-          status: "failed",
-          error: `Recommendation ingestion failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        });
+        // Persist after each successful side effect. If a later scanner
+        // failure aborts the batch, completed Notion writes remain recorded.
+        await saveProcessed(processed);
       }
-    }
+      return {
+        ...base,
+        contentCard,
+        ingestion,
+        status: ingestion.status === "error" ? "failed" : "ingested",
+        error: ingestion.error ?? undefined,
+      };
+    },
+    });
 
-    if (dirty) await saveProcessed(processed);
+    const screenshots = batch.results.map((result): ScreenshotIngestionItem => {
+      if (result.status === "fulfilled") return result.value;
+      const screenshot = classified.screenshots[result.index]!;
+      const base = {
+        uuid: screenshot.uuid,
+        filename: screenshot.filename,
+        date: screenshot.date,
+        path: screenshot.path,
+        classification: screenshot.classification,
+        contentCard: null,
+        ingestion: null,
+      };
+      return result.status === "quarantined"
+        ? {
+            ...base,
+            status: "quarantined",
+            error: "Screenshot quarantined by prompt-injection screening",
+          }
+        : { ...base, status: "failed", error: result.reason.message };
+    });
+
     return {
       windowStart: classified.windowStart,
       windowEnd: classified.windowEnd,
       returned: classified.returned,
       totalInWindow: classified.totalInWindow,
-      failed: classified.failed,
+      failed: classified.failed + screenshots.filter(
+        ({ status }) => status === "failed",
+      ).length,
+      quarantined: classified.quarantined + batch.quarantined,
       screenshots,
     };
   } finally {

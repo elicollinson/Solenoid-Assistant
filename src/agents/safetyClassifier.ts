@@ -9,6 +9,9 @@ export function createSafetyClassifierAgent(
   return new Agent({
     name: "safety-classifier",
     routes: createModelRoutes(config),
+    // This workflow intentionally receives prompt-injection examples so it
+    // can classify them; screening here would prevent it from doing its job.
+    promptInjectionScreening: false,
   });
 }
 

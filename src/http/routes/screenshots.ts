@@ -255,6 +255,7 @@ export const screenshotRoutes = new Elysia({ name: "routes.screenshots" })
           returned: t.Number(),
           totalInWindow: t.Number(),
           failed: t.Number(),
+          quarantined: t.Number(),
           screenshots: t.Array(
             t.Object({
               uuid: t.String(),
@@ -353,6 +354,7 @@ export const screenshotRoutes = new Elysia({ name: "routes.screenshots" })
           returned: t.Number(),
           totalInWindow: t.Number(),
           failed: t.Number(),
+          quarantined: t.Number(),
           screenshots: t.Array(
             t.Object({
               uuid: t.String(),
@@ -409,8 +411,9 @@ export const screenshotRoutes = new Elysia({ name: "routes.screenshots" })
                 }),
               ),
               status: t.Union([
-                t.Literal("ingested"),
-                t.Literal("rejected"),
+                  t.Literal("ingested"),
+                  t.Literal("quarantined"),
+                  t.Literal("rejected"),
                 t.Literal("failed"),
                 t.Literal("skipped"),
               ]),

@@ -1,0 +1,117 @@
+# Solenoid Assistant — the whole stack.
+#
+#   docker compose -f deploy/compose.yaml up -d --build
+#
+# Supersedes the phoenix-only docker-compose.yml at the repo root; delete that
+# one (or stop it) before the first run, or the two fight over :6006 and the
+# `phoenix` container name.
+name: solenoid
+
+x-logging: &logging
+  # An always-on box with no log rotation fills a disk in a season.
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app-env: &app-env
+  # Bound to every interface *inside the container* — the port publish below is
+  # what keeps it on the host's loopback. See the HOST comment in .env.example.
+  HOST: "0.0.0.0"
+  PORT: "3000"
+  # Inside the container the database lives on a named volume, not a bind
+  # mount: SQLite locking across the macOS/VM filesystem boundary is not
+  # reliable, and this file is opened by two containers at once.
+  DATABASE_URL: /app/data/solenoid.db
+  PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006
+  PROMPT_GUARD_MODEL_PATH: /app/models/prompt-guard-2-86m
+  # Only read when the host mirror in deploy/scripts/mirror-host-data.sh is in
+  # use; harmless otherwise. Requires the small config change in deploy/README.
+  IMESSAGE_DB_PATH: /hostmirror/Library/Messages/chat.db
+  ADDRESS_BOOK_DIR: /hostmirror/Library/Application Support/AddressBook
+  TZ: America/Los_Angeles
+
+x-app: &app
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  image: solenoid-assistant:local
+  # host.docker.internal is native on Docker Desktop; this line is what makes
+  # it work if the stack ever moves to a Linux host. Point OPENAI_BASE_URL at
+  # http://host.docker.internal:1234/v1 for an LM Studio running on this Mac.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  environment: *app-env
+  volumes:
+    # Secrets, and writable on purpose: the Notion client rotates its refresh
+    # token straight back into .env (src/mcp/notionClient.ts persistTokens).
+    - ../.env:/app/.env
+    # Schedules, editable without a rebuild.
+    - ../tasks.yaml:/app/tasks.yaml:ro
+    # The knowledge bundle stays a directory of markdown on the host, because
+    # it is meant to be read and edited by hand.
+    - ../okf:/app/okf
+    # Prompt Guard weights: license-gated, gitignored, ~500MB. Mounted rather
+    # than baked so the image stays small and redistributable.
+    - ../models:/app/models:ro
+    - solenoid-data:/app/data
+    # iMessage + Contacts, read-only, populated by the host mirror job.
+    # Comment out until Phase 2.
+    - ../hostmirror:/hostmirror:ro
+  logging: *logging
+
+services:
+  # One-shot, so the server and the worker do not race each other applying the
+  # same migrations to the same file on a cold start.
+  migrate:
+    <<: *app
+    command: ["bun", "run", "scripts/db-migrate.ts"]
+    restart: "no"
+
+  app:
+    <<: *app
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    command: ["bun", "run", "src/server.ts"]
+    # Loopback-only publish: the API has no authentication. Reach it from other
+    # devices with `bun run serve:tailscale` on the host, exactly as before.
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - "process.exit((await fetch('http://127.0.0.1:3000/health')).ok ? 0 : 1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+  worker:
+    <<: *app
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    command: ["bun", "run", "src/worker.ts"]
+    restart: unless-stopped
+
+  phoenix:
+    # PIN THIS before going always-on: `latest` means a reboot can silently
+    # pull a new Phoenix whose trace store migrates itself. Check the tag you
+    # are actually running with `docker image inspect phoenix` and freeze it.
+    image: arizephoenix/phoenix:latest
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+    volumes:
+      - ../phoenix_data:/mnt/data
+    ports:
+      - "127.0.0.1:6006:6006" # UI + OTLP HTTP collector
+      - "127.0.0.1:4317:4317" # OTLP gRPC collector
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  solenoid-data:

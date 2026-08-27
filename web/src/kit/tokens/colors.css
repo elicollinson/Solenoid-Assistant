@@ -1,0 +1,147 @@
+/* ── Solenoid colour system ──────────────────────────────────────────────
+   Two themes of one system: Paper (light, default) and Dusk (dark).
+   Base ramps are literal; everything a component touches is a semantic alias.
+   Neutrals are warm in Paper (hue 92) and cool-teal in Dusk (hue 205);
+   the four signal hues are shared so status reads identically in both. */
+
+:root {
+  /* Paper neutrals — warm parchment */
+  --paper-100: oklch(0.975 0.015 92);
+  --paper-200: oklch(0.968 0.019 92);
+  --paper-300: oklch(0.955 0.022 92);
+  --paper-400: oklch(0.945 0.024 92);
+  --paper-500: oklch(0.94 0.018 92);
+  --paper-600: oklch(0.925 0.03 92);
+  --paper-700: oklch(0.9 0.035 92);
+  --paper-line: oklch(0.89 0.025 92);
+  --paper-line-strong: oklch(0.86 0.025 92);
+
+  /* Paper ink — cool grey-teal on warm paper */
+  --ink-100: oklch(0.3 0.03 200);
+  --ink-200: oklch(0.42 0.02 200);
+  --ink-300: oklch(0.5 0.02 200);
+  --ink-400: oklch(0.62 0.02 200);
+  --ink-500: oklch(0.7 0.02 200);
+
+  /* Dusk neutrals */
+  --dusk-100: oklch(0.255 0.038 205);
+  --dusk-200: oklch(0.24 0.035 205);
+  --dusk-300: oklch(0.225 0.035 205);
+  --dusk-400: oklch(0.21 0.035 205);
+  --dusk-500: oklch(0.19 0.032 205);
+  --dusk-600: oklch(0.27 0.04 205);
+  --dusk-700: oklch(0.3 0.045 205);
+  --dusk-line: oklch(0.3 0.04 205);
+  --dusk-line-strong: oklch(0.32 0.04 205);
+  --lumen-100: oklch(0.92 0.02 92);
+  --lumen-200: oklch(0.74 0.02 92);
+  --lumen-300: oklch(0.66 0.025 92);
+  --lumen-400: oklch(0.58 0.03 205);
+  --lumen-500: oklch(0.45 0.04 205);
+
+  /* Signals — shared across themes */
+  --signal-amber: oklch(0.72 0.13 85);   /* needs you / approval */
+  --signal-green: oklch(0.68 0.12 145);  /* running / success */
+  --signal-rust: oklch(0.68 0.14 35);    /* failed / halted */
+  --signal-info: oklch(0.66 0.1 200);    /* done, informational */
+  --signal-green-bright: oklch(0.7 0.13 145);
+  --signal-info-dusk: oklch(0.62 0.09 210);
+
+  /* Accents — Paper leans blue, Dusk leans teal */
+  --accent-blue: oklch(0.62 0.1 200);
+  --accent-blue-deep: oklch(0.5 0.1 200);
+  --accent-teal: oklch(0.68 0.11 165);
+  --accent-teal-deep: oklch(0.72 0.1 165);
+
+  /* ── Semantic aliases: Paper (default) ── */
+  --canvas: var(--paper-500);
+  --surface-app: var(--paper-200);
+  --surface-panel: var(--paper-300);
+  --surface-rail: var(--paper-400);
+  --surface-raised: var(--paper-100);
+  --surface-sunken: oklch(0.92 0.025 92);
+  --surface-hover: var(--paper-600);
+  --surface-selected: var(--paper-700);
+  --surface-alert: oklch(0.955 0.035 92);
+  --surface-note: oklch(0.93 0.045 92);
+
+  --line: var(--paper-line);
+  --line-strong: var(--paper-line-strong);
+  --line-hair: oklch(0.9 0.025 92);
+  --line-alert: oklch(0.78 0.09 85);
+
+  --text-1: var(--ink-100);
+  --text-2: var(--ink-200);
+  --text-3: var(--ink-300);
+  --text-4: var(--ink-400);
+  --text-mark: var(--ink-500);
+  --text-on-accent: oklch(0.98 0.012 92);
+
+  --accent: var(--accent-blue);
+  --accent-quiet: var(--accent-blue-deep);
+  --affirm: oklch(0.62 0.12 145);
+  --badge-run-bg: oklch(0.9 0.05 145);
+  --badge-run-fg: oklch(0.45 0.1 145);
+  --meter-track: oklch(0.9 0.02 92);
+  --meter-fill: oklch(0.68 0.12 145);
+  --danger: oklch(0.66 0.14 35);
+  --danger-text: oklch(0.52 0.15 35);
+  /* Amber legible as prose rather than as a mark. The signal hue at mark
+     lightness disappears against Paper the moment it is set at 15px, which is
+     the same reason --danger-text exists beside --danger. The phone's lede is
+     the only place either is used as running text. */
+  --signal-amber-text: oklch(0.52 0.13 75);
+
+  --shadow-frame: 0 24px 60px -30px oklch(0.5 0.05 90 / 0.35);
+  --shadow-float: 0 18px 40px -20px oklch(0.4 0.05 200 / 0.65);
+  color-scheme: light;
+}
+
+/* ── Dusk ── set data-theme="dusk" on any container or <html> */
+[data-theme="dusk"] {
+  --canvas: var(--dusk-500);
+  --surface-app: var(--dusk-200);
+  --surface-panel: var(--dusk-300);
+  --surface-rail: var(--dusk-400);
+  --surface-raised: var(--dusk-100);
+  --surface-sunken: var(--dusk-400);
+  --surface-hover: var(--dusk-600);
+  --surface-selected: var(--dusk-700);
+  --surface-alert: oklch(0.27 0.045 195);
+  --surface-note: oklch(0.27 0.042 205);
+
+  --line: var(--dusk-line);
+  --line-strong: var(--dusk-line-strong);
+  --line-hair: var(--dusk-line);
+  --line-alert: oklch(0.45 0.09 85);
+
+  --text-1: var(--lumen-100);
+  --text-2: var(--lumen-200);
+  --text-3: var(--lumen-300);
+  --text-4: var(--lumen-400);
+  --text-mark: var(--lumen-500);
+  --text-on-accent: oklch(0.2 0.035 205);
+
+  --accent: var(--accent-teal);
+  --accent-quiet: var(--accent-teal-deep);
+  --affirm: var(--accent-teal);
+  --badge-run-bg: oklch(0.32 0.06 145);
+  --badge-run-fg: oklch(0.8 0.11 145);
+  --meter-track: oklch(0.32 0.04 205);
+  --meter-fill: var(--signal-green-bright);
+  --danger: oklch(0.5 0.12 35);
+  --danger-text: oklch(0.72 0.13 35);
+  --signal-amber-text: oklch(0.8 0.11 80);
+  --signal-info: var(--signal-info-dusk);
+
+  /* Re-declared here on purpose: a var() inside a custom property resolves on the
+     element that declares it, so the :root versions would carry Paper's line colour
+     into Dusk as a literal near-white value. */
+  --border: 1px solid var(--dusk-line);
+  --border-strong: 1px solid var(--dusk-line-strong);
+  --border-alert: 1px solid oklch(0.45 0.09 85);
+
+  --shadow-frame: 0 24px 60px -30px oklch(0.3 0.05 205 / 0.5);
+  --shadow-float: 0 18px 40px -20px oklch(0.14 0.03 205 / 0.7);
+  color-scheme: dark;
+}

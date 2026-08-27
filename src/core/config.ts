@@ -7,6 +7,21 @@ const optionalEnvString = z.preprocess(
 
 const runtimeConfigSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
+  /**
+   * Which interface to listen on. Loopback by default, which is a deliberate
+   * change of posture rather than a shrug: this server answers questions about
+   * the user's messages, contacts, calendar and screenshots, and holds no
+   * authentication of any kind. Bound to 0.0.0.0 it is that, offered to
+   * everyone on whatever wifi the laptop is on.
+   *
+   * Reaching it from another device is what `tailscale serve` is for — the
+   * daemon proxies from the tailnet to 127.0.0.1, so the app is reachable by
+   * exactly the machines the tailnet already vouches for and by nothing else.
+   * See `bun run serve:tailscale`.
+   *
+   * `HOST=0.0.0.0` puts it back, for a LAN you actually trust.
+   */
+  HOST: optionalEnvString.default("127.0.0.1"),
   LLM_PROVIDER: z.enum(["ollama", "openai", "openrouter"]).default("ollama"),
   LLM_ROUTES: optionalEnvString,
   MODEL: optionalEnvString.default("glm-5.2"),
@@ -49,6 +64,8 @@ const runtimeConfigSchema = z.object({
 
 export interface RuntimeConfig {
   port: number;
+  /** The interface to bind. Loopback unless HOST says otherwise. */
+  host: string;
   llmProvider: ModelProviderName;
   model: string;
   imageModel: string;
@@ -174,6 +191,7 @@ export function loadRuntimeConfig(
   const primaryRoute = modelRoutes[0]!;
   return {
     port: parsed.PORT,
+    host: parsed.HOST,
     llmProvider: primaryRoute.provider,
     model: primaryRoute.model,
     imageModel: parsed.IMAGE_MODEL ?? primaryRoute.model,

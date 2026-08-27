@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Phase 2 only. Refreshes ./hostmirror every 15 minutes so the containerised
+  worker sees recent iMessages and current contacts.
+
+    cp deploy/launchd/com.solenoid.hostmirror.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.solenoid.hostmirror.plist
+
+  This job reads ~/Library/Messages, so the binary launchd executes needs Full
+  Disk Access: System Settings → Privacy & Security → Full Disk Access → add
+  /bin/bash (and confirm with a manual `launchctl kickstart -k gui/$(id -u)/com.solenoid.hostmirror`).
+
+  Replace USERNAME below with your short username.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.solenoid.hostmirror</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/USERNAME/Documents/Code/solenoid-assistant/deploy/scripts/mirror-host-data.sh</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SOLENOID_REPO</key>
+    <string>/Users/USERNAME/Documents/Code/solenoid-assistant</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/USERNAME/Library/Logs/solenoid-hostmirror.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/USERNAME/Library/Logs/solenoid-hostmirror.log</string>
+</dict>
+</plist>

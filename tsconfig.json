@@ -26,5 +26,9 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+
+  // web/ is the browser half: it has DOM types and Bun does not, so it is a
+  // separate project with its own tsconfig. `bun run typecheck` runs both.
+  "exclude": ["web", "node_modules"]
 }

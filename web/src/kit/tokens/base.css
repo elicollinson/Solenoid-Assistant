@@ -1,0 +1,24 @@
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--text-2);
+  font: var(--text-body);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent-quiet); text-decoration: none; }
+a:hover { color: var(--accent); }
+button { font: inherit; }
+
+/* Phone frames scroll, but a device does not show a scrollbar. */
+[data-frame="phone"], [data-frame="phone"] * { scrollbar-width: none; }
+[data-frame="phone"]::-webkit-scrollbar, [data-frame="phone"] *::-webkit-scrollbar { width: 0; height: 0; }
+
+/* The design's transitions are colour-only, but the running ring is allowed to
+   move. Anyone who has asked the OS to stop animation gets a still ring. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

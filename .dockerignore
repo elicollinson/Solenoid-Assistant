@@ -1,0 +1,35 @@
+# Build context for deploy/Dockerfile. Keep this tight: everything here is
+# either personal data, host-platform binaries, or rebuilt inside the image.
+
+# Host-platform native modules (onnxruntime-node, sharp) — must be installed
+# inside the Linux image, never copied from a macOS checkout.
+node_modules
+
+.git
+.github
+.claude
+.agents
+.zed
+.pi
+.DS_Store
+
+# Secrets and personal data — mounted at runtime, never baked in.
+.env
+.env.*
+!.env.example
+data/
+okf/
+.screenshots/
+phoenix_data/
+logs/
+artifacts/
+models/
+
+# Rebuilt in the image
+web/dist/
+
+# Not needed at runtime
+LICENSE
+README.md
+drizzle.config.ts
+**/*.test.ts

@@ -1,0 +1,30 @@
+/* Two families, no third. Space Grotesk carries everything a person wrote;
+   IBM Plex Mono carries everything a machine produced — timestamps, tool
+   calls, ids, counts, section labels, and all-caps controls. */
+:root {
+  --text-display: 600 27px/1.2 var(--font-ui);
+  --text-title: 600 15px/1.35 var(--font-ui);
+  --text-body: 400 14px/1.6 var(--font-ui);
+  --text-body-sm: 400 13px/1.55 var(--font-ui);
+  --text-ui: 500 14px/1.3 var(--font-ui);
+  --text-ui-sm: 400 13px/1.3 var(--font-ui);
+
+  --text-mono: 400 11.5px/1.5 var(--font-mono);
+  --text-mono-meta: 400 11px/1.3 var(--font-mono);
+  --text-mono-control: 500 11px/1.3 var(--font-mono);
+  --text-mono-label: 400 10px/1.3 var(--font-mono);
+
+  /* Phone. Same two families; one step up because the reading distance is
+     shorter and every row is also a target. Three body steps, no more. */
+  --text-phone-display: 600 30px/1.15 var(--font-ui);  /* screen title */
+  --text-phone-title: 600 21px/1.25 var(--font-ui);    /* every sheet heading */
+  --text-phone-head: 600 16px/1.35 var(--font-ui);     /* row names, artifact titles */
+  --text-phone-lede: 400 15px/1.5 var(--font-ui);      /* screen lede, field values, long-form body */
+  --text-phone-body: 400 14px/1.55 var(--font-ui);     /* row ledes, sheet prose, refs */
+  --text-phone-note: 400 13px/1.6 var(--font-ui);      /* provenance notes, restraint lines */
+
+  --tracking-display: -0.02em;
+  --tracking-title: -0.01em;  /* sheet + aside headings */
+  --tracking-label: 0.16em;   /* mono section labels, uppercased */
+  --tracking-control: 0.08em; /* mono buttons + chips, uppercased */
+}

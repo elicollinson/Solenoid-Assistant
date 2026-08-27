@@ -1,0 +1,1 @@
+ALTER TABLE `evidence_links` ADD `title` text;

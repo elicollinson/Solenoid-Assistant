@@ -1,0 +1,20 @@
+/* Bauhaus: flat planes, 1px rules, near-square corners. Radii are small and
+   deliberate — 2px on controls, 3px on cards, 4px on the app frame. Only the
+   app frame casts a shadow; nothing inside it floats. */
+:root {
+  --radius-control: 2px;
+  --radius-card: 3px;
+  --radius-frame: 4px;
+  --radius-round: 50%;
+
+  --border: 1px solid var(--line);
+  --border-strong: 1px solid var(--line-strong);
+  --border-alert: 1px solid var(--line-alert);
+
+  --mark-sm: 7px;   /* rail bullet */
+  --mark-md: 13px;  /* feed status mark */
+
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
+  --dur-fast: 90ms;
+  --dur: 140ms;
+}

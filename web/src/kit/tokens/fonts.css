@@ -1,0 +1,7 @@
+/* Two hosted Google families, linked from index.html so the browser can start
+   fetching them before the CSS graph resolves. If licensed binaries ever land
+   in web/public/fonts, replace the <link> with @font-face rules here. */
+:root {
+  --font-ui: "Space Grotesk", Helvetica, Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}

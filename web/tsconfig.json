@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    // The browser half of the repo. The root tsconfig is Bun-only (no DOM), so
+    // web/ carries its own lib and excludes itself from the root project.
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleDetection": "force",
+    // "bun" is here for the render test, which drives the real seed and query
+    // through the real components. Browser code must not reach for Bun globals.
+    "types": ["vite/client", "bun"],
+    "jsx": "react-jsx",
+
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": ["src", "vite.config.ts"]
+}

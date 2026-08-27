@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- viewport-fit=cover is what makes env(safe-area-inset-*) non-zero, which
+         is how the tab bar clears the home indicator and the header clears the
+         notch once the app is installed. Without it the insets read 0 and the
+         phone frame runs under both. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Solenoid</title>
+
+    <!-- Installable: the manifest is what Chrome's install prompt and Safari's
+         Add to Dock both read. See web/public/manifest.webmanifest. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- iOS reads none of the manifest's icons for the home screen and will not
+         take an SVG here, so the PNG is named directly. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/icon-192.png" sizes="192x192" type="image/png" />
+
+    <!-- Standalone on an iPhone, and the status bar drawn over the app rather
+         than above it, which is what lets the header own the notch. -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Solenoid" />
+
+    <!-- The surround the OS paints around the frame: the canvas each theme sits
+         on, so an installed window has no seam at its edge. -->
+    <meta name="theme-color" content="#efebde" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#00181b" media="(prefers-color-scheme: dark)" />
+
+    <!-- Two families, no third. Linked here rather than @import-ed from CSS so
+         the browser starts fetching them before the style graph resolves. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+    />
+    <style>
+      /* 100dvh rather than 100%: on iOS the visible height changes as the URL
+         bar collapses, and a frame sized to the larger one hides its own tab
+         bar under the browser chrome until you scroll. */
+      html, body { height: 100dvh; }
+      body { display: grid; place-items: center; }
+
+      /* Installed, the frame is the window. There is nothing to centre it on and
+         nothing outside it to see, so it fills instead — the border, the corners
+         and the shadow that read as a device on a desktop canvas read as a
+         mistake when the OS is already drawing the window's own. */
+      @media (display-mode: standalone), (display-mode: fullscreen) {
+        body { place-items: stretch; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

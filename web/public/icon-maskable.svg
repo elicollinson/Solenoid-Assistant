@@ -1,0 +1,28 @@
+<!-- The maskable variant of the app icon: the same mark from assets/solenoid_logo.svg in the
+     Solenoid repo, on the design system's own dark plane.
+
+     Two things happen to the logo on the way in. The wordmark is dropped —
+     "LOCAL AGENT ARRAY" is 16px in a 512 viewBox, which is five pixels on a
+     home screen and mud at any icon size — and the mark is centred on its own
+     bounding box, which the wire's tail pulls right of the disc's centre.
+
+     The plane is the Dusk surface, oklch(0.24 0.035 205), written as hex
+     because an icon file cannot read the tokens. Dark because the coil is light
+     grey on grey: on Paper it would be a pale shape on a pale square.
+
+     Pulled inside the safe circle that Android and macOS crop to, so the wire
+     survives the mask. Regenerate the PNGs beside this with `bun run make:icons`. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#062427"/>
+  <g transform="translate(10.4 47) scale(0.95)">
+    <circle cx="256" cy="220" r="140" fill="#E5E5E5" stroke="#A0A0A0" stroke-width="2"/>
+    <circle cx="256" cy="220" r="110" stroke="#505050" stroke-width="4" fill="none"/>
+    <circle cx="256" cy="220" r="90" stroke="#505050" stroke-width="4" fill="none"/>
+    <circle cx="256" cy="220" r="70" stroke="#505050" stroke-width="4" fill="none"/>
+    <circle cx="256" cy="220" r="50" stroke="#505050" stroke-width="4" fill="none"/>
+    <circle cx="256" cy="220" r="35" fill="#FFFFFF" stroke="#333333" stroke-width="3"/>
+    <rect x="256" y="205" width="145" height="30" rx="4" fill="#D0D0D0" stroke="#A0A0A0" stroke-width="2"/>
+    <rect x="360" y="205" width="10" height="30" fill="#FF5000"/>
+    <circle cx="256" cy="220" r="15" fill="#D0D0D0"/>
+  </g>
+</svg>

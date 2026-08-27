@@ -45,3 +45,13 @@ phoenix_data/
 
 # Generated evaluation output (source datasets stay under src/data)
 /artifacts/evals/
+
+# SQLite database (personal data — messages, screenshots, calendar).
+# Migrations under drizzle/ ARE tracked; the database file is not.
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Built web assets. The source is tracked; the bundle is not.
+web/dist/

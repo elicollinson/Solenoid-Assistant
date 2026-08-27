@@ -7,6 +7,21 @@ const optionalEnvString = z.preprocess(
 
 const runtimeConfigSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
+  /**
+   * Which interface to listen on. Loopback by default, which is a deliberate
+   * change of posture rather than a shrug: this server answers questions about
+   * the user's messages, contacts, calendar and screenshots, and holds no
+   * authentication of any kind. Bound to 0.0.0.0 it is that, offered to
+   * everyone on whatever wifi the laptop is on.
+   *
+   * Reaching it from another device is what `tailscale serve` is for — the
+   * daemon proxies from the tailnet to 127.0.0.1, so the app is reachable by
+   * exactly the machines the tailnet already vouches for and by nothing else.
+   * See `bun run serve:tailscale`.
+   *
+   * `HOST=0.0.0.0` puts it back, for a LAN you actually trust.
+   */
+  HOST: optionalEnvString.default("127.0.0.1"),
   LLM_PROVIDER: z.enum(["ollama", "openai", "openrouter"]).default("ollama"),
   LLM_ROUTES: optionalEnvString,
   MODEL: optionalEnvString.default("glm-5.2"),
@@ -38,6 +53,35 @@ const runtimeConfigSchema = z.object({
   PHOENIX_TRACING_ENABLED: optionalEnvString.default("true"),
   PHOENIX_COLLECTOR_ENDPOINT: optionalEnvString.default("http://localhost:6006"),
   PHOENIX_PROJECT_NAME: optionalEnvString.default("solenoid-assistant"),
+  /**
+   * Structured logging. The console half is always on; the VictoriaLogs half
+   * is best-effort and never in the way of a request — see src/core/logging.
+   */
+  LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  /** How the console line is written. `auto` is pretty on a TTY, JSON off it. */
+  LOG_FORMAT: z.enum(["auto", "pretty", "json"]).default("auto"),
+  /** The `service` field on every record. Each entrypoint sets its own default. */
+  LOG_SERVICE: optionalEnvString,
+  VICTORIALOGS_ENABLED: optionalEnvString.default("true"),
+  VICTORIALOGS_ENDPOINT: optionalEnvString.default("http://localhost:9428"),
+  VICTORIALOGS_BATCH_SIZE: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().int().min(1).max(10_000).default(200),
+  ),
+  VICTORIALOGS_FLUSH_MS: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().int().min(50).max(60_000).default(2_000),
+  ),
+  /** Records held in memory before the oldest are dropped. Bounded on purpose:
+   *  a collector that is down must cost memory, not availability. */
+  VICTORIALOGS_QUEUE_LIMIT: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().int().min(100).max(1_000_000).default(10_000),
+  ),
+  VICTORIALOGS_TIMEOUT_MS: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().int().min(100).max(60_000).default(5_000),
+  ),
   NOTION_API_TOKEN: optionalEnvString,
   NOTION_DS_BOOKS: optionalEnvString,
   NOTION_DS_MOVIES: optionalEnvString,
@@ -49,6 +93,8 @@ const runtimeConfigSchema = z.object({
 
 export interface RuntimeConfig {
   port: number;
+  /** The interface to bind. Loopback unless HOST says otherwise. */
+  host: string;
   llmProvider: ModelProviderName;
   model: string;
   imageModel: string;
@@ -79,6 +125,21 @@ export interface RuntimeConfig {
     collectorEndpoint: string;
     projectName: string;
   };
+  logging: {
+    level: LogLevelName;
+    format: "auto" | "pretty" | "json";
+    /** Undefined until an entrypoint names itself; LOG_SERVICE overrides both. */
+    service?: string;
+    victoriaLogs: {
+      enabled: boolean;
+      /** Base URL. The ingest path is appended by the sink. */
+      endpoint: string;
+      batchSize: number;
+      flushMs: number;
+      queueLimit: number;
+      timeoutMs: number;
+    };
+  };
   notion: {
     apiToken?: string;
     dataSourceIds: {
@@ -95,6 +156,8 @@ export interface RuntimeConfig {
 }
 
 export type ModelProviderName = "ollama" | "openai" | "openrouter";
+
+export type LogLevelName = "debug" | "info" | "warn" | "error";
 
 export interface ModelRouteConfig {
   provider: ModelProviderName;
@@ -174,6 +237,7 @@ export function loadRuntimeConfig(
   const primaryRoute = modelRoutes[0]!;
   return {
     port: parsed.PORT,
+    host: parsed.HOST,
     llmProvider: primaryRoute.provider,
     model: primaryRoute.model,
     imageModel: parsed.IMAGE_MODEL ?? primaryRoute.model,
@@ -203,6 +267,19 @@ export function loadRuntimeConfig(
       enabled: parsed.PHOENIX_TRACING_ENABLED !== "false",
       collectorEndpoint: parsed.PHOENIX_COLLECTOR_ENDPOINT,
       projectName: parsed.PHOENIX_PROJECT_NAME,
+    },
+    logging: {
+      level: parsed.LOG_LEVEL,
+      format: parsed.LOG_FORMAT,
+      ...(parsed.LOG_SERVICE ? { service: parsed.LOG_SERVICE } : {}),
+      victoriaLogs: {
+        enabled: parsed.VICTORIALOGS_ENABLED !== "false",
+        endpoint: parsed.VICTORIALOGS_ENDPOINT.replace(/\/+$/, ""),
+        batchSize: parsed.VICTORIALOGS_BATCH_SIZE,
+        flushMs: parsed.VICTORIALOGS_FLUSH_MS,
+        queueLimit: parsed.VICTORIALOGS_QUEUE_LIMIT,
+        timeoutMs: parsed.VICTORIALOGS_TIMEOUT_MS,
+      },
     },
     notion: {
       ...(parsed.NOTION_API_TOKEN ? { apiToken: parsed.NOTION_API_TOKEN } : {}),

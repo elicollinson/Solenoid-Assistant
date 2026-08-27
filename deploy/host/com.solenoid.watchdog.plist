@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Optional, but it is the difference between "restarts when it crashes" and
+  "is actually up". Every two minutes: does /health answer; if it has not
+  answered three times running, kickstart the server. See watchdog.sh.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.solenoid.watchdog</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/eli/Documents/Code/solenoid-assistant/deploy/host/watchdog.sh</string>
+	</array>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>HOME</key>
+		<string>/Users/eli</string>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StartInterval</key>
+	<integer>120</integer>
+	<key>Nice</key>
+	<integer>10</integer>
+
+	<key>StandardOutPath</key>
+	<string>/Users/eli/Library/Logs/solenoid/watchdog.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/eli/Library/Logs/solenoid/watchdog.log</string>
+</dict>
+</plist>

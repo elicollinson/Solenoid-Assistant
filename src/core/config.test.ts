@@ -1,6 +1,26 @@
 import { describe, expect, test } from "bun:test";
 import { loadRuntimeConfig, requireNotionDataSourceIds } from "./config";
 
+describe("where it listens", () => {
+  // Worth its own test because the cost of getting it wrong is silent. This
+  // server reads messages, contacts, calendar and screenshots and authenticates
+  // nobody; bound to every interface it offers all of that to whatever network
+  // the laptop is on, and nothing about the running app looks any different.
+  test("is this machine only, unless something says otherwise", () => {
+    expect(loadRuntimeConfig({}).host).toBe("127.0.0.1");
+  });
+
+  test("and HOST is how you say otherwise, deliberately", () => {
+    expect(loadRuntimeConfig({ HOST: "0.0.0.0" }).host).toBe("0.0.0.0");
+  });
+
+  test("an empty HOST is not a way to say 0.0.0.0 by accident", () => {
+    // A commented-out line in .env leaves the variable set and empty. That has
+    // to read as "unset" rather than as "bind everything".
+    expect(loadRuntimeConfig({ HOST: "" }).host).toBe("127.0.0.1");
+  });
+});
+
 describe("loadRuntimeConfig", () => {
   test("applies one set of runtime defaults", () => {
     const config = loadRuntimeConfig({});

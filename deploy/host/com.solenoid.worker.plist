@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The cron worker (tasks.yaml). Separate from the server on purpose: a task
+  that wedges on a vision call should not take the UI down with it, and
+  launchd restarts the two independently.
+
+  Goes through deploy/host/worker-entry.ts rather than src/worker.ts directly,
+  to wait for the server's /health first — see the comment in that file.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.solenoid.worker</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/eli/.bun/bin/bun</string>
+		<string>run</string>
+		<string>deploy/host/worker-entry.ts</string>
+	</array>
+
+	<key>WorkingDirectory</key>
+	<string>/Users/eli/Documents/Code/solenoid-assistant</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>HOME</key>
+		<string>/Users/eli</string>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>ProcessType</key>
+	<string>Standard</string>
+	<key>Nice</key>
+	<integer>5</integer>
+
+	<key>StandardOutPath</key>
+	<string>/Users/eli/Library/Logs/solenoid/worker.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/eli/Library/Logs/solenoid/worker.log</string>
+</dict>
+</plist>

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Phoenix, natively, on :6006 — the last thing that was keeping Docker around.
+
+    uv tool install arize-phoenix
+
+  PHOENIX_WORKING_DIR points at the same phoenix_data/ the container used, so
+  the existing traces carry over untouched.
+
+  Optional: PHOENIX_TRACING_ENABLED=false in .env turns every span into a
+  no-op and this job can be skipped entirely.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.solenoid.phoenix</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/eli/.local/bin/phoenix</string>
+		<string>serve</string>
+	</array>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/eli/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>HOME</key>
+		<string>/Users/eli</string>
+		<key>PHOENIX_WORKING_DIR</key>
+		<string>/Users/eli/Documents/Code/solenoid-assistant/phoenix_data</string>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>Nice</key>
+	<integer>10</integer>
+
+	<key>StandardOutPath</key>
+	<string>/Users/eli/Library/Logs/solenoid/phoenix.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/eli/Library/Logs/solenoid/phoenix.log</string>
+</dict>
+</plist>

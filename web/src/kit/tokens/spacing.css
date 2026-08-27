@@ -1,0 +1,53 @@
+/* 2px base, but the system only uses these steps. Feed rhythm is 14px between
+   cards, 16px inside them; rails breathe at 22px. */
+:root {
+  --sp-1: 3px;
+  --sp-2: 6px;
+  --sp-3: 8px;
+  --sp-4: 10px;
+  --sp-5: 12px;
+  --sp-6: 14px;
+  --sp-7: 16px;
+  --sp-8: 22px;
+  --sp-9: 26px;
+  --sp-10: 30px;
+  --sp-11: 40px;
+
+  --rail-w: 232px;
+  --aside-w: 296px;
+  --measure: 72ch;   /* max prose width in a feed column */
+
+  /* Phone. The rail becomes a tab bar, the aside disappears, and every
+     tappable thing grows to --touch. Gutters are wider than desktop padding
+     because there is no column structure left to do the framing. */
+  --touch: 44px;          /* minimum hit target on a phone */
+  --gutter-phone: 22px;   /* single content gutter, edge to edge */
+  --safe-bottom: 26px;    /* home-indicator inset under the tab bar */
+  --safe-top: 0px;        /* nothing above the header in a browser tab */
+  --tabbar-h: 44px;       /* row height inside the tab bar, before insets */
+  --fab: 56px;            /* floating ask button */
+  --timeline-gap: 22px;   /* between timeline entries */
+
+  /* Derived, so nothing measures the tab bar by hand. */
+  --tabbar-total: calc(var(--sp-4) + var(--touch) + var(--safe-bottom));  /* 80px */
+  --ask-bottom: calc(var(--tabbar-total) + var(--sp-8));                  /* ask button clears the bar */
+  --phone-scroll-pad: calc(var(--fab) + var(--sp-11));                    /* last row clears the ask button */
+  --sheet-h-short: 462px;   /* a detail that fits in one screen */
+  --sheet-h: 640px;         /* the standard object sheet */
+  --sheet-h-tall: 700px;    /* lists of sources, and the artifacts themselves */
+}
+
+/* Installed, the frame is the window and the OS furniture is inside it rather
+   than above it: the status bar and the notch sit over the header, the home
+   indicator over the tab bar. The insets only report a real number when the
+   document asks for viewport-fit=cover, which web/index.html does.
+
+   --safe-bottom keeps its 26px floor rather than becoming the inset. On a
+   device without a home indicator the inset is 0, and a tab bar sitting flush
+   on the bottom edge is the design's mistake, not the platform's. */
+@media (display-mode: standalone), (display-mode: fullscreen) {
+  :root {
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: max(26px, env(safe-area-inset-bottom, 0px));
+  }
+}

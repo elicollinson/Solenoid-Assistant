@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The HTTP server and the built web app, on :3000.
+
+  A LaunchAgent, not a LaunchDaemon: everything this process reads — chat.db,
+  the AddressBook, the Photos library — is per-user and TCC-gated, and none of
+  it exists in the pre-login system context.
+
+  Full Disk Access must be granted to the binary in ProgramArguments[0], which
+  is why bun is named by absolute path rather than found on PATH.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.solenoid.server</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/eli/.bun/bin/bun</string>
+		<string>run</string>
+		<string>src/server.ts</string>
+	</array>
+
+	<!-- Bun reads .env from the working directory, and DATABASE_URL,
+	     PROMPT_GUARD_MODEL_PATH and the drizzle migrations folder are all
+	     relative paths. This one key is what makes every one of them resolve. -->
+	<key>WorkingDirectory</key>
+	<string>/Users/eli/Documents/Code/solenoid-assistant</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<!-- launchd hands a job almost no environment. Without /opt/homebrew/bin
+		     here, Bun.spawn(["osxphotos", ...]) fails with ENOENT and every
+		     screenshot workflow dies at the first call. -->
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<!-- src/imessage/reader.ts and src/contacts/trustGate.ts both build
+		     their default paths out of $HOME. -->
+		<key>HOME</key>
+		<string>/Users/eli</string>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<!-- launchd's default is 10s. A little more headroom keeps a misconfigured
+	     start from spinning the CPU and filling the log. -->
+	<key>ThrottleInterval</key>
+	<integer>15</integer>
+	<!-- Opts out of the I/O and CPU throttling launchd applies to background
+	     work. This one answers requests. -->
+	<key>ProcessType</key>
+	<string>Interactive</string>
+
+	<key>StandardOutPath</key>
+	<string>/Users/eli/Library/Logs/solenoid/server.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/eli/Library/Logs/solenoid/server.log</string>
+</dict>
+</plist>

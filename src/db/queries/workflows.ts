@@ -16,6 +16,7 @@ import type {
   WorkflowExecution,
   WorkflowGate,
   WorkflowLogLevel,
+  WorkflowLogLine,
   WorkflowRow,
   WorkflowRunDetail,
   WorkflowStat,
@@ -386,13 +387,7 @@ function detailFor(db: Db, run: Run): WorkflowRunDetail | null {
     .all()
     .map((n) => n.text);
 
-  const logs = db
-    .select()
-    .from(s.runLogs)
-    .where(eq(s.runLogs.runId, run.id))
-    .orderBy(asc(s.runLogs.seq))
-    .all()
-    .map((l) => ({ t: logStamp(l.at), level: l.level as WorkflowLogLevel, text: l.text }));
+  const logs = loadRunLogs(db, run.id);
 
   const transcript = run.transcriptConversationId
     ? db
@@ -447,4 +442,23 @@ function detailFor(db: Db, run: Run): WorkflowRunDetail | null {
     logs,
     transcript,
   };
+}
+
+/**
+ * The runner's own log lines for one run, out of the run record.
+ *
+ * The thin half of the story on purpose: this is the four-or-five sentences
+ * the runner writes down, kept in SQLite so a run's log survives the log store
+ * being wiped, off, or not yet started. The fuller version — every line every
+ * part of the app emitted under this run's id — comes from VictoriaLogs, and
+ * `GET /api/runs/:runId/logs` prefers it and falls back to this.
+ */
+export function loadRunLogs(db: Db, runId: string): WorkflowLogLine[] {
+  return db
+    .select()
+    .from(s.runLogs)
+    .where(eq(s.runLogs.runId, runId))
+    .orderBy(asc(s.runLogs.seq))
+    .all()
+    .map((l) => ({ t: logStamp(l.at), level: l.level as WorkflowLogLevel, text: l.text }));
 }

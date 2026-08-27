@@ -1,3 +1,13 @@
+# The two local observability backends, for development.
+#
+#   docker compose up -d
+#
+# Phoenix holds the traces; VictoriaLogs holds the logs. They are separate
+# stores on purpose and joined by ids rather than merged: every log record
+# carries the `trace_id` of the span it happened inside, so a span in Phoenix
+# and `trace_id:"<id>"` in VictoriaLogs are two views of one moment.
+#
+# The whole stack — app, worker, and both of these — is deploy/compose.yaml.
 services:
   phoenix:
     image: arizephoenix/phoenix:latest
@@ -12,3 +22,45 @@ services:
       # container stop/delete (and even `docker compose down -v`).
       - ./phoenix_data:/mnt/data
     restart: unless-stopped
+
+  victorialogs:
+    # The upstream image with a static busybox added, so the container can
+    # answer a healthcheck at all — it is `scratch` otherwise, with no shell
+    # and no HTTP client in it. See deploy/victorialogs.Dockerfile.
+    build:
+      context: .
+      dockerfile: deploy/victorialogs.Dockerfile
+      args:
+        # Pinned for the same reason Phoenix should be: this is an always-on
+        # box, and a reboot that silently pulls a new log store is not a thing
+        # to find out about later. Bump it deliberately.
+        VICTORIALOGS_VERSION: v1.52.0
+    image: solenoid-victorialogs:local
+    container_name: victorialogs
+    command:
+      - -storageDataPath=/victoria-logs-data
+      # A month. Long enough to answer "when did this start", short enough that
+      # a laptop-sized disk never becomes the reason to go looking.
+      - -retentionPeriod=30d
+      - -httpListenAddr=:9428
+    ports:
+      # Published to the host so anything outside the compose network can query
+      # it: the app running under `bun start`, a separate UI, or curl. The
+      # built-in explorer is at /select/vmui.
+      - "9428:9428"
+    volumes:
+      # A named volume rather than a bind mount: VictoriaLogs manages its own
+      # on-disk layout and merges it in the background, which is exactly the
+      # workload the macOS/VM filesystem boundary is worst at.
+      - victorialogs-data:/victoria-logs-data
+    healthcheck:
+      # /health answers `OK` once the storage is open and the listener is up.
+      test: ["CMD", "/bin/busybox", "wget", "--spider", "-q", "http://127.0.0.1:9428/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  victorialogs-data:

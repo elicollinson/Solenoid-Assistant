@@ -5,7 +5,12 @@ import type { KnowledgeDetailPayload, KnowledgePayload } from "../../../src/shar
 import type { RecommendationDetailPayload, RecommendationsPayload } from "../../../src/shared/recommendations";
 import type { ReminderDetailPayload, RemindersPayload } from "../../../src/shared/reminders";
 import type { Surface } from "../../../src/shared/surface";
-import type { WorkflowDetailPayload, WorkflowRunAccepted, WorkflowsPayload } from "../../../src/shared/workflows";
+import type {
+  WorkflowDetailPayload,
+  WorkflowRunAccepted,
+  WorkflowRunLogsPayload,
+  WorkflowsPayload,
+} from "../../../src/shared/workflows";
 
 export type * from "../../../src/shared/calendar";
 export type * from "../../../src/shared/home";
@@ -109,6 +114,22 @@ export function useWorkflows(surface: Surface = "desktop", nonce = 0): Load<Work
 export function useWorkflow(slug: string | null, surface: Surface = "desktop", nonce = 0): Load<WorkflowDetailPayload> {
   const path = detailPath("/api/workflows", slug);
   return useJson<WorkflowDetailPayload>(path && on(path, surface), nonce);
+}
+
+/**
+ * The log for one run, out of the log store.
+ *
+ * A read of its own rather than another field on the workflow payload: the
+ * store is a second service, it can be off or unreachable, and a slow answer
+ * from it must not hold up the summary, the trace and the output that come
+ * from the database. The payload says which source answered, so the pane can
+ * be honest about it.
+ *
+ * Bump `nonce` to re-read — the detail pane already does that on a timer while
+ * a run is going, which is what makes the log grow on screen as it goes.
+ */
+export function useRunLogs(runId: string | null, nonce = 0): Load<WorkflowRunLogsPayload> {
+  return useJson<WorkflowRunLogsPayload>(runId ? `/api/runs/${encodeURIComponent(runId)}/logs` : null, nonce);
 }
 
 /** Everything I'm holding for you. */

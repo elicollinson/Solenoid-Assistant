@@ -1,6 +1,6 @@
 import { loadRuntimeConfig } from "./core/config";
 import { getDb } from "./db";
-import { log } from "./core/logger";
+import { configureLogging, flushLogs, log, shutdownLogging } from "./core/logger";
 import { initTracing, shutdownTracing } from "./core/tracing";
 import { initNotionMcpCache, shutdownNotionMcpCache } from "./mcp/notionCache";
 import { installShutdownHandler } from "./core/shutdown";
@@ -8,6 +8,10 @@ import { disposePromptGuard } from "./safety/promptGuard";
 import { syncWorkflowCatalog } from "./workflows/sync";
 
 const config = loadRuntimeConfig();
+// Before anything else that might have something to say. Naming the service
+// here rather than in the logger is what separates this process's lines from
+// the worker's in a store that holds both.
+configureLogging({ service: "solenoid-server", config });
 initTracing(config);
 
 // The Workflows surface reads its list out of the database, so anything this
@@ -42,4 +46,7 @@ installShutdownHandler(async () => {
   await disposePromptGuard();
   await shutdownNotionMcpCache();
   await shutdownTracing();
+  // Last, so it carries whatever the four lines above had to say.
+  await flushLogs();
+  await shutdownLogging();
 });

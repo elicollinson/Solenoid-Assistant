@@ -24,6 +24,13 @@ x-app-env: &app-env
   # reliable, and this file is opened by two containers at once.
   DATABASE_URL: /app/data/solenoid.db
   PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006
+  # Structured logs. Inside the compose network this is a service name; on
+  # the host (`bun start`) the default in .env.example reaches the published
+  # port instead. Shipping is best-effort either way — see src/core/logging.
+  VICTORIALOGS_ENDPOINT: http://victorialogs:9428
+  # Containers have no TTY, so `auto` would pick JSON anyway. Said out loud
+  # because `docker compose logs` is the other reader of these lines.
+  LOG_FORMAT: json
   PROMPT_GUARD_MODEL_PATH: /app/models/prompt-guard-2-86m
   # Only read when the host mirror in deploy/scripts/mirror-host-data.sh is in
   # use; harmless otherwise. Requires the small config change in deploy/README.
@@ -73,6 +80,11 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      # Started, not healthy. Logging is best-effort by design and the app must
+      # never wait on it — this only means the collector is usually up by the
+      # time the first line is written.
+      victorialogs:
+        condition: service_started
     command: ["bun", "run", "src/server.ts"]
     # Loopback-only publish: the API has no authentication. Reach it from other
     # devices with `bun run serve:tailscale` on the host, exactly as before.
@@ -95,6 +107,8 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      victorialogs:
+        condition: service_started
     command: ["bun", "run", "src/worker.ts"]
     restart: unless-stopped
 
@@ -113,5 +127,46 @@ services:
     restart: unless-stopped
     logging: *logging
 
+  victorialogs:
+    # The upstream image with a static busybox added, and nothing else — see
+    # deploy/victorialogs.Dockerfile for why that one megabyte is there.
+    build:
+      context: ..
+      dockerfile: deploy/victorialogs.Dockerfile
+      args:
+        # Pinned for the same reason Phoenix should be: this is an always-on
+        # box, and a reboot that silently pulls a new log store is not a thing
+        # to find out about later. Bump it deliberately.
+        VICTORIALOGS_VERSION: v1.52.0
+    image: solenoid-victorialogs:local
+    command:
+      - -storageDataPath=/victoria-logs-data
+      # A month, which is what the disk on a small host will carry without
+      # anyone having to think about it again.
+      - -retentionPeriod=30d
+      - -httpListenAddr=:9428
+    volumes:
+      # A named volume, not a bind mount, for the same reason the database is
+      # one: this process manages its own on-disk layout and merges it in the
+      # background, which is the workload the macOS/VM filesystem boundary
+      # handles worst.
+      - victorialogs-data:/victoria-logs-data
+    ports:
+      # Loopback-only, like everything else here — there is no authentication
+      # in front of a log store that holds this app's messages about your
+      # messages. This is the port a separate UI queries, and the port the
+      # built-in explorer at /select/vmui answers on.
+      - "127.0.0.1:9428:9428"
+    healthcheck:
+      # /health answers `OK` once the storage is open and the listener is up.
+      test: ["CMD", "/bin/busybox", "wget", "--spider", "-q", "http://127.0.0.1:9428/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+    logging: *logging
+
 volumes:
   solenoid-data:
+  victorialogs-data:

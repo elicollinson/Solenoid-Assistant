@@ -513,6 +513,7 @@ function One({
       trigger={trigger}
       edits={edits}
       askOnOpen={route.ask === true}
+      nonce={writes.reads}
     />
   );
 }

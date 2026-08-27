@@ -1,8 +1,12 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { AgentHome } from "./app/AgentHome";
+import { installClientLogging } from "./log";
 import { registerServiceWorker } from "./pwa";
 import "./kit/tokens.css";
+
+// Before the first render, so an error thrown on the way up is still caught.
+installClientLogging();
 
 // Production only, and after load. See ./pwa.ts for why.
 registerServiceWorker();

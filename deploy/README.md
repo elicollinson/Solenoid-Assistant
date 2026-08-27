@@ -52,10 +52,11 @@ HTTP API instead.
   tailscale serve ─► 127.0.0.1:3000        └──► [ worker ]  cron, no port
                                                       │
   LM Studio / Ollama ◄── host.docker.internal ────────┤
-                                                      ▼
-                                               [ phoenix ]  :6006 → 127.0.0.1:6006
+                                                      ├──► [ phoenix ]      spans, :6006 → 127.0.0.1:6006
+                                                      └──► [ victorialogs ] logs,  :9428 → 127.0.0.1:9428
 
-  volume solenoid-data ── /app/data/solenoid.db (single writer: app + worker only)
+  volume solenoid-data     ── /app/data/solenoid.db (single writer: app + worker only)
+  volume victorialogs-data ── /victoria-logs-data   (30d retention)
   bind ../okf, ../models:ro, ../.env, ../tasks.yaml:ro
 ```
 
@@ -129,6 +130,8 @@ over `.env` under Bun, so the container-only overrides live in
 | `HOST` | `127.0.0.1` | `0.0.0.0` | Loopback inside a container means nothing can reach it, including the port publish. The posture is preserved by publishing to `127.0.0.1:3000:3000` — the API is still this-machine-only, and `bun run serve:tailscale` on the host still works unchanged. |
 | `DATABASE_URL` | `./data/solenoid.db` | `/app/data/solenoid.db` | Named volume. |
 | `PHOENIX_COLLECTOR_ENDPOINT` | `http://localhost:6006` | `http://phoenix:6006` | Service DNS. |
+| `VICTORIALOGS_ENDPOINT` | `http://localhost:9428` | `http://victorialogs:9428` | Service DNS. Shipping is best-effort, so nothing waits on this being up. |
+| `LOG_FORMAT` | `auto` | `json` | No TTY in a container, so `auto` would choose JSON anyway. Said out loud because `docker compose logs` reads these too. |
 | `PROMPT_GUARD_MODEL_PATH` | `models/prompt-guard-2-86m` | `/app/models/prompt-guard-2-86m` | Absolute, since cwd is `/app`. |
 | `OPENAI_BASE_URL` | LAN IP or `localhost` | `http://host.docker.internal:1234/v1` **if LM Studio runs on this Mac** | A LAN IP needs no change. `localhost` does. |
 | `OLLAMA_API_URL` | `https://ollama.com` or `localhost:11434` | `http://host.docker.internal:11434` for a local Ollama | Same reason. |

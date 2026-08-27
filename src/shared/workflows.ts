@@ -101,6 +101,35 @@ export interface WorkflowLogLine {
   t: string;
   level: WorkflowLogLevel;
   text: string;
+  /**
+   * Which part of the app said it — "workflow", "http", "imessage".
+   *
+   * Absent on the lines kept in the run record, which are all the runner's
+   * own. Present on the ones read back out of the log store, where a run's
+   * log is everything that happened during it rather than the four sentences
+   * the runner wrote down about it.
+   */
+  component?: string;
+  /** Which process said it: "solenoid-server", "solenoid-worker". */
+  service?: string;
+}
+
+/**
+ * The log for one run, and where it came from.
+ *
+ * Two sources on purpose. VictoriaLogs is the one worth reading — it has every
+ * line from every part of the app that ran under this run's id, correlated by
+ * trace. The run record in SQLite holds only the runner's own bookkeeping, and
+ * is what answers when the log store is off or unreachable. `source` says
+ * which you are looking at rather than letting the thinner one pass for the
+ * fuller one.
+ */
+export interface WorkflowRunLogsPayload {
+  runId: string;
+  source: "victorialogs" | "database";
+  /** Why the store was not used. Null when it was. */
+  note: string | null;
+  lines: WorkflowLogLine[];
 }
 
 export interface WorkflowTurn {

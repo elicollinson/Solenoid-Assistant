@@ -15,7 +15,8 @@ import {
   type TraceNode,
 } from "../kit";
 import { WorkflowRunForm } from "./WorkflowRunForm";
-import type { HomeAction, WorkflowDetailPayload, WorkflowExecution, WorkflowTraceNode } from "./api";
+import { useRunLogs } from "./api";
+import type { HomeAction, WorkflowDetailPayload, WorkflowExecution, WorkflowLogLine, WorkflowTraceNode } from "./api";
 
 /**
  * Starting a run, from the surface's point of view.
@@ -103,6 +104,7 @@ export function WorkflowDetail({
   trigger,
   edits,
   askOnOpen = false,
+  nonce = 0,
 }: {
   workflow: WorkflowDetailPayload;
   tab: string;
@@ -117,6 +119,11 @@ export function WorkflowDetail({
   /** Arrive with the trigger form already asking — what Run on the table
    *  means, as against Open. Read once, on mount. */
   askOnOpen?: boolean;
+  /** Bumped by whatever is re-reading this workflow — every two seconds while
+   *  a run is going. The Logs tab is a separate read, and this is what makes
+   *  it grow on screen alongside the rest rather than stall at whatever it
+   *  said when the tab was opened. */
+  nonce?: number;
 }) {
   const current: Tab = (TABS as readonly string[]).includes(tab) ? (tab as Tab) : "Summary";
   const state = paused ? "idle" : workflow.state;
@@ -227,7 +234,7 @@ export function WorkflowDetail({
           <ExecutionsPane workflow={workflow} run={shown} onSelect={setSelected} />
         ) : null}
         {current === "Trace" ? (shown ? <TracePane workflow={workflow} run={shown} /> : <Nothing />) : null}
-        {current === "Logs" ? (shown ? <LogsPane run={shown} /> : <Nothing />) : null}
+        {current === "Logs" ? (shown ? <LogsPane run={shown} nonce={nonce} /> : <Nothing />) : null}
       </div>
     </main>
   );
@@ -716,15 +723,47 @@ const WITHOUT_WRITEUP: Record<string, string> = {
 
 const LEVELS = ["All", "Warnings", "Errors"] as const;
 
-function LogsPane({ run }: { run: WorkflowExecution }) {
+/**
+ * The raw log for the run being looked at.
+ *
+ * Read from the log store rather than from the workflow payload. The store has
+ * every line anything in the app emitted while this run was in flight —
+ * correlated by run id and trace id, not just the runner's own four sentences
+ * — and the payload's copy is the fallback for when the store is off or
+ * unreachable. Which one answered is said under the stream rather than left
+ * for you to wonder about, because the two are not the same log.
+ *
+ * A store that is slow or down never blocks this pane: the fallback is already
+ * on screen from the workflow read, and the store's answer replaces it when it
+ * lands.
+ */
+function LogsPane({ run, nonce }: { run: WorkflowExecution; nonce: number }) {
   const [level, setLevel] = useState<(typeof LEVELS)[number]>("All");
-  const all = run.detail?.logs ?? [];
+  const stored = useRunLogs(run.id, nonce);
+
+  const kept: WorkflowLogLine[] = run.detail?.logs ?? [];
+  const all = stored.status === "ready" ? stored.data.lines : kept;
+  const note =
+    stored.status === "ready"
+      ? stored.data.source === "victorialogs"
+        ? "VictoriaLogs"
+        : `run record — ${stored.data.note ?? "the log store had nothing for this run"}`
+      : stored.status === "error"
+        ? `run record — the log store did not answer (${stored.message})`
+        : "run record";
 
   if (all.length === 0) return <p style={{ ...PROSE, color: "var(--text-3)" }}>{run.label} kept no log.</p>;
   const lines: LogLine[] = all
     .filter((l) => level === "All" || (level === "Warnings" && (l.level === "warn" || l.level === "error")) || (level === "Errors" && l.level === "error"))
     // The log stream has four colours; `debug` shares the quietest of them.
-    .map((l) => ({ t: l.t, level: l.level === "debug" ? "info" : l.level, text: l.text }));
+    .map((l) => ({
+      t: l.t,
+      level: l.level === "debug" ? "info" : l.level,
+      text: l.text,
+      // Only worth drawing once a line could have come from somewhere other
+      // than the runner, which is only true of the store's answer.
+      ...(l.component && l.component !== "workflow" ? { tag: l.component } : {}),
+    }));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-6)", maxWidth: 900 }}>
@@ -740,7 +779,7 @@ function LogsPane({ run }: { run: WorkflowExecution }) {
       </div>
       <LogStream lines={lines} style={{ maxHeight: 420 }} />
       <span style={{ font: "var(--text-mono)", color: "var(--text-4)" }}>
-        {lines.length} of {all.length} lines
+        {lines.length} of {all.length} lines · {note}
       </span>
     </div>
   );

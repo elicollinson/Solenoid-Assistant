@@ -75,6 +75,15 @@ The application reads and validates runtime settings through `src/core/config.ts
 | `PHOENIX_TRACING_ENABLED` | `true` | Trace export |
 | `PHOENIX_COLLECTOR_ENDPOINT` | `http://localhost:6006` | Phoenix collector |
 | `PHOENIX_PROJECT_NAME` | `solenoid-assistant` | Phoenix project |
+| `LOG_LEVEL` | `info` | Floor for the console and the log store |
+| `LOG_FORMAT` | `auto` | Console shape: `auto`, `pretty`, `json` |
+| `LOG_SERVICE` | per entrypoint | Override the `service` field on every record |
+| `VICTORIALOGS_ENABLED` | `true` | Ship structured logs to VictoriaLogs |
+| `VICTORIALOGS_ENDPOINT` | `http://localhost:9428` | VictoriaLogs base URL |
+| `VICTORIALOGS_BATCH_SIZE` | `200` | Records per ingest POST |
+| `VICTORIALOGS_FLUSH_MS` | `2000` | How long a partial batch waits |
+| `VICTORIALOGS_QUEUE_LIMIT` | `10000` | Records held while the collector is down |
+| `VICTORIALOGS_TIMEOUT_MS` | `5000` | Timeout for ingestion and for queries |
 | `TAVILY_API_KEY` | unset | Search-backed agents |
 | `NOTION_API_TOKEN` | unset | Deterministic Notion REST search |
 | `NOTION_MCP_*` | unset | Notion OAuth/MCP connection |
@@ -133,6 +142,8 @@ set `structuredOutputStrategy` to `native` or `two-stage`; the global
 | POST | `/api/workflows/:slug/stop` | Stop the run it has going, and stop recording what it returns |
 | POST | `/api/workflows/:slug/pause` | Pause or resume a workflow |
 | PUT | `/api/workflows/:slug/instructions` | Replace the standing instruction, retiring the one it supersedes |
+| GET | `/api/runs/:runId/logs` | Everything logged under one run id, from VictoriaLogs where there is one |
+| POST | `/api/logs` | Accept structured log records from the browser app into the same store |
 
 The original `/messageExtraction` and `/safetyClassifier` paths remain as deprecated compatibility aliases.
 
@@ -780,13 +791,100 @@ Task implementations are registered in `src/tasks/index.ts`; schedules and argum
 
 ## Observability
 
-Agent, LLM, tool, evaluator, and task spans are exported to Phoenix. Start the local collector with:
+Two local backends, started together, joined by ids rather than merged:
 
 ```bash
 docker compose up -d
 ```
 
-Then open `http://localhost:6006` and select the configured project.
+| | Where | What it holds |
+| --- | --- | --- |
+| Phoenix | `http://localhost:6006` | Agent, LLM, tool, evaluator and task spans |
+| VictoriaLogs | `http://localhost:9428` | Every log line every service writes |
+
+Phoenix is unchanged — open it and select the configured project. Trace export
+is still governed by `PHOENIX_TRACING_ENABLED`, and a log store that is off or
+unreachable does not affect it.
+
+### Structured logs
+
+Everything in the repo says things through one logger (`src/core/logger.ts`),
+and every line goes three places: the console, the active trace span as an
+event, and VictoriaLogs as a JSON record. The record has the same fields
+everywhere:
+
+| Field | Always | Where it comes from |
+| --- | --- | --- |
+| `timestamp` | yes | RFC3339 with milliseconds |
+| `level` | yes | `debug`, `info`, `ok`, `warn`, `error` |
+| `service` | yes | The process: `solenoid-server`, `solenoid-worker`, `solenoid-migrate`, `solenoid-web` |
+| `component` | yes | The part inside it: `http`, `workflow`, `task`, `scheduler`, … |
+| `message` | yes | The line itself |
+| `trace_id`, `span_id` | when a span is active | The active OpenTelemetry span — the same ids Phoenix has |
+| `request_id` | inside an HTTP request | `x-request-id` if the caller sent one, minted otherwise, and echoed on the response |
+| `session_id` | when the caller sends one | The `x-session-id` header |
+| `run_id`, `workflow` | inside a workflow run | The run the work is happening under |
+
+`trace_id`, `span_id`, `request_id`, `session_id` and `run_id` are ambient:
+they attach to a line from wherever it happens, at any depth, without being
+passed down through function signatures.
+
+Shipping is best-effort by construction. Records go onto a bounded in-memory
+queue and are POSTed in batches to VictoriaLogs' JSON-line ingestion API; the
+call site never awaits and never sees an error. A collector that is down costs
+you logs — the console keeps printing, and the oldest queued records are
+dropped once the queue fills — and never costs you a request. `LOG_FORMAT`
+keeps the console readable while developing: pretty on a terminal, JSON in a
+container.
+
+### Querying
+
+VictoriaLogs ships its own explorer at `http://localhost:9428/select/vmui/`,
+and the same [LogsQL](https://docs.victoriametrics.com/victorialogs/logsql/)
+queries work over HTTP:
+
+```bash
+# Everything from the worker in the last hour
+curl http://localhost:9428/select/logsql/query \
+  -d 'query=service:="solenoid-worker" _time:1h'
+
+# Only what went wrong, across every service, today
+curl http://localhost:9428/select/logsql/query -d 'query=level:=error _time:1d'
+
+# One trace, end to end — paste the id straight out of Phoenix
+curl http://localhost:9428/select/logsql/query \
+  -d 'query=trace_id:="4bf92f3577b34da6a3ce929d0e0e4736"'
+
+# One HTTP request, from the id on its response header
+curl http://localhost:9428/select/logsql/query \
+  -d 'query=request_id:="8f14e45f-ceea-467a-9f0e-a25d6d0ba2f1"'
+
+# One workflow run, everything that happened under it
+curl http://localhost:9428/select/logsql/query \
+  -d 'query=run_id:="01M10APT3J486B07RVYXBFC45D" | sort by (_time)'
+
+# A window rather than a duration, and the last 20 lines of it
+curl http://localhost:9428/select/logsql/query \
+  -d 'query=service:="solenoid-server" _time:[2026-08-26T09:00:00Z, 2026-08-26T17:00:00Z]' \
+  -d 'limit=20'
+```
+
+Time ranges are `_time:5m`, `_time:1h`, `_time:1d`, or an explicit
+`_time:[from, to]`. Fields combine by juxtaposition —
+`service:="solenoid-worker" level:=error _time:6h` is all three at once.
+
+### The Logs tab
+
+The Workflows detail pane reads its log from VictoriaLogs rather than from the
+database: `GET /api/runs/:runId/logs` queries `run_id:=<id>` and answers with
+everything anything in the app said while that run was in flight, not just the
+runner's own bookkeeping. The run record in SQLite keeps those few lines as a
+fallback, and the pane says which of the two it is showing — a thinner log
+passing silently for the fuller one is worse than an empty pane.
+
+The browser app logs to the same store under `service:"solenoid-web"`, via
+`POST /api/logs`. Uncaught errors and unhandled rejections go there on their
+own; `clientLog()` in `web/src/log.ts` is how anything else does.
 
 ## Validation
 

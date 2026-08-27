@@ -14,7 +14,11 @@
 import { and, desc, eq } from "drizzle-orm";
 import { ulid, type Db } from "../db";
 import * as s from "../db/schema";
-import { log } from "../core/logger";
+import { log as baseLog, withLogContext } from "../core/logger";
+
+/** Everything this file says is `component:workflow`, including the lines
+ *  written before a run's context exists. */
+const log = baseLog.child("workflow");
 import { SemanticConventions, safeJson, withSpanKind } from "../core/tracing";
 import { catalogEntry } from "./catalog";
 import { parseWorkflowArgs, runnableWorkflow, type RunnableWorkflow, type WorkflowOutcome } from "./registry";
@@ -214,7 +218,25 @@ export function startWorkflowRun(db: Db, slug: string, rawArgs: unknown, options
  * handler, and an unhandled rejection would take the process with it. A failure
  * is a state on the run row, which is where the screen reads it from anyway.
  */
-async function execute(
+function execute(
+  db: Db,
+  runId: string,
+  runnable: RunnableWorkflow,
+  args: unknown,
+  ordinal: number,
+  signal: AbortSignal,
+): Promise<void> {
+  // Everything the work says, at any depth, comes out carrying this run's id
+  // without a single signature between here and there having to mention it.
+  // That is what makes `run_id:"01J..."` in VictoriaLogs the whole story of a
+  // run rather than the four sentences the runner wrote down about it.
+  return withLogContext(
+    { component: "workflow", run_id: runId, workflow: runnable.slug },
+    () => run(db, runId, runnable, args, ordinal, signal),
+  );
+}
+
+async function run(
   db: Db,
   runId: string,
   runnable: RunnableWorkflow,
@@ -234,6 +256,11 @@ async function execute(
         [SemanticConventions.INPUT_MIME_TYPE]: "application/json",
       },
       async (span) => {
+        // The run row has carried `trace_id` and `span_id` columns since the
+        // schema was written; this is what finally fills them. It is also what
+        // makes the three views of one run the same run: the Trace tab, the
+        // Phoenix span, and `trace_id:"..."` in the log store.
+        rememberTrace(db, runId, span);
         const result = await runnable.execute(args, { signal });
         span.setAttributes({
           [SemanticConventions.OUTPUT_VALUE]: safeJson(result.output),
@@ -261,6 +288,15 @@ async function execute(
   } finally {
     inFlight.delete(runId);
   }
+}
+
+/** Put the run's trace and span ids on its row, best-effort. A tracing setup
+ *  that is switched off hands out a no-op span whose ids are all zeroes; there
+ *  is nothing to correlate with, so nothing is written. */
+function rememberTrace(db: Db, runId: string, span: { spanContext(): { traceId: string; spanId: string } }): void {
+  const { traceId, spanId } = span.spanContext();
+  if (!traceId || /^0+$/.test(traceId)) return;
+  db.update(s.workflowRuns).set({ traceId, spanId }).where(eq(s.workflowRuns.id, runId)).run();
 }
 
 /** A finished run: the step, the result, the changed list and the write-up. */
@@ -376,10 +412,21 @@ function summarise(args: unknown): string | null {
   return pairs.length ? pairs.join(", ") : null;
 }
 
-/** One log line. Written outside any transaction so it lands while the run is
- *  still open and the browser's next poll can see it. */
+/**
+ * One log line, written twice on purpose.
+ *
+ * The row goes in outside any transaction so it lands while the run is still
+ * open and the browser's next poll can see it — that is the durable half, and
+ * what the Logs tab falls back to when the log store is not there.
+ *
+ * The same line also goes through `log`, which is what puts it in VictoriaLogs
+ * carrying `run_id`, the active `trace_id`, and the service that emitted it.
+ * That call is fire-and-forget by construction, so a log store that is down
+ * cannot slow a run down or fail one.
+ */
 function write(db: Db, runId: string, seq: number, level: (typeof s.LOG_LEVEL)[number], text: string, at: Date): void {
   db.insert(s.runLogs).values({ runId, at, seq, level, text }).run();
+  log[level](text, { run_id: runId, seq });
 }
 
 /**

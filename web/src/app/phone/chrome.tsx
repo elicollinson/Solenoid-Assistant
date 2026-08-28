@@ -44,6 +44,11 @@ const TAB_LABEL: Record<PhoneTab, string> = {
  */
 export const phoneFrame = (installed: boolean): CSSProperties => ({
   position: "relative",
+  // The border is part of the 390, not added to it. Without this the frame is
+  // 392px wide inside a 390px viewport and the whole app scrolls sideways by
+  // the width of its own border — which on a phone is a page that slides under
+  // your thumb while you are trying to scroll it down.
+  boxSizing: "border-box",
   width: installed ? "100%" : "min(390px, 100vw)",
   // dvh rather than vh: on iOS the visible height changes as the URL bar
   // collapses, and vh is the taller of the two, which hides the tab bar.

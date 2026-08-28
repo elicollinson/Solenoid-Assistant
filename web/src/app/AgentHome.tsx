@@ -49,6 +49,11 @@ import {
  * the OS is already drawing the real one around them.
  */
 const frame = (installed: boolean): CSSProperties => ({
+  // The border is inside the 1240, not added to it — otherwise the frame is
+  // 1242px wide in any window narrower than that and the whole app scrolls
+  // sideways by two pixels. The phone frame is built the same way, and the
+  // same two pixels were the more obvious bug there.
+  boxSizing: "border-box",
   width: installed ? "100%" : "min(1240px, 100vw)",
   height: installed ? "100dvh" : "min(840px, 100dvh)",
   overflow: "hidden",

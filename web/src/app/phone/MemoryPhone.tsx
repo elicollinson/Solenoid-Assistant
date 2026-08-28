@@ -18,6 +18,24 @@ import { PhoneBody, PhoneRestraint, PhoneTitle } from "./chrome";
 
 const MONO_META = { font: "var(--text-mono-meta)", color: "var(--text-4)" } as const;
 
+/**
+ * Two lines, then an ellipsis.
+ *
+ * The design's six memories are named like people — "Marta Vance" — and fit on
+ * one line. This store's three hundred are named like sentences, and an
+ * unclamped row runs to 357px: two and a half rows to a screen, and the list
+ * becomes 60,000px of scrolling. The desktop already clamps its blurb for the
+ * same reason; the phone has to clamp the name as well, because here the name
+ * is the long half.
+ */
+const CLAMP_2 = {
+  display: "-webkit-box",
+  WebkitLineClamp: 2,
+  WebkitBoxOrient: "vertical",
+  overflow: "hidden",
+  minWidth: 0,
+} as const;
+
 const LABEL = {
   font: "var(--text-mono-label)",
   letterSpacing: "var(--tracking-label)",
@@ -109,8 +127,8 @@ function Row({ row, onOpen }: { row: KnowledgeRow; onOpen: () => void }) {
     >
       <StatusMark state={row.state} size={11} style={{ marginTop: 5 }} />
       <span style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
-        <span style={{ display: "flex", alignItems: "center", gap: "var(--sp-4)", font: "var(--text-phone-head)", color: "var(--text-1)" }}>
-          {row.name}
+        <span style={{ display: "flex", alignItems: "flex-start", gap: "var(--sp-4)", font: "var(--text-phone-head)", color: "var(--text-1)" }}>
+          <span style={CLAMP_2}>{row.name}</span>
           {row.state === "attention" ? (
             <Badge tone="attention" style={{ whiteSpace: "nowrap", flexShrink: 0 }}>
               needs you
@@ -118,11 +136,18 @@ function Row({ row, onOpen }: { row: KnowledgeRow; onOpen: () => void }) {
           ) : null}
         </span>
         {row.blurb ? (
-          <span style={{ font: "var(--text-phone-body)", color: "var(--text-3)", textWrap: "pretty" }}>{row.blurb}</span>
+          <span style={{ font: "var(--text-phone-body)", color: "var(--text-3)", textWrap: "pretty", ...CLAMP_2 }}>{row.blurb}</span>
         ) : null}
         <span style={{ display: "flex", alignItems: "center", gap: "var(--sp-4)", ...MONO_META }}>
-          <span>{row.facts === 1 ? "1 fact" : `${row.facts} facts`}</span>
-          <span>·</span>
+          {/* Most memories state what they know in prose, so "0 facts" is the
+              common case and says nothing. The desktop prints a dash in its
+              column; the phone has no column, so it prints nothing at all. */}
+          {row.facts > 0 ? (
+            <>
+              <span>{row.facts === 1 ? "1 fact" : `${row.facts} facts`}</span>
+              <span>·</span>
+            </>
+          ) : null}
           <span>{row.when}</span>
           {row.stale ? <span style={{ color: "var(--signal-amber-text)" }}>· due a check</span> : null}
         </span>
@@ -147,8 +172,11 @@ function Detail({
   return (
     <Sheet label={row.kind} onClose={onClose} height="var(--sheet-h)" style={{ bottom: "var(--tabbar-total)" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-4)" }}>
-          <StatusMark state={row.state} size={12} />
+        {/* Top-aligned, not centred: these names run to two lines, and a mark
+            centred against two lines sits in the gap between them looking
+            detached from both. */}
+        <div style={{ display: "flex", alignItems: "flex-start", gap: "var(--sp-4)" }}>
+          <StatusMark state={row.state} size={12} style={{ marginTop: 7 }} />
           <h2
             style={{
               margin: 0,
@@ -161,8 +189,15 @@ function Detail({
             {row.name}
           </h2>
         </div>
-        <span style={{ font: "var(--text-mono)", color: "var(--text-4)", wordBreak: "break-all" }}>
-          {[row.uri, loaded ? `rev ${loaded.rev}` : null, row.facts === 1 ? "1 fact" : `${row.facts} facts`].filter(Boolean).join(" · ")}
+        {/* Only the uri breaks mid-token: it is one long unspaced string with
+            nowhere else to break. Applying that to the whole line put "facts"
+            on a line of its own underneath "0". */}
+        <span style={{ font: "var(--text-mono)", color: "var(--text-4)" }}>
+          <span style={{ wordBreak: "break-all" }}>{row.uri}</span>
+          {loaded ? <span style={{ whiteSpace: "nowrap" }}> · rev {loaded.rev}</span> : null}
+          {row.facts > 0 ? (
+            <span style={{ whiteSpace: "nowrap" }}> · {row.facts === 1 ? "1 fact" : `${row.facts} facts`}</span>
+          ) : null}
         </span>
       </div>
 
@@ -190,6 +225,18 @@ function Detail({
         >
           <span style={{ font: "var(--text-title)", color: "var(--text-1)" }}>Two answers for one field</span>
           <span style={{ font: "var(--text-phone-body)", color: "var(--text-2)", textWrap: "pretty" }}>{loaded.conflict}</span>
+          {/* Drawn disabled, like every other write here: `okf/` is the source
+              of truth for memory and nothing in this app writes to it yet. The
+              design draws both ways out, and a conflict panel that states the
+              problem and offers no answer is the screen shrugging. */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)" }}>
+            <Button variant="affirm" size="touch" disabled>
+              Keep the newer one
+            </Button>
+            <Button size="touch" disabled>
+              Keep the older one
+            </Button>
+          </div>
         </div>
       ) : null}
 
@@ -285,6 +332,9 @@ function Detail({
         </Button>
         <Button size="touch" disabled>
           Add a fact
+        </Button>
+        <Button variant="bare" size="touch" disabled>
+          Forget this
         </Button>
       </div>
     </Sheet>

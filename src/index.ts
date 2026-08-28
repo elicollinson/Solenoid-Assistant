@@ -2,6 +2,7 @@ import { Elysia, t } from "elysia";
 import { openapi } from "@elysiajs/openapi";
 import { loadTasksConfig } from "./tasks";
 import { agentRoutes } from "./http/routes/agents";
+import { createChatRoutes } from "./http/routes/chat";
 import { messageRoutes } from "./http/routes/messages";
 import { safetyRoutes } from "./http/routes/safety";
 import { screenshotRoutes } from "./http/routes/screenshots";
@@ -45,6 +46,7 @@ export const app = new Elysia({
   .use(messageRoutes)
   .use(safetyRoutes)
   .use(createUiRoutes())
+  .use(createChatRoutes())
   .use(createLogRoutes())
   // Last, and only if built: its wildcard would otherwise answer for routes
   // that belong to the API above it.

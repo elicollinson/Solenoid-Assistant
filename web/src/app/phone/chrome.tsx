@@ -7,23 +7,29 @@
 // that disagreed with the others about what the phone can reach would be a bug
 // nobody notices until they tap it.
 import type { CSSProperties, ReactNode } from "react";
-import { TabBar } from "../../kit";
+import { AskDock, TabBar } from "../../kit";
 import { useInstalled } from "../frame";
 
 /**
- * The four destinations, in the order the bar draws them.
+ * The five destinations, in the order the bar draws them.
  *
- * The rail carries seven on the desktop. The design deletes three of them here
+ * Chat is first and it is a tab, which is the design's own arrangement — the
+ * ask button is a way to SAY something from wherever you are, not the way to
+ * get to the conversation. Building it as the only route was a guess, and a
+ * wrong one; the disc is an `AskDock` now and this is the door.
+ *
+ * The rail carries seven on the desktop. The design deletes two of them here
  * rather than shrinking them: Reminders and Recommendations have no phone
  * screen drawn, and the aside they lived beside disappears below 700px. They
  * are absent, not hidden — nothing on the phone claims they exist.
  */
-export const PHONE_TABS = ["Activity", "Calendar", "Things I know", "Workflows"] as const;
+export const PHONE_TABS = ["Chat", "Activity", "Calendar", "Things I know", "Workflows"] as const;
 export type PhoneTab = (typeof PHONE_TABS)[number];
 
 /** What the bar calls each one. "Things I know" is the rail's name for the
  *  store and does not fit a quarter of 390px, so the bar says Memory. */
 const TAB_LABEL: Record<PhoneTab, string> = {
+  Chat: "Chat",
   Activity: "Activity",
   Calendar: "Calendar",
   "Things I know": "Memory",
@@ -70,12 +76,23 @@ export function PhoneScreen({
   meta,
   tab,
   onTab,
+  onAsk,
   children,
 }: {
   /** The mono line top-right: "8 workflows", "Aug 24 – 30". */
   meta?: ReactNode;
   tab: PhoneTab;
   onTab: (tab: PhoneTab) => void;
+  /**
+   * Say something from here.
+   *
+   * Every screen gets the disc, because the design puts one on every screen:
+   * asking is not a destination you navigate to, it is something you do from
+   * wherever you already are. It is not how you REACH Chat — that is the first
+   * tab — and the dock says so before you type: "Sending starts a new
+   * conversation."
+   */
+  onAsk?: (text: string) => void;
   children?: ReactNode;
 }) {
   const installed = useInstalled();
@@ -113,6 +130,8 @@ export function PhoneScreen({
       </header>
 
       {children}
+
+      {onAsk ? <AskDock onSend={onAsk} /> : null}
 
       <TabBar
         items={PHONE_TABS.map((label) => ({ label: TAB_LABEL[label], selected: label === tab }))}
@@ -157,11 +176,10 @@ export function PhoneRestraint({ children }: { children?: ReactNode }) {
 /**
  * The scrolling body between the title and the tab bar.
  *
- * The design pads its foot by `--phone-scroll-pad`, which is the ask button
- * plus clearance: the disc floats over the bottom-right of the list, and the
- * last row has to be scrollable out from under it. Nothing floats here — the
- * ask button opens Chat, and there is no chat to open — so the padding is
- * ordinary breathing room until there is. Swap it back when the disc arrives.
+ * The foot is padded by `--phone-scroll-pad`, which is the ask button plus
+ * clearance: the disc floats over the bottom-right of the list, so the last row
+ * has to be scrollable out from under it. It was ordinary breathing room while
+ * there was no chat to open; the disc is here now, so this is back.
  */
 export function PhoneBody({ children, style }: { children?: ReactNode; style?: CSSProperties }) {
   return (
@@ -170,7 +188,7 @@ export function PhoneBody({ children, style }: { children?: ReactNode; style?: C
         flex: 1,
         minHeight: 0,
         overflow: "auto",
-        padding: "0 var(--gutter-phone) var(--sp-9)",
+        padding: "0 var(--gutter-phone) var(--phone-scroll-pad)",
         ...style,
       }}
     >

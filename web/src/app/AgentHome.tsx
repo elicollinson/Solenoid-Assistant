@@ -7,6 +7,7 @@ import { AgentAside } from "./AgentAside";
 import { AgentRail } from "./AgentRail";
 import { CalendarDetail } from "./CalendarDetail";
 import { CalendarView } from "./CalendarView";
+import { ChatView } from "./ChatView";
 import { KnowledgeObject } from "./KnowledgeObject";
 import { RecommendationDetail } from "./RecommendationDetail";
 import { RecommendationsView, type LocalStance } from "./RecommendationsView";
@@ -15,6 +16,7 @@ import { RemindersView, type LocalMark } from "./RemindersView";
 import { ThingsIKnowView } from "./ThingsIKnowView";
 import { WorkflowDetail, type WorkflowEdits, type WorkflowTrigger } from "./WorkflowDetail";
 import { WorkflowsView } from "./WorkflowsView";
+import { useChat } from "./chat";
 import { pendingDecisionFor, withoutResolved } from "./settle";
 import {
   useCalendar,
@@ -189,6 +191,8 @@ function DesktopHome() {
         />
       ) : null}
 
+      {home.status === "ready" && route.view === "Chat" ? <Chat /> : null}
+
       {home.status === "ready" && route.view === "Activity" ? (
         <Activity home={home.data} resolved={resolved} onInvoke={invoke} />
       ) : null}
@@ -215,6 +219,18 @@ function DesktopHome() {
       ) : null}
     </div>
   );
+}
+
+/**
+ * The one destination that writes.
+ *
+ * Its own component rather than a branch above, because `useChat` holds a live
+ * connection: mounting it under the switch is what guarantees the stream is
+ * closed when you navigate away, rather than left running behind another
+ * screen.
+ */
+function Chat() {
+  return <ChatView chat={useChat()} />;
 }
 
 /**

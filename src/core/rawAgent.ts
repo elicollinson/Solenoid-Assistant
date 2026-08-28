@@ -568,6 +568,22 @@ export class Agent {
     return {};
   }
 
+  /**
+   * Every assistant turn, the moment it lands in the transcript.
+   *
+   * A no-op here, and the only way to watch a run from outside without a
+   * subclass reimplementing `loop`. A chat needs it: the model says "I'll put a
+   * hold on Thursday" and then calls the tool in the SAME turn, so a screen
+   * that waited for the run to finish would draw the approval bubble before the
+   * sentence it is an answer to.
+   *
+   * Called after screening and after the push, so an override sees exactly what
+   * the next model call will: never a turn that was about to abort the run.
+   * Overrides must not throw and must not mutate `message` — a provider needs
+   * its reasoning and tool payload back unedited to continue.
+   */
+  protected onAssistantTurn(_message: ChatMessage): void {}
+
   // Open a custom child span of any OpenInference kind (RETRIEVER, EVALUATOR,
   // GUARDRAIL, ...) from a subclass without importing OpenTelemetry.
   protected withChildSpan<T>(
@@ -687,6 +703,7 @@ export class Agent {
         log.info(`\n[thinking] ${msg.thinking.slice(0, 200)}...`);
       }
       messages.push(msg); // preserve native reasoning/tool payload for continuation
+      this.onAssistantTurn(msg);
 
       if (this.isRefusal(msg.finishReason)) {
         throw new AgentRunError(

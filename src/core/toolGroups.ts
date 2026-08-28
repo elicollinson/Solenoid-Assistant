@@ -599,6 +599,18 @@ export class ToolSession {
     return this.open.has(claim.group) ? claim.tool : undefined;
   }
 
+  /**
+   * Which group a name belongs to, open or not — including a loader's own.
+   *
+   * Needed because a tool name does not reliably say: nine groups name their
+   * tools `<group>_<verb>`, and `read_imessages` and `lookup_contact` do not.
+   * Anything that has to attribute a call to a group has to ask rather than
+   * parse, or it will be wrong about exactly the two that read the world.
+   */
+  ownerOf(name: string): string | undefined {
+    return this.claimed.get(name)?.group;
+  }
+
   /** Whether a name belongs to a group this run has not opened — the one case
    *  worth a better error than "unknown tool". */
   unopenedOwnerOf(name: string): string | undefined {

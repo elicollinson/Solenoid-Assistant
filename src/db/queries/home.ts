@@ -174,6 +174,23 @@ export function loadHome(db: Db, now: Date = new Date(), surface: Surface = "des
     db.select({ n: sql<number>`count(*)` }).from(s.workflowRuns).where(eq(s.workflowRuns.state, "running")),
   );
 
+  // What the agent has asked you in the chat and is still holding a run on.
+  // Blocking, specifically: a suggestion waiting in the feed is not the same
+  // as a turn that has stopped mid-sentence and cannot go on without you.
+  const chatWaiting = count(
+    db
+      .select({ n: sql<number>`count(*)` })
+      .from(s.decisions)
+      .innerJoin(s.conversations, eq(s.conversations.id, s.decisions.subjectId))
+      .where(
+        and(
+          eq(s.decisions.state, "open"),
+          eq(s.decisions.blocking, true),
+          eq(s.conversations.channel, "agent_chat"),
+        ),
+      ),
+  );
+
   const unsettled = count(
     db
       .select({ n: sql<number>`count(*)` })
@@ -190,6 +207,9 @@ export function loadHome(db: Db, now: Date = new Date(), surface: Surface = "des
       {
         label: "Today",
         items: [
+          // First, because it is the one destination you go to rather than are
+          // sent to. Amber when it has stopped and is waiting on you.
+          { label: "Chat", count: chatWaiting || null, dot: chatWaiting ? "amber" : null },
           { label: "Activity", count: activityCount || null, dot: null },
           { label: "Calendar", count: null, dot: null },
           { label: "Reminders", count: remindersDue || null, dot: null },

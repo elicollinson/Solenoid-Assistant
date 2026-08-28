@@ -1,19 +1,35 @@
-// The whole path in one test: design fixtures → SQLite → the recommendation
+// The whole path in one test: the mutations → SQLite → the recommendation
 // queries → the components the design specifies. It renders the real payload,
 // so a column renamed on the server or a prop dropped in the kit fails here
 // rather than in a browser.
+//
+// The rows are written rather than seeded, because the seed writes none: the
+// Recommendations table is the agent's to fill at runtime. What is transcribed
+// from the design is the content, so the assertions can still be read against
+// the boards.
+//
+// Evidence is only checked as far as the wiring goes. Its rendering has one
+// shape across the product and reminders.render.test.tsx already draws it
+// through every branch; what belongs here is that a suggestion's citations
+// reach the section under it.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createDb, runMigrations, type Db } from "../../../src/db";
+import * as s from "../../../src/db/schema";
 import {
   loadRecommendation,
   loadRecommendations,
   type RecommendationDetailPayload,
   type RecommendationsPayload,
 } from "../../../src/db/queries/recommendations";
+import {
+  answerRecommendation,
+  citeForRecommendation,
+  proposeRecommendation,
+} from "../../../src/db/mutations/recommendations";
 import { seedDesignFixtures } from "../../../src/db/seed/design";
 import { zonedTime } from "../../../src/db/seed/time";
 import { RecommendationDetail } from "./RecommendationDetail";
@@ -24,6 +40,7 @@ let db: Db;
 let list: RecommendationsPayload;
 
 const MORNING = zonedTime(2026, 8, 25, 9, 20);
+const at = (day: number, hour: number, minute = 0) => zonedTime(2026, 8, day, hour, minute);
 const NO_STANCES = new Map<string, LocalStance>();
 const noop = () => {};
 
@@ -53,7 +70,103 @@ beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "solenoid-recommendations-render-"));
   db = createDb(join(dir, "test.db"));
   runMigrations(db);
+  // For the screen's own line above the list, and for a conversation to cite.
   seedDesignFixtures(db, { now: MORNING });
+
+  const spendFloor = proposeRecommendation(db, {
+    title: "Let me settle vendor differences under £50 myself",
+    blurb:
+      "I asked you about fourteen of these last quarter and you approved every one. I stopped short of a rule because you never gave me one.",
+    confidence: "strong",
+    prose: [
+      "Every reconciliation run this quarter turned up a handful of differences small enough that the answer never changed. I brought fourteen of them to you and you approved fourteen.",
+      "I could have inferred a threshold from that and started acting on it. I didn't, because a spend rule is yours to write, not mine to assume.",
+    ],
+    restraint:
+      "I did not apply this while waiting. The four differences from this morning's run are still sitting unresolved.",
+    basisLabel: "14 approvals · 0 rejections",
+    scopeLabel: "Vendor reconciliation",
+    scopeOkfUri: "okf:policy/spend-floor",
+    from: "6 runs",
+    effect: [
+      ["Questions I'd stop asking", "roughly 12 a quarter"],
+      ["Money in scope", "£50 per line, £600 seen"],
+    ],
+    affirm: "Set the floor at £50",
+    quiet: "Keep asking me",
+    formedAt: at(25, 6, 40),
+  });
+
+  // Any conversation will do: what this checks is that the citation reaches the
+  // section, and that the words on the link win over the source's own name.
+  const [conversation] = db.select({ id: s.conversations.id }).from(s.conversations).limit(1).all();
+  citeForRecommendation(
+    db,
+    spendFloor,
+    [
+      {
+        sourceId: conversation?.id ?? "",
+        title: "The fourteenth approval",
+        why: "It's the clearest statement that the amount, not the vendor, is what you're deciding on.",
+      },
+    ],
+    {},
+    MORNING,
+  );
+
+  proposeRecommendation(db, {
+    title: "Move inbox triage to 05:30 on Tuesdays",
+    blurb: "Your Tuesday standup notes land at 05:45, so the six o'clock run reads them a week late.",
+    confidence: "strong",
+    basisLabel: "7 runs missed the notes",
+    scopeOkfUri: "okf:task/inbox-triage",
+    affirm: "Shift Tuesdays to 05:30",
+    quiet: "Leave the schedule",
+    formedAt: at(25, 6, 12),
+  });
+
+  proposeRecommendation(db, {
+    title: "Stop drafting replies to Ferrier Row",
+    blurb: "You rewrote my last five drafts to that address almost entirely.",
+    basisLabel: "5 drafts, 5 rewritten",
+    scopeOkfUri: "okf:contact/ferrier-row",
+    affirm: "Hand me the thread instead",
+    quiet: "Keep drafting",
+    formedAt: at(24, 14, 20),
+  });
+
+  const adopted = proposeRecommendation(db, {
+    title: "Group quarter-boundary differences rather than asking per invoice",
+    blurb: "You took this one in August. I've held it since.",
+    confidence: "strong",
+    prose: ["You took this after a run that asked you nineteen separate questions about the same quarter boundary."],
+    effect: [["Runs under it", "6"]],
+    affirm: "Keep it",
+    quiet: "Drop the rule",
+    formedAt: at(9, 6, 12),
+  });
+  answerRecommendation(db, adopted, "adopted", { basisLabel: "6 runs since" }, at(12, 9, 2));
+
+  const declined = proposeRecommendation(db, {
+    title: "Send the weekly digest without waiting for the finance source",
+    blurb: "You said no, and said why: a partial digest reads as a complete one.",
+    affirm: "Send it anyway",
+    quiet: "Keep stopping",
+    formedAt: at(1, 21, 30),
+  });
+  answerRecommendation(db, declined, "declined", {}, at(4, 21, 14));
+
+  // One sentence and no account of itself, so the detail draws the sections it
+  // has and nothing else.
+  proposeRecommendation(db, {
+    title: "Move the Thursday standup to Friday",
+    blurb: "You've moved the Thursday standup three weeks running. Want me to shift it to Friday for good?",
+    basisLabel: "three weeks of moves",
+    affirm: "Do it",
+    quiet: "Dismiss",
+    formedAt: MORNING,
+  });
+
   list = loadRecommendations(db, MORNING);
 });
 
@@ -157,12 +270,21 @@ describe("one suggestion", () => {
     expect(html).toContain("Vendor reconciliation");
   });
 
-  test("what it was formed from names each artifact and why it was kept", () => {
+  test("what it was formed from is titled by the citation, not by the source", () => {
     const html = detailMarkup("Let me settle");
     expect(html).toContain("What I formed it from");
+    // The link's own title wins: a source is cited as the part of it that
+    // mattered, which is usually not what the source calls itself.
     expect(html).toContain("The fourteenth approval");
-    expect(html).toContain("Approvals ledger, this quarter");
-    expect(html).toContain("3 messages · 1 pinned");
+    // …and the row still describes the source it points at.
+    expect(html).toContain("direct chat with me");
+    // Why it was kept is drawn when the row is opened, which static markup does
+    // not reach; reminders.render.test.tsx opens one.
+    expect(detail("Let me settle").evidence[0]?.why).toStartWith("It's the clearest statement");
+  });
+
+  test("a suggestion with nothing cited draws no evidence section at all", () => {
+    expect(detailMarkup("Move inbox triage")).not.toContain("What I formed it from");
   });
 
   test("putting it off would have to write a date, so it is shown disabled", () => {
@@ -186,10 +308,9 @@ describe("one suggestion", () => {
     expect(html).not.toContain("This is the permission I&#x27;m asking for");
   });
 
-  test("the aside's card has one sentence and draws no empty sections", () => {
+  test("the aside's card has one sentence and draws only the sections it has", () => {
     const html = detailMarkup("Move the Thursday");
     expect(html).toContain("Move the Thursday standup to Friday");
-    expect(html).toContain("What I noticed");
     expect(html).not.toContain("What changes if you say yes");
     expect(html).not.toContain("Where I stopped");
     expect(html).not.toContain("What I formed it from");

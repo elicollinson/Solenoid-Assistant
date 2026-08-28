@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { createDb, runMigrations, type Db } from "../index";
 import { createUiRoutes } from "../../http/routes/ui";
 import { loadHome, type HomePayload } from "./home";
+import { proposeRecommendation } from "../mutations/recommendations";
 import { seedDesignFixtures } from "../seed/design";
 import { localTime, zonedTime } from "../seed/time";
 
@@ -146,11 +147,30 @@ describe("the aside", () => {
     ]);
   });
 
-  test("worth a look is the recommendation, with its two words", () => {
-    expect(home.aside.worthALook?.body).toBe(
+  // The card is the newest suggestion the agent has formed and is still asking
+  // about. The seed writes none — the Recommendations table is the agent's to
+  // fill at runtime — so this writes one the way the agent does and then asks
+  // the same question the aside asks.
+  test("worth a look is the newest open suggestion, with its two words", () => {
+    expect(home.aside.worthALook).toBeNull();
+
+    proposeRecommendation(
+      db,
+      {
+        title: "Move the Thursday standup to Friday",
+        blurb: "You've moved the Thursday standup three weeks running. Want me to shift it to Friday for good?",
+        basisLabel: "three weeks of moves",
+        affirm: "Do it",
+        quiet: "Dismiss",
+      },
+      MORNING,
+    );
+
+    const withOne = loadHome(db, MORNING);
+    expect(withOne.aside.worthALook?.body).toBe(
       "You've moved the Thursday standup three weeks running. Want me to shift it to Friday for good?",
     );
-    expect(home.aside.worthALook?.actions.map((a) => a.label)).toEqual(["Do it", "Dismiss"]);
+    expect(withOne.aside.worthALook?.actions.map((a) => a.label)).toEqual(["Do it", "Dismiss"]);
   });
 });
 

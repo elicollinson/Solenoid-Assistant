@@ -3,6 +3,7 @@
 import { Ollama } from "ollama";
 import { z } from "zod";
 import { type AgentTool } from "./tools";
+import { ToolBelt, ToolSession, loaderName, type ToolGroup } from "./toolGroups";
 import {
   OllamaProvider,
   type ChatMessage,
@@ -28,6 +29,8 @@ import {
   inspectPromptInjection,
   type PromptTextParts,
 } from "../safety/promptGuard";
+import { authoredText } from "../safety/authoredText";
+import { actionFor, DEFAULT_ORIGIN, type ScreenAction, type TextOrigin } from "../safety/trust";
 
 // Zod is the single source of truth for output structures, mirroring tools.ts:
 // the same schema drives the provider-side constraint AND client-side validation.
@@ -83,6 +86,11 @@ export type PromptInjectionBoundary =
   | "tool_output"
   | "model_output"
   | "reviewer_output";
+
+// What a flag means is decided by who wrote the text, not by where in the loop
+// it turned up — see ../safety/trust.ts for why that distinction is load-bearing
+// here rather than pedantic.
+export type { ScreenAction, TextOrigin };
 
 export class PromptInjectionDetectedError extends Error {
   readonly code = "PROMPT_INJECTION_DETECTED";
@@ -161,6 +169,18 @@ interface LoopOptions {
   schema?: z.ZodType;
   submitResult?: boolean;
   toolsEnabled?: boolean;
+  /**
+   * Which tool groups this run has opened. Minted per model-route attempt by
+   * runInner, so a retry on the next route starts from the same closed state
+   * the first attempt did.
+   *
+   * Required, because forgetting it fails silently: a fresh session is empty,
+   * so a group the model opened three turns ago would vanish from the
+   * definitions and its tools would start answering "not available until you
+   * call get_x_tools". runInner documents "one session per attempt" as an
+   * invariant; this is the type carrying it rather than the comment.
+   */
+  session: ToolSession;
 }
 
 export interface AgentOptions {
@@ -168,6 +188,12 @@ export interface AgentOptions {
   routes: ModelRouteInputChain;
   systemPrompt?: string;
   tools?: AgentTool[];
+  /**
+   * Tools the agent fetches rather than holds. Only one loader per group is
+   * visible at the start of a run — `get_<name>_tools` — and calling it opens
+   * that group for the rest of that run and no longer. See ./toolGroups.ts.
+   */
+  toolGroups?: readonly ToolGroup[];
   reviewers?: Reviewer[];
   think?: ThinkLevel;
   // Native structured-output backends reason and submit a schema-validated
@@ -195,6 +221,7 @@ export class Agent {
   ];
   protected readonly systemPrompt: string;
   protected readonly tools = new Map<string, AgentTool>();
+  protected readonly groups: ToolBelt;
   protected readonly reviewers = new Map<string, Reviewer>();
   protected readonly think: ThinkLevel;
   protected readonly thinkOnStructured: boolean;
@@ -232,6 +259,7 @@ export class Agent {
     if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0) {
       throw new Error("timeoutMs must be a positive finite number");
     }
+    this.groups = new ToolBelt(opts.toolGroups ?? []);
     for (const t of opts.tools ?? []) this.addTool(t);
     for (const reviewer of opts.reviewers ?? []) this.addReviewer(reviewer);
     // Bind once so `agent.run` stays passable as a bare callback (the previous
@@ -249,6 +277,9 @@ export class Agent {
       throw new Error(`Agent tool name "${SUBMIT_RESULT_TOOL_NAME}" is reserved`);
     }
     if (this.tools.has(name)) throw new Error(`Agent tool "${name}" is already registered`);
+    if (this.groups.claims(name)) {
+      throw new Error(`Agent tool "${name}" is already claimed by a tool group`);
+    }
     this.tools.set(name, tool);
     return this;
   }
@@ -335,6 +366,9 @@ export class Agent {
         [SemanticConventions.INPUT_MIME_TYPE]: inputMimeType,
         "agent.timeout_ms": this.timeoutMs,
         "agent.route_count": this.routes.length,
+        ...(this.groups.size
+          ? { "agent.tool_groups": this.groups.names.join(",") }
+          : {}),
         ...Object.fromEntries(this.routes.flatMap((route, index) => [
           [`agent.routes.${index}.provider`, route.client.providerName ?? "unknown"],
           [`agent.routes.${index}.model`, route.model],
@@ -342,12 +376,23 @@ export class Agent {
         ...this.getTraceAttributes(),
       },
       async (span) => {
-        await this.screenPromptInjection(
-          messages
-            .filter((message) => message.role !== "system")
-            .map((message) => message.content),
-          "input",
-        );
+        // Grouped by declared origin, not by position. Everything defaults to
+        // external, so the message-extraction and screenshot workflows — which
+        // put a stranger's text into the opening transcript — keep aborting on
+        // a flag exactly as before. An operator message is opt-in and observed.
+        // Each group is screened in one call, so an injection split across two
+        // messages of the same origin is still seen whole.
+        const byOrigin = new Map<TextOrigin, string[]>();
+        for (const message of messages) {
+          if (message.role === "system") continue;
+          const origin = message.origin ?? DEFAULT_ORIGIN;
+          const bucket = byOrigin.get(origin) ?? [];
+          bucket.push(message.content);
+          byOrigin.set(origin, bucket);
+        }
+        for (const [origin, parts] of byOrigin) {
+          await this.screenPromptInjection(parts, "input", actionFor(origin));
+        }
         for (let index = 0; index < this.routes.length; index++) {
           const route = this.routes[index]!;
           try {
@@ -431,11 +476,15 @@ export class Agent {
     client: ChatProvider = this.routes[0].client,
     model: string = this.routes[0].model,
   ): Promise<unknown> {
+    // One session per attempt. A route that fails replays the original task, so
+    // it should also replay from the same set of unopened groups.
+    const session = this.groups.session();
     if (!schema) {
       return this.loop(messages, {
         signal,
         think: this.think,
         phase: "work",
+        session,
       }, client, model);
     }
     const format = toOutputFormat("agent_output", schema);
@@ -447,6 +496,7 @@ export class Agent {
         signal,
         think: this.think,
         phase: "work",
+        session,
       }, client, model);
       raw = await this.loop(
         [
@@ -465,6 +515,9 @@ export class Agent {
           format,
           schema,
           toolsEnabled: false,
+          // Its own, and it stays shut: this pass has no tools at all, so what
+          // the work phase opened is neither available here nor wanted.
+          session: this.groups.session(),
         },
         client,
         model,
@@ -485,6 +538,7 @@ export class Agent {
           phase: "work",
           schema,
           submitResult: true,
+          session,
         },
         client,
         model,
@@ -562,26 +616,34 @@ export class Agent {
     client: ChatProvider = this.routes[0].client,
     model: string = this.routes[0].model,
   ): Promise<string> {
-    const toolDefs = options.toolsEnabled === false
-      ? []
-      : [...this.tools.values()].map((tool) => tool.definition);
-    if (options.submitResult && options.schema) {
-      const resultFormat = toOutputFormat("agent_output", options.schema);
-      toolDefs.push({
-        type: "function",
+    const session = options.session;
+    const submitDefinition = options.submitResult && options.schema
+      ? {
+        type: "function" as const,
         function: {
           name: SUBMIT_RESULT_TOOL_NAME,
           description: "Submit the completed, schema-valid final result.",
-          parameters: resultFormat.schema,
+          parameters: toOutputFormat("agent_output", options.schema).schema,
         },
-      });
-    }
+      }
+      : undefined;
 
     let turn = 0;
     let retryDelayMs = 250;
     while (true) {
       if (options.signal.aborted) throw abortReason(options.signal);
       turn++;
+
+      // Recomputed every turn rather than once above the loop: a group opened
+      // on the previous turn adds its tools here, and a snapshot taken before
+      // the first turn could never show them.
+      const toolDefs = options.toolsEnabled === false
+        ? []
+        : [
+          ...[...this.tools.values()].map((tool) => tool.definition),
+          ...session.definitions(),
+        ];
+      if (submitDefinition) toolDefs.push(submitDefinition);
 
       let msg: ChatMessage;
       try {
@@ -685,6 +747,7 @@ export class Agent {
             call.name,
             call.arguments,
             options.signal,
+            session,
           );
           messages.push({
             role: "tool",
@@ -854,10 +917,18 @@ export class Agent {
   protected async invokeTool(
     name: string,
     rawArgs: unknown,
-    signal?: AbortSignal,
+    signal: AbortSignal | undefined,
+    session: ToolSession,
   ): Promise<string> {
-    const tool = this.tools.get(name);
-    if (!tool) return `Error: unknown tool "${name}"`;
+    const tool = this.tools.get(name) ?? session.resolve(name);
+    if (!tool) {
+      // A name the model knows from somewhere but has not unlocked deserves the
+      // instruction rather than "unknown tool", which reads as "it is gone".
+      const owner = session.unopenedOwnerOf(name);
+      return owner
+        ? `Error: "${name}" is not available until you call ${loaderName(owner)}.`
+        : `Error: unknown tool "${name}"`;
+    }
     return withSpanKind(
       "TOOL",
       name,
@@ -878,6 +949,12 @@ export class Agent {
             signal ?? new AbortController().signal,
           );
           const output = typeof result === "string" ? result : JSON.stringify(result);
+          // Every tool result is screened. There is no exemption list, because
+          // a tool is the wrong unit to exempt: the interesting cases return
+          // our own scaffolding wrapped around somebody else's text. The
+          // screen subtracts what we wrote and looks at the rest, so a result
+          // that is entirely ours costs nothing and one that is half ours is
+          // judged on the half that is not.
           await this.screenPromptInjection([output], "tool_output");
           span.setAttributes({
             [SemanticConventions.OUTPUT_VALUE]: output,
@@ -901,18 +978,36 @@ export class Agent {
     );
   }
 
+  /**
+   * `action` defaults to "abort" so a call site that says nothing gets the safe
+   * behaviour. Only genuinely operator-authored text passes "observe".
+   */
   private async screenPromptInjection(
     parts: readonly string[],
     boundary: PromptInjectionBoundary,
+    action: ScreenAction = "abort",
   ): Promise<void> {
     if (!this.promptInjectionScreener || parts.every((part) => part.length === 0)) {
       return;
     }
 
+    // Subtract what this repository wrote before looking. The screen is asking
+    // "did somebody else put an instruction here", and it cannot tell our tool
+    // descriptions from an attack on wording alone — so we answer the part it
+    // cannot: provenance. See ../safety/authoredText.ts, and note the rule
+    // there about never registering interpolated text.
+    const redacted = parts.map((part) => authoredText.redact(part));
+    const authoredChars = parts.reduce((n, part) => n + part.length, 0) -
+      redacted.reduce((n, part) => n + part.length, 0);
+
+    // Nothing of unknown origin survived. There is no boundary here to screen,
+    // so there is no model call, no span, and nothing that can throw.
+    if (redacted.every((part) => !part.trim())) return;
+
     // PromptGuardScanner joins parts with a newline before tokenization. Keep
     // that exact, untruncated string as the primary span input; input_parts
     // additionally preserves the original boundaries for trace debugging.
-    const inputValue = parts.join("\n");
+    const inputValue = redacted.join("\n");
     const assessment = await withSpanKind(
       "GUARDRAIL",
       "prompt-injection-detection",
@@ -921,14 +1016,16 @@ export class Agent {
         [SemanticConventions.INPUT_MIME_TYPE]: "text/plain",
         "metadata.guardrail_type": "prompt_injection_detection",
         "metadata.boundary": boundary,
-        "metadata.input_part_count": parts.length,
-        "metadata.input_parts": safeJson(parts),
+        "metadata.action_on_flag": action,
+        "metadata.input_part_count": redacted.length,
+        "metadata.input_parts": safeJson(redacted),
+        "metadata.authored_chars_redacted": authoredChars,
       },
       async (span) => {
         let result: PromptInjectionScreeningResult;
         try {
           result = await this.promptInjectionScreener!(
-            parts as PromptTextParts,
+            redacted as unknown as PromptTextParts,
           );
         } catch {
           span.setAttributes({
@@ -945,7 +1042,9 @@ export class Agent {
         span.setAttributes({
           [SemanticConventions.OUTPUT_VALUE]: safeJson(result),
           [SemanticConventions.OUTPUT_MIME_TYPE]: "application/json",
-          "metadata.action": result.flagged ? "block" : "allow",
+          "metadata.action": result.flagged
+            ? (action === "abort" ? "block" : "observe")
+            : "allow",
           "metadata.flagged": result.flagged,
         });
         if (result.label !== undefined) {
@@ -967,6 +1066,14 @@ export class Agent {
       },
     );
 
-    if (assessment.flagged) throw new PromptInjectionDetectedError(boundary);
+    if (!assessment.flagged) return;
+    if (action === "abort") throw new PromptInjectionDetectedError(boundary);
+    // Observed, not blocked. The operator is the principal; a flag on their own
+    // message is worth a record and is not worth refusing to work over.
+    log.warn("[guardrail] flagged text from the operator; continuing", {
+      boundary,
+      score: assessment.score,
+      agent: this.name,
+    });
   }
 }

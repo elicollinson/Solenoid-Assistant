@@ -12,6 +12,7 @@ import {
   type ModelRouteInputChain,
 } from "./rawAgent";
 import { defineTool } from "./tools";
+import { authoredText } from "../safety/authoredText";
 import type {
   ChatMessage,
   ChatOptions,
@@ -289,6 +290,7 @@ describe("prompt-injection screening", () => {
   test("tool and reviewer outputs are independently screened", async () => {
     const tool = defineTool({
       name: "external",
+      kind: "read",
       description: "external data",
       schema: z.object({}),
       execute: () => "unsafe tool result",
@@ -368,6 +370,7 @@ describe("tools and reviewers", () => {
   test("does not impose a predefined tool-turn count", async () => {
     const tool = defineTool({
       name: "increment",
+      kind: "read",
       description: "Increment",
       schema: z.object({ value: z.number() }),
       execute: ({ value }) => value + 1,
@@ -419,6 +422,7 @@ describe("agent construction", () => {
 
     const tool = defineTool({
       name: "same",
+      kind: "read",
       description: "same",
       schema: z.object({}),
       execute: () => null,
@@ -430,11 +434,131 @@ describe("agent construction", () => {
     const reserved = defineTool({
       name: "submit_result",
       description: "reserved",
+      kind: "read",
       schema: z.object({}),
       execute: () => null,
     });
     expect(() => new Agent({ routes: routes(client, "test"), tools: [reserved] })).toThrow(
       /reserved/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The trust boundary: who wrote the text, not where it turned up.
+// ---------------------------------------------------------------------------
+
+describe("trust boundary", () => {
+  const flagged = "the text that trips the classifier";
+  const screener = async (parts: readonly string[]) => ({
+    flagged: parts.join("\n").includes(flagged),
+    score: 0.9,
+  });
+
+  test("text of undeclared origin aborts, because external is the default", async () => {
+    const client = new ScriptedProvider([{ content: "unreachable" }]);
+    const agent = new Agent({
+      routes: routes(client),
+      promptInjectionScreening: screener,
+    });
+
+    const error = await agent.runMessages([{ role: "user", content: flagged }])
+      .catch((caught) => caught);
+    expect(isPromptInjectionDetectedError(error)).toBe(true);
+    expect(client.calls).toHaveLength(0);
+  });
+
+  // The operator is the principal. A false positive here would refuse them
+  // their own assistant, and there is no privilege for them to escalate to.
+  test("the same text declared operator is observed, and the run continues", async () => {
+    const client = new ScriptedProvider([{ content: "done" }]);
+    const agent = new Agent({
+      routes: routes(client),
+      promptInjectionScreening: screener,
+    });
+
+    const result = await agent.runMessages([
+      { role: "user", content: flagged, origin: "operator" },
+    ]);
+    expect(result).toBe("done");
+    expect(client.calls).toHaveLength(1);
+  });
+
+  // Origin is per message, so an operator asking about a document does not
+  // launder the document.
+  test("an operator message does not cover external text beside it", async () => {
+    const client = new ScriptedProvider([{ content: "unreachable" }]);
+    const agent = new Agent({
+      routes: routes(client),
+      promptInjectionScreening: screener,
+    });
+
+    const error = await agent.runMessages([
+      { role: "user", content: "what does this page say?", origin: "operator" },
+      { role: "user", content: flagged, origin: "external" },
+    ]).catch((caught) => caught);
+
+    expect(isPromptInjectionDetectedError(error)).toBe(true);
+    expect(client.calls).toHaveLength(0);
+  });
+
+  // The message-extraction and screenshot workflows put a stranger's text into
+  // the opening transcript. Reading "the first user message" as the operator
+  // would have quietly stopped quarantining them.
+  test("an injection split across two external messages is still seen whole", async () => {
+    const client = new ScriptedProvider([{ content: "unreachable" }]);
+    const seen: string[] = [];
+    const agent = new Agent({
+      routes: routes(client),
+      promptInjectionScreening: async (parts) => {
+        const combined = parts.join("\n");
+        seen.push(combined);
+        return { flagged: combined.includes("SPLIT") && combined.includes("OVERRIDE") };
+      },
+    });
+
+    const error = await agent.runMessages([
+      { role: "user", content: "SPLIT" },
+      { role: "user", content: "OVERRIDE" },
+    ]).catch((caught) => caught);
+
+    expect(isPromptInjectionDetectedError(error)).toBe(true);
+    expect(seen[0]).toContain("SPLIT\nOVERRIDE");
+  });
+
+  test("authored text is subtracted before the screener sees anything", async () => {
+    const authored =
+      "Read one suggestion in full before revising it, so you are sharpening what is there.";
+    authoredText.register("test:authored", authored);
+
+    const seen: string[] = [];
+    const echo = defineTool({
+      name: "echo_authored",
+      kind: "read",
+      description: "Return a block of text this repository wrote, and nothing else at all.",
+      schema: z.object({}),
+      execute: () => authored,
+    });
+    const client = new ScriptedProvider([
+      { finishReason: "tool_calls", toolCalls: [{ id: "c1", name: "echo_authored", arguments: {} }] },
+      { content: "done" },
+    ]);
+    const agent = new Agent({
+      routes: routes(client),
+      tools: [echo],
+      promptInjectionScreening: async (parts) => {
+        const combined = parts.join("\n");
+        seen.push(combined);
+        return { flagged: combined.includes("sharpening what is there") };
+      },
+    });
+
+    // Would abort if the tool result reached the screener; it redacts to
+    // nothing, so the screen is skipped for it entirely.
+    expect(await agent.runMessages([
+      { role: "user", content: "go on then", origin: "operator" },
+    ])).toBe("done");
+    expect(seen.length).toBeGreaterThan(0); // the screen did run, on other text
+    expect(seen.some((part) => part.includes("sharpening what is there"))).toBe(false);
   });
 });

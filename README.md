@@ -284,6 +284,12 @@ before it can draw anything is a screen that flashes: `GET /api/home`,
 `GET /api/knowledge`, `GET /api/knowledge/:id`. The four the phone draws also
 take `?surface=phone`; see *Below 700px* further down.
 
+The writes are narrower than the reads, because most of these screens are the
+agent reporting rather than you editing: `POST /api/workflows/:slug/run`,
+`/stop` and `/pause`, `PUT /api/workflows/:slug/instructions`, and
+`POST /api/recommendations/:id/answer`. Each answers with what it set and
+leaves the caller to re-read.
+
 ### Workflows you can actually run
 
 The Workflows surface lists two kinds of row, and the difference reads on
@@ -539,15 +545,22 @@ kind: "From 5 drafts", where five drafts is not five runs and rounding it to
 runs would change what the agent said.
 
 The design's prose also contradicts itself between screens, in three places per
-surface; `src/db/seed/runs.ts`, `src/db/seed/reminders.ts`,
-`src/db/seed/recommendations.ts` and `src/db/seed/calendar.ts` each name their
-own and say which reading won.
-The largest is on Recommendations: the design draws a standing suggestion as a
-card in the Activity aside and never lists it among the standing suggestions.
-Here it is a `recommendations` row like the other five and appears on both, and
-the detail draws the sections it actually has rather than empty ones — an aside
-that offers something the list does not hold is the agent contradicting itself
-on two screens at once.
+surface; `src/db/seed/runs.ts`, `src/db/seed/reminders.ts` and
+`src/db/seed/calendar.ts` each name their own and say which reading won.
+
+**Recommendations are not seeded.** The seed leaves that table empty on purpose:
+a standing suggestion is a claim about work that actually happened, and one
+transcribed from a design file is a claim about nothing. The rows arrive at
+runtime through `src/db/mutations/recommendations.ts` — propose, revise, cite,
+answer, withdraw, supersede, forget — which is also what `src/tools/
+recommendations.ts` hands an agent. Everything the design stores as a display
+string is derived from two columns instead: the shelf (Waiting on you /
+Standing / Set aside), the mark, the word for how sure the agent is, the "when"
+and the header's count all fall out of `status` and the date it was answered, so
+there is nowhere to write a "Waiting on you" that would be wrong the moment you
+answer. The Activity aside's card is the newest suggestion still being asked
+about, read off the same table — an aside that offers something the list does
+not hold is the agent contradicting itself on two screens at once.
 
 **Evidence is a link, not a record.** Everything a reminder or a recommendation
 cites lands in a real table — a text, an email and a chat are all `conversations` with

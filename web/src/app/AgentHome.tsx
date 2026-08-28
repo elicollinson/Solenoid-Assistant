@@ -22,6 +22,7 @@ import {
   useHome,
   useKnowledge,
   useKnowledgeObject,
+  answerRecommendation as writeAnswer,
   useRecommendation,
   useRecommendations,
   useReminder,
@@ -135,10 +136,27 @@ function DesktopHome() {
   // Answering a suggestion also closes the decision behind it, because the
   // Activity aside draws one of these as a card: leaving that open would have
   // the agent still asking on one screen what you already answered on another.
+  //
+  // The screen moves first and the write follows. An answer is one click and
+  // the row it moves is right under the cursor, so waiting for the server would
+  // show you a button that looks unpressed for as long as the round trip takes.
+  // If the write is refused — you answered it in another tab, or I withdrew it
+  // while this page was open — the row goes back to asking, which is the truth:
+  // the next read would put it back there anyway.
   const answerRecommendation = (id: string, stance: LocalStance, wasOpen: boolean, action: HomeAction) => {
-    if (wasOpen && !recommendationStances.has(id)) setRecommendationsCleared((n) => n + 1);
+    const counted = wasOpen && !recommendationStances.has(id);
+    if (counted) setRecommendationsCleared((n) => n + 1);
     setRecommendationStances((current) => new Map(current).set(id, stance));
     invoke(action);
+
+    writeAnswer(id, stance).catch(() => {
+      if (counted) setRecommendationsCleared((n) => Math.max(0, n - 1));
+      setRecommendationStances((current) => {
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+    });
   };
 
   const resolve = (decisionId: string) => setResolved((current) => new Set(current).add(decisionId));

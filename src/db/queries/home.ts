@@ -48,14 +48,20 @@ export function loadHome(db: Db, now: Date = new Date(), surface: Surface = "des
   const actionsBySubject = new Map<string, HomeAction[]>();
   const callsByRun = new Map<string, HomeToolCall[]>();
 
+  // Buttons are read whether or not the feed has anything in it: the aside's
+  // "worth a look" card is a recommendation, and its two words hang off the
+  // recommendation rather than off a feed row. Reading these inside the guard
+  // below meant a morning with no activity drew that card with nothing to press.
+  for (const a of db.select().from(s.actions).orderBy(asc(s.actions.ordinal)).all()) {
+    const list = actionsBySubject.get(a.subjectId) ?? [];
+    list.push({ id: a.id, label: a.label, stance: a.stance, effectKind: a.effectKind, effect: a.effect });
+    actionsBySubject.set(a.subjectId, list);
+  }
+
+  // These two are only ever read through a feed row, so an empty feed skips them.
   if (ids.length) {
     for (const n of db.select().from(s.narratives).where(eq(s.narratives.slot, "account")).all()) {
       accounts.set(n.subjectId, n.text);
-    }
-    for (const a of db.select().from(s.actions).orderBy(asc(s.actions.ordinal)).all()) {
-      const list = actionsBySubject.get(a.subjectId) ?? [];
-      list.push({ id: a.id, label: a.label, stance: a.stance, effectKind: a.effectKind, effect: a.effect });
-      actionsBySubject.set(a.subjectId, list);
     }
     for (const step of db
       .select()

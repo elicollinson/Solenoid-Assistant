@@ -21,6 +21,7 @@ import { parseArgs } from "node:util";
 const { values } = parseArgs({
   options: {
     port: { type: "string", default: "3000" },
+    service: { type: "string" },
     off: { type: "boolean", default: false },
     status: { type: "boolean", default: false },
   },
@@ -28,6 +29,17 @@ const { values } = parseArgs({
 });
 
 const PORT = Number(values.port);
+
+// A Tailscale Service is a name owned by the tailnet rather than by this
+// machine: `<service>.<tailnet>.ts.net` keeps pointing at whichever node is
+// advertising it. The node-name form below is tied to this Mac's identity, so a
+// rebuild changes the name and every ACL grant written against its address goes
+// stale. A service survives both. `svc:` is optional here; the CLI wants it.
+const SERVICE = values.service
+  ? values.service.startsWith("svc:")
+    ? values.service
+    : `svc:${values.service}`
+  : null;
 
 /** Run `tailscale`, and hand back what it said either way. */
 async function ts(...args: string[]): Promise<{ ok: boolean; out: string }> {
@@ -61,6 +73,7 @@ if (!status.ok) {
 const state = JSON.parse(status.out) as {
   BackendState: string;
   Self?: { DNSName?: string };
+  MagicDNSSuffix?: string;
   CertDomains?: string[];
 };
 
@@ -71,10 +84,18 @@ if (state.BackendState !== "Running") {
 const dnsName = state.Self?.DNSName?.replace(/\.$/, "");
 if (!dnsName) stop("This machine has no MagicDNS name.", "Enable MagicDNS for the tailnet in the admin console.");
 
+// A service's name is the tailnet's suffix, not this node's name, so it has to
+// be assembled rather than read off Self.
+const suffix = state.MagicDNSSuffix?.replace(/^\.|\.$/g, "");
+if (SERVICE && !suffix) {
+  stop("This tailnet has no MagicDNS suffix.", "Enable MagicDNS for the tailnet in the admin console.");
+}
+const servedName = SERVICE ? `${SERVICE.slice(4)}.${suffix}` : dnsName;
+
 // ── turning it off, or just looking ─────────────────────────────────────
 if (values.off) {
-  const cleared = await ts("serve", "--https=443", "off");
-  console.log(cleared.ok ? `\n  Off. ${dnsName} no longer serves the app.\n` : `\n  ${cleared.out}\n`);
+  const cleared = SERVICE ? await ts("serve", "clear", SERVICE) : await ts("serve", "--https=443", "off");
+  console.log(cleared.ok ? `\n  Off. ${servedName} no longer serves the app.\n` : `\n  ${cleared.out}\n`);
   process.exit(cleared.ok ? 0 : 1);
 }
 
@@ -118,20 +139,38 @@ if (!served?.ok) {
 }
 
 // ── serve it ────────────────────────────────────────────────────────────
-const result = await ts("serve", "--bg", "--https=443", `http://127.0.0.1:${PORT}`);
+// `--service` is backgrounded on its own; `--bg` is the node form's way of
+// saying the same thing.
+const result = SERVICE
+  ? await ts("serve", `--service=${SERVICE}`, "--https=443", `http://127.0.0.1:${PORT}`)
+  : await ts("serve", "--bg", "--https=443", `http://127.0.0.1:${PORT}`);
 if (!result.ok) stop(`tailscale serve refused: ${result.out}`);
 
+// Configuring the mapping does not put the name into DNS. Advertising is what
+// tells the control plane this node hosts the service, and skipping it fails
+// from the phone as a name that does not resolve — which reads like DNS being
+// broken rather than like a step that was never run.
+if (SERVICE) {
+  const advertised = await ts("serve", "advertise", SERVICE);
+  if (!advertised.ok) {
+    stop(
+      `tailscale serve advertise refused: ${advertised.out}`,
+      `The mapping exists but nothing is advertising it. Check this node carries the tag your tailnet's autoApprovers grants ${SERVICE}.`,
+    );
+  }
+}
+
 console.log(`
-  Serving on https://${dnsName}
+  Serving on https://${servedName}
 
   That name has a real certificate, so it is a secure context: the service
   worker runs and the app installs properly. Only devices on your tailnet can
   reach it — this is Serve, not Funnel, and nothing here is public.
 
-  On the iPhone   Safari → https://${dnsName} → Share → Add to Home Screen
+  On the iPhone   Safari → https://${servedName} → Share → Add to Home Screen
   On the Mac      Safari → File → Add to Dock, or Chrome's install control
 
-  Stop it with \`bun run serve:tailscale --off\`.
+  Stop it with \`bun run serve:tailscale${SERVICE ? ` --service=${SERVICE}` : ""} --off\`.
 
   One thing to be clear about: there is no authentication in front of any of
   this. Anything on your tailnet can read your messages, contacts and calendar

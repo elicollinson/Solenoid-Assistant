@@ -136,8 +136,6 @@ set `structuredOutputStrategy` to `native` or `two-stage`; the global
 | GET | `/screenshots/ingest` | Run the existing screenshot-to-Notion ingestion workflow |
 | GET | `/message-extraction` | Extract actions, summaries, and memory from trusted iMessages |
 | POST | `/safety-classifier` | Score text for prompt-injection risk |
-| GET | `/tasks` | List registered tasks and schedules |
-| POST | `/tasks/:name/run` | Run a task manually |
 | POST | `/api/workflows/:slug/run` | Start a workflow and answer with the run it opened |
 | POST | `/api/workflows/:slug/stop` | Stop the run it has going, and stop recording what it returns |
 | POST | `/api/workflows/:slug/pause` | Pause or resume a workflow |
@@ -226,7 +224,6 @@ src/
   imessage/     Read-only Messages database access
   okf/          OKF parser, validator, and store
   safety/       Local prompt-injection classifier and pure scanner logic
-  tasks/        Task definitions, registry, config, and validation
   tools/        Local AgentTool definitions
   utils/        Focused supporting utilities
   index.ts      HTTP app composition; does not open a listener
@@ -798,9 +795,35 @@ bun run scripts/notion-find-databases.ts
 bun run scripts/notion-check-databases.ts [database-id ...]
 ```
 
-## Scheduled tasks
+## Scheduling
 
-Task implementations are registered in `src/tasks/index.ts`; schedules and arguments live in `tasks.yaml`. The worker validates task names, arguments, cron expressions, and timezones before scheduling anything.
+A unit of work is a workflow, whether you press Run or a rule fires it. There is
+no second kind — there used to be, and the two never met: `workflow_schedules`
+held the rules the Workflows screen drew, the calendar laid out and the agent
+could edit, and nothing executed them, while the cron worker ran `tasks.yaml`, a
+file neither the screen nor the agent could see. Asking the agent for a daily
+3am run wrote a row, updated three surfaces, and fired nothing.
+
+**The row is the schedule.** `src/worker.ts` reads `workflow_schedules` joined to
+`workflows`, translates each `rrule` to cron (`src/workflows/schedule.ts`) and
+runs it through the same `startWorkflowRun` the Run button uses. A schedule
+carries its own `args`, which is the column whose absence made a config file
+necessary in the first place.
+
+Two properties it is built to hold, and both are tested:
+
+- **A restart changes nothing.** `src/workflows/catalog.ts` is a seed, applied by
+  `bun run db:sync-workflows` when you choose to. Boot only looks: it warns about
+  catalog entries with no row and about live schedules with no code behind them.
+  It used to sync on every start, which meant a restart could overwrite a
+  schedule somebody set — and where the catalog said `rrule: null`, delete it
+  outright with nothing logged.
+- **A change takes effect without one.** The worker re-reads every 30s and
+  rebuilds only when the schedule actually moved, so an agent asked mid-chat to
+  move a job to 3am does not need you to restart anything.
+
+Anything that cannot run says so at every boot and every reload, because a
+schedule that silently does nothing is the failure all of this exists to end.
 
 ## Observability
 

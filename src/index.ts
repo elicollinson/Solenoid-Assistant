@@ -1,18 +1,14 @@
 import { Elysia, t } from "elysia";
 import { openapi } from "@elysiajs/openapi";
-import { loadTasksConfig } from "./tasks";
 import { agentRoutes } from "./http/routes/agents";
 import { createChatRoutes } from "./http/routes/chat";
 import { messageRoutes } from "./http/routes/messages";
 import { safetyRoutes } from "./http/routes/safety";
 import { screenshotRoutes } from "./http/routes/screenshots";
 import { createLogRoutes } from "./http/routes/logs";
-import { createTaskRoutes } from "./http/routes/tasks";
 import { createUiRoutes } from "./http/routes/ui";
 import { createWebRoutes, findWebBuild } from "./http/routes/web";
 import { requestContext } from "./http/requestContext";
-
-const tasksConfig = await loadTasksConfig();
 
 // The built web app, when there is one. Absent in development, where Vite
 // serves it on :5173 and proxies /api here; present once `bun run build:web`
@@ -42,7 +38,6 @@ export const app = new Elysia({
   })
   .use(screenshotRoutes)
   .use(agentRoutes)
-  .use(createTaskRoutes(tasksConfig))
   .use(messageRoutes)
   .use(safetyRoutes)
   .use(createUiRoutes())

@@ -632,6 +632,7 @@ export function workflowsGroup(context: ToolGroupContext): ToolGroup {
             tz: "The zone the rule's wall-clock times mean.",
             enabled: "Whether the rule is live. Nothing here writes it — the way to stop a workflow is to pause the workflow.",
             jitterSecs: "Random delay before firing, so several schedules on the same minute do not go at once.",
+            args: "What to run it with when the schedule fires, as the workflow's own arguments. A scheduled firing has nobody to fill in a form, so this is where the form's answers live.",
             nextRunAt: "When it is next due. The cron worker owns this; it is cleared whenever the rule moves, because a next-fire computed from the old rule is a promise nobody will keep.",
             lastRunAt: "When the schedule last fired it, which is not the same as when it last ran — you can start one yourself.",
             label: "The same rule in words, which is what the cadence column shows: 'Weekdays, 06:00'. Written rather than rendered; nothing checks it against the rule.",

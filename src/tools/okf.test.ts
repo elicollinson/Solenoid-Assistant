@@ -1,12 +1,24 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, sep } from "node:path";
 import type { AgentTool } from "../core/tools";
-import { createOkfTools, type OkfTools } from "./okf";
+import { readOnly, renderBriefing } from "../core/toolGroups";
+import {
+  DEFAULT_OKF_ACTOR,
+  DEFAULT_OKF_ROOT,
+  createOkfTools,
+  okfGroup,
+  type OkfTools,
+} from "./okf";
+import type { ToolGroupContext } from "./groups";
 
 let dir: string;
 let tools: OkfTools;
+
+/** The OKF group never touches the database; `db` is only in the shared context type. */
+const contextFor = (root: string): ToolGroupContext =>
+  ({ db: undefined, okf: { root, actor: "librarian/test-1" } }) as unknown as ToolGroupContext;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "okf-tools-"));
@@ -33,7 +45,8 @@ describe("tool surface", () => {
       "okf_move",
       "okf_deprecate",
     ]);
-    expect(tools.read_only.map((t) => t.definition.function.name)).toEqual([
+    const group = okfGroup(contextFor(dir));
+    expect(readOnly(group).tools.map((t) => t.definition.function.name)).toEqual([
       "okf_list",
       "okf_read",
       "okf_search",
@@ -162,5 +175,114 @@ describe("a librarian's round trip", () => {
     );
     expect(call(tools.patch, { id: "ghost", frontmatter: { title: "x" } })).rejects.toThrow(/No concept "ghost"/);
     expect(call(tools.create, { id: "b", type: "Metric" })).rejects.toThrow(/`sources` is required/);
+  });
+});
+
+describe("the group", () => {
+  test("is well-formed, and says what an OKF object is", () => {
+    const group = okfGroup(contextFor(dir));
+    expect(group.name).toBe("okf");
+    // Not the default title, which would render the acronym as "Okf".
+    expect(group.title).toBe("OKF");
+    expect(group.shape.singular).toBe("concept");
+    expect(group.tools.map((t) => t.definition.function.name)).toEqual([
+      "okf_list",
+      "okf_read",
+      "okf_search",
+      "okf_create",
+      "okf_patch",
+      "okf_move",
+      "okf_deprecate",
+    ]);
+  });
+
+  test("the spine is hand-written, and names the fields the store owns", () => {
+    const spine = okfGroup(contextFor(dir)).shape.spine;
+    const byName = new Map(spine.map((field) => [field.name, field]));
+    expect([...byName.keys()]).toEqual(
+      expect.arrayContaining([
+        "id",
+        "type",
+        "status",
+        "sources",
+        "usage_window",
+        "stale_after",
+        "generated.by",
+        "verified",
+        "body",
+      ]),
+    );
+    expect(byName.get("status")).toMatchObject({ default: "stable", required: false });
+    // Provenance is not optional for an agent — create refuses without it.
+    expect(byName.get("sources")?.required).toBe(true);
+    for (const field of spine) expect(field.note ?? "").not.toBe("");
+  });
+
+  test("trust and staleness are declared derived, because nothing stores them", () => {
+    const derived = okfGroup(contextFor(dir)).shape.derived ?? [];
+    const names = derived.map((field) => field.name);
+    expect(names).toContain("trust");
+    expect(names).toContain("stale");
+    expect(derived.find((f) => f.name === "trust")?.type).toBe(
+      "one of: unverified | machine-confirmed | human-reviewed",
+    );
+    // The tier is read off `verified`, which no tool writes — the briefing has
+    // to say so, since the model cannot see the absence of a tool.
+    expect(derived.find((f) => f.name === "trust")?.note).toContain("verified");
+  });
+
+  test("every tool is classified by effect", () => {
+    const kinds = Object.fromEntries(
+      okfGroup(contextFor(dir)).tools.map((t) => [t.definition.function.name, t.kind]),
+    );
+    expect(kinds).toEqual({
+      okf_list: "read",
+      okf_read: "read",
+      okf_search: "read",
+      okf_create: "write",
+      okf_patch: "write",
+      okf_move: "write",
+      okf_deprecate: "write",
+    });
+  });
+
+  test("the read-only form is the three tools that cannot write to memory", () => {
+    const restricted = readOnly(okfGroup(contextFor(dir)));
+    expect(restricted.tools.map((t) => t.definition.function.name)).toEqual([
+      "okf_list",
+      "okf_read",
+      "okf_search",
+    ]);
+    // Rendered from the tools it actually holds, so it cannot advertise a write.
+    const briefing = renderBriefing(restricted);
+    expect(briefing).not.toContain("okf_create");
+    expect(briefing).toContain("okf_search");
+  });
+
+  test("the briefing carries the rules no introspection could find", () => {
+    const briefing = renderBriefing(okfGroup(contextFor(dir)));
+    expect(briefing).toContain("# OKF");
+    expect(briefing).toContain("human-reviewed");
+    expect(briefing).toContain("deprecated");
+    expect(briefing).toContain("stale_after");
+  });
+
+  test("the bundle root defaults to the module, not the process cwd", () => {
+    expect(isAbsolute(DEFAULT_OKF_ROOT)).toBe(true);
+    expect(DEFAULT_OKF_ROOT.endsWith(`${sep}okf`)).toBe(true);
+    // A default actor claiming to be a person would waive the provenance
+    // requirement and forge the top trust tier (§5.3).
+    expect(DEFAULT_OKF_ACTOR.startsWith("human:")).toBe(false);
+  });
+
+  test("the group binds the actor the same way the factory does", async () => {
+    const group = okfGroup(contextFor(dir));
+    const create = group.tools.find((t) => t.definition.function.name === "okf_create")!;
+    const read = group.tools.find((t) => t.definition.function.name === "okf_read")!;
+    await call(create, { id: "a", type: "Metric", sources: SOURCES, actor: "human:eli" });
+    expect(await call(read, { id: "a" })).toMatchObject({
+      generatedBy: "librarian/test-1",
+      trust: "unverified",
+    });
   });
 });

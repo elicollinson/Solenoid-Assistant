@@ -7,6 +7,7 @@ import { AgentAside } from "./AgentAside";
 import { AgentRail } from "./AgentRail";
 import { CalendarDetail } from "./CalendarDetail";
 import { CalendarView } from "./CalendarView";
+import { ChatView } from "./ChatView";
 import { KnowledgeObject } from "./KnowledgeObject";
 import { RecommendationDetail } from "./RecommendationDetail";
 import { RecommendationsView, type LocalStance } from "./RecommendationsView";
@@ -15,6 +16,7 @@ import { RemindersView, type LocalMark } from "./RemindersView";
 import { ThingsIKnowView } from "./ThingsIKnowView";
 import { WorkflowDetail, type WorkflowEdits, type WorkflowTrigger } from "./WorkflowDetail";
 import { WorkflowsView } from "./WorkflowsView";
+import { useChat } from "./chat";
 import { pendingDecisionFor, withoutResolved } from "./settle";
 import {
   useCalendar,
@@ -22,6 +24,7 @@ import {
   useHome,
   useKnowledge,
   useKnowledgeObject,
+  answerRecommendation as writeAnswer,
   useRecommendation,
   useRecommendations,
   useReminder,
@@ -135,10 +138,27 @@ function DesktopHome() {
   // Answering a suggestion also closes the decision behind it, because the
   // Activity aside draws one of these as a card: leaving that open would have
   // the agent still asking on one screen what you already answered on another.
+  //
+  // The screen moves first and the write follows. An answer is one click and
+  // the row it moves is right under the cursor, so waiting for the server would
+  // show you a button that looks unpressed for as long as the round trip takes.
+  // If the write is refused — you answered it in another tab, or I withdrew it
+  // while this page was open — the row goes back to asking, which is the truth:
+  // the next read would put it back there anyway.
   const answerRecommendation = (id: string, stance: LocalStance, wasOpen: boolean, action: HomeAction) => {
-    if (wasOpen && !recommendationStances.has(id)) setRecommendationsCleared((n) => n + 1);
+    const counted = wasOpen && !recommendationStances.has(id);
+    if (counted) setRecommendationsCleared((n) => n + 1);
     setRecommendationStances((current) => new Map(current).set(id, stance));
     invoke(action);
+
+    writeAnswer(id, stance).catch(() => {
+      if (counted) setRecommendationsCleared((n) => Math.max(0, n - 1));
+      setRecommendationStances((current) => {
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+    });
   };
 
   const resolve = (decisionId: string) => setResolved((current) => new Set(current).add(decisionId));
@@ -171,6 +191,8 @@ function DesktopHome() {
         />
       ) : null}
 
+      {home.status === "ready" && route.view === "Chat" ? <Chat /> : null}
+
       {home.status === "ready" && route.view === "Activity" ? (
         <Activity home={home.data} resolved={resolved} onInvoke={invoke} />
       ) : null}
@@ -197,6 +219,18 @@ function DesktopHome() {
       ) : null}
     </div>
   );
+}
+
+/**
+ * The one destination that writes.
+ *
+ * Its own component rather than a branch above, because `useChat` holds a live
+ * connection: mounting it under the switch is what guarantees the stream is
+ * closed when you navigate away, rather than left running behind another
+ * screen.
+ */
+function Chat() {
+  return <ChatView chat={useChat()} />;
 }
 
 /**

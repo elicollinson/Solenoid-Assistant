@@ -13,6 +13,13 @@ button { font: inherit; }
 [data-frame="phone"], [data-frame="phone"] * { scrollbar-width: none; }
 [data-frame="phone"]::-webkit-scrollbar, [data-frame="phone"] *::-webkit-scrollbar { width: 0; height: 0; }
 
+/* The caret on a turn the agent is still writing. Steps, not a fade: the
+   design's one moving element is the running ring, and a blinking bar is a
+   terminal cursor rather than an animation. The reduced-motion rule below
+   stops it at one frame, which leaves the bar solid — still correct, since
+   what it means is "not finished", not "look here". */
+@keyframes solenoid-caret { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+
 /* The design's transitions are colour-only, but the running ring is allowed to
    move. Anyone who has asked the OS to stop animation gets a still ring. */
 @media (prefers-reduced-motion: reduce) {

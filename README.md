@@ -136,8 +136,6 @@ set `structuredOutputStrategy` to `native` or `two-stage`; the global
 | GET | `/screenshots/ingest` | Run the existing screenshot-to-Notion ingestion workflow |
 | GET | `/message-extraction` | Extract actions, summaries, and memory from trusted iMessages |
 | POST | `/safety-classifier` | Score text for prompt-injection risk |
-| GET | `/tasks` | List registered tasks and schedules |
-| POST | `/tasks/:name/run` | Run a task manually |
 | POST | `/api/workflows/:slug/run` | Start a workflow and answer with the run it opened |
 | POST | `/api/workflows/:slug/stop` | Stop the run it has going, and stop recording what it returns |
 | POST | `/api/workflows/:slug/pause` | Pause or resume a workflow |
@@ -226,7 +224,6 @@ src/
   imessage/     Read-only Messages database access
   okf/          OKF parser, validator, and store
   safety/       Local prompt-injection classifier and pure scanner logic
-  tasks/        Task definitions, registry, config, and validation
   tools/        Local AgentTool definitions
   utils/        Focused supporting utilities
   index.ts      HTTP app composition; does not open a listener
@@ -283,6 +280,12 @@ before it can draw anything is a screen that flashes: `GET /api/home`,
 `GET /api/recommendations/:id`, `GET /api/calendar`, `GET /api/calendar/:id`,
 `GET /api/knowledge`, `GET /api/knowledge/:id`. The four the phone draws also
 take `?surface=phone`; see *Below 700px* further down.
+
+The writes are narrower than the reads, because most of these screens are the
+agent reporting rather than you editing: `POST /api/workflows/:slug/run`,
+`/stop` and `/pause`, `PUT /api/workflows/:slug/instructions`, and
+`POST /api/recommendations/:id/answer`. Each answers with what it set and
+leaves the caller to re-read.
 
 ### Workflows you can actually run
 
@@ -539,15 +542,22 @@ kind: "From 5 drafts", where five drafts is not five runs and rounding it to
 runs would change what the agent said.
 
 The design's prose also contradicts itself between screens, in three places per
-surface; `src/db/seed/runs.ts`, `src/db/seed/reminders.ts`,
-`src/db/seed/recommendations.ts` and `src/db/seed/calendar.ts` each name their
-own and say which reading won.
-The largest is on Recommendations: the design draws a standing suggestion as a
-card in the Activity aside and never lists it among the standing suggestions.
-Here it is a `recommendations` row like the other five and appears on both, and
-the detail draws the sections it actually has rather than empty ones — an aside
-that offers something the list does not hold is the agent contradicting itself
-on two screens at once.
+surface; `src/db/seed/runs.ts`, `src/db/seed/reminders.ts` and
+`src/db/seed/calendar.ts` each name their own and say which reading won.
+
+**Recommendations are not seeded.** The seed leaves that table empty on purpose:
+a standing suggestion is a claim about work that actually happened, and one
+transcribed from a design file is a claim about nothing. The rows arrive at
+runtime through `src/db/mutations/recommendations.ts` — propose, revise, cite,
+answer, withdraw, supersede, forget — which is also what `src/tools/
+recommendations.ts` hands an agent. Everything the design stores as a display
+string is derived from two columns instead: the shelf (Waiting on you /
+Standing / Set aside), the mark, the word for how sure the agent is, the "when"
+and the header's count all fall out of `status` and the date it was answered, so
+there is nowhere to write a "Waiting on you" that would be wrong the moment you
+answer. The Activity aside's card is the newest suggestion still being asked
+about, read off the same table — an aside that offers something the list does
+not hold is the agent contradicting itself on two screens at once.
 
 **Evidence is a link, not a record.** Everything a reminder or a recommendation
 cites lands in a real table — a text, an email and a chat are all `conversations` with
@@ -785,9 +795,35 @@ bun run scripts/notion-find-databases.ts
 bun run scripts/notion-check-databases.ts [database-id ...]
 ```
 
-## Scheduled tasks
+## Scheduling
 
-Task implementations are registered in `src/tasks/index.ts`; schedules and arguments live in `tasks.yaml`. The worker validates task names, arguments, cron expressions, and timezones before scheduling anything.
+A unit of work is a workflow, whether you press Run or a rule fires it. There is
+no second kind — there used to be, and the two never met: `workflow_schedules`
+held the rules the Workflows screen drew, the calendar laid out and the agent
+could edit, and nothing executed them, while the cron worker ran `tasks.yaml`, a
+file neither the screen nor the agent could see. Asking the agent for a daily
+3am run wrote a row, updated three surfaces, and fired nothing.
+
+**The row is the schedule.** `src/worker.ts` reads `workflow_schedules` joined to
+`workflows`, translates each `rrule` to cron (`src/workflows/schedule.ts`) and
+runs it through the same `startWorkflowRun` the Run button uses. A schedule
+carries its own `args`, which is the column whose absence made a config file
+necessary in the first place.
+
+Two properties it is built to hold, and both are tested:
+
+- **A restart changes nothing.** `src/workflows/catalog.ts` is a seed, applied by
+  `bun run db:sync-workflows` when you choose to. Boot only looks: it warns about
+  catalog entries with no row and about live schedules with no code behind them.
+  It used to sync on every start, which meant a restart could overwrite a
+  schedule somebody set — and where the catalog said `rrule: null`, delete it
+  outright with nothing logged.
+- **A change takes effect without one.** The worker re-reads every 30s and
+  rebuilds only when the schedule actually moved, so an agent asked mid-chat to
+  move a job to 3am does not need you to restart anything.
+
+Anything that cannot run says so at every boot and every reload, because a
+schedule that silently does nothing is the failure all of this exists to end.
 
 ## Observability
 

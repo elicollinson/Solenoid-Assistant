@@ -326,16 +326,9 @@ export const REMINDERS: readonly ReminderFixture[] = [
   },
 ];
 
-export const RECOMMENDATION = {
-  title: "Move the Thursday standup to Friday",
-  body: "You've moved the Thursday standup three weeks running. Want me to shift it to Friday for good?",
-  basisLabel: "three weeks of moves",
-  basisCount: 3,
-  actions: [
-    { label: "Do it", stance: "affirm", effectKind: "set_policy" },
-    { label: "Dismiss", stance: "bare", effectKind: "resolve" },
-  ],
-} as const;
+/** The line above the Recommendations list. The rows under it are the agent's
+ *  to write; this sentence is the screen's, so it is seeded and they are not. */
+export const RECOMMENDATIONS_LEDE = "Changes I'd make to how I work, drawn from what I've watched.";
 
 /** The agent's own count of the night, kept as authored copy: it counts facts,
  *  reminders and replies, not feed rows, so it is not derivable from the feed. */

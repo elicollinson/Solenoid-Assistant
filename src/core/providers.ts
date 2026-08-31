@@ -11,6 +11,7 @@ import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { tracedChat } from "./tracing/tracedProvider";
 import type { FunctionToolDefinition } from "./tools";
+import type { TextOrigin } from "../safety/trust";
 
 export type ThinkLevel = boolean | "low" | "medium" | "high";
 export type StructuredOutputStrategy = "native" | "two-stage";
@@ -32,6 +33,17 @@ export interface ToolCall {
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
+  /**
+   * Who wrote this, for the injection screen. Absent means `external`, which is
+   * the safe answer and the right one for almost everything: the iMessage and
+   * screenshot workflows put a stranger's text into the opening transcript, so
+   * "it is the first user message" says nothing about who wrote it. Set
+   * "operator" only where a person is genuinely typing to their own assistant.
+   *
+   * Transport ignores this — every provider builds its request objects field by
+   * field, so it never reaches an API.
+   */
+  origin?: TextOrigin;
   /** Multimodal image parts attached to a user message. */
   images?: ChatImage[];
   thinking?: string;

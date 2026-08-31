@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createDb, runMigrations, type Db } from "../../../src/db";
 import { loadHome, type HomePayload } from "../../../src/db/queries/home";
+import { proposeRecommendation } from "../../../src/db/mutations/recommendations";
 import { seedDesignFixtures } from "../../../src/db/seed/design";
 import { zonedTime } from "../../../src/db/seed/time";
 import { ActivityView } from "./ActivityView";
@@ -29,6 +30,20 @@ beforeAll(() => {
   db = createDb(join(dir, "test.db"));
   runMigrations(db);
   seedDesignFixtures(db, { now: MORNING });
+  // The aside's third section is the newest open suggestion. The seed writes no
+  // recommendations — that table is the agent's to fill at runtime — so one is
+  // written here the way the agent writes it.
+  proposeRecommendation(
+    db,
+    {
+      title: "Move the Thursday standup to Friday",
+      blurb: "You've moved the Thursday standup three weeks running. Want me to shift it to Friday for good?",
+      basisLabel: "three weeks of moves",
+      affirm: "Do it",
+      quiet: "Dismiss",
+    },
+    MORNING,
+  );
   home = loadHome(db, MORNING);
 });
 

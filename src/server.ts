@@ -5,7 +5,8 @@ import { initTracing, shutdownTracing } from "./core/tracing";
 import { initNotionMcpCache, shutdownNotionMcpCache } from "./mcp/notionCache";
 import { installShutdownHandler } from "./core/shutdown";
 import { disposePromptGuard } from "./safety/promptGuard";
-import { syncWorkflowCatalog } from "./workflows/sync";
+import { describeDrift } from "./workflows/sync";
+import { isRunnable } from "./workflows/runner";
 
 const config = loadRuntimeConfig();
 // Before anything else that might have something to say. Naming the service
@@ -14,11 +15,28 @@ const config = loadRuntimeConfig();
 configureLogging({ service: "solenoid-server", config });
 initTracing(config);
 
-// The Workflows surface reads its list out of the database, so anything this
-// service can run has to have a row there. Additive and idempotent — it is here
-// rather than in src/index.ts so importing the app in a test opens no database.
-const synced = syncWorkflowCatalog(getDb());
-log.info(`Workflow catalog synced — ${synced.added} added, ${synced.updated} updated`);
+// Boot LOOKS at the database and does not write to it.
+//
+// This used to call syncWorkflowCatalog, which made a restart able to rewrite
+// rows a person or the agent had set — and in one case delete them outright,
+// silently. A record a restart can change is not a record. Seeding is now a
+// thing you run: `bun run db:sync-workflows`.
+//
+// What is left is a report, and both halves of it are failures that are
+// otherwise invisible from the screen.
+const drift = describeDrift(getDb(), isRunnable);
+if (drift.unseeded.length) {
+  log.warn(
+    `${drift.unseeded.length} workflow(s) in the catalog have no row yet — they will not appear or run. ` +
+      "Seed them with `bun run db:sync-workflows`.",
+    { unseeded: drift.unseeded.join(",") },
+  );
+}
+for (const slug of drift.unrunnable) {
+  log.warn(`Workflow "${slug}" has a live schedule and no code behind it — it will never fire.`, {
+    workflow: slug,
+  });
+}
 
 await initNotionMcpCache().catch((error) => {
   log.warn("Notion MCP cache init failed — Notion-dependent agents will error at call time", {

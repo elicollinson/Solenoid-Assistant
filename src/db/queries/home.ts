@@ -48,14 +48,20 @@ export function loadHome(db: Db, now: Date = new Date(), surface: Surface = "des
   const actionsBySubject = new Map<string, HomeAction[]>();
   const callsByRun = new Map<string, HomeToolCall[]>();
 
+  // Buttons are read whether or not the feed has anything in it: the aside's
+  // "worth a look" card is a recommendation, and its two words hang off the
+  // recommendation rather than off a feed row. Reading these inside the guard
+  // below meant a morning with no activity drew that card with nothing to press.
+  for (const a of db.select().from(s.actions).orderBy(asc(s.actions.ordinal)).all()) {
+    const list = actionsBySubject.get(a.subjectId) ?? [];
+    list.push({ id: a.id, label: a.label, stance: a.stance, effectKind: a.effectKind, effect: a.effect });
+    actionsBySubject.set(a.subjectId, list);
+  }
+
+  // These two are only ever read through a feed row, so an empty feed skips them.
   if (ids.length) {
     for (const n of db.select().from(s.narratives).where(eq(s.narratives.slot, "account")).all()) {
       accounts.set(n.subjectId, n.text);
-    }
-    for (const a of db.select().from(s.actions).orderBy(asc(s.actions.ordinal)).all()) {
-      const list = actionsBySubject.get(a.subjectId) ?? [];
-      list.push({ id: a.id, label: a.label, stance: a.stance, effectKind: a.effectKind, effect: a.effect });
-      actionsBySubject.set(a.subjectId, list);
     }
     for (const step of db
       .select()
@@ -168,6 +174,23 @@ export function loadHome(db: Db, now: Date = new Date(), surface: Surface = "des
     db.select({ n: sql<number>`count(*)` }).from(s.workflowRuns).where(eq(s.workflowRuns.state, "running")),
   );
 
+  // What the agent has asked you in the chat and is still holding a run on.
+  // Blocking, specifically: a suggestion waiting in the feed is not the same
+  // as a turn that has stopped mid-sentence and cannot go on without you.
+  const chatWaiting = count(
+    db
+      .select({ n: sql<number>`count(*)` })
+      .from(s.decisions)
+      .innerJoin(s.conversations, eq(s.conversations.id, s.decisions.subjectId))
+      .where(
+        and(
+          eq(s.decisions.state, "open"),
+          eq(s.decisions.blocking, true),
+          eq(s.conversations.channel, "agent_chat"),
+        ),
+      ),
+  );
+
   const unsettled = count(
     db
       .select({ n: sql<number>`count(*)` })
@@ -184,6 +207,9 @@ export function loadHome(db: Db, now: Date = new Date(), surface: Surface = "des
       {
         label: "Today",
         items: [
+          // First, because it is the one destination you go to rather than are
+          // sent to. Amber when it has stopped and is waiting on you.
+          { label: "Chat", count: chatWaiting || null, dot: chatWaiting ? "amber" : null },
           { label: "Activity", count: activityCount || null, dot: null },
           { label: "Calendar", count: null, dot: null },
           { label: "Reminders", count: remindersDue || null, dot: null },

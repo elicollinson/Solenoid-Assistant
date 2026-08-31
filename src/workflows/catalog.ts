@@ -122,11 +122,13 @@ export const WORKFLOW_CATALOG: readonly WorkflowCatalogEntry[] = [
     slug: "weather-briefing",
     name: "Weather briefing",
     description:
-      "The demo tool-using agent: look up a city's weather and write it up. Also the one thing the cron worker runs on its own.",
+      "The demo tool-using agent: look up a city's weather and write it up.",
     trigger: "schedule",
     cadence: "Daily, 07:00",
-    // Kept in step with the `daily-weather` entry in tasks.yaml, which is what
-    // actually fires it. This string is what the table renders.
+    // The schedule this one SHIPS with. Seeded into `workflow_schedules` on the
+    // first `db:sync-workflows` and never touched again — the row is the truth
+    // after that, and moving it through the screen or by asking the agent is a
+    // decision this file does not get to overrule on the next restart.
     rrule: "FREQ=DAILY;BYHOUR=7;BYMINUTE=0",
     inputs: [field("city", "City", { required: true, default: "San Francisco" })],
   },

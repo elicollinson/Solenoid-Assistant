@@ -12,6 +12,7 @@ import {
   type ModelRouteInputChain,
 } from "./rawAgent";
 import { defineTool } from "./tools";
+import { authoredText } from "../safety/authoredText";
 import type {
   ChatMessage,
   ChatOptions,
@@ -289,6 +290,7 @@ describe("prompt-injection screening", () => {
   test("tool and reviewer outputs are independently screened", async () => {
     const tool = defineTool({
       name: "external",
+      kind: "read",
       description: "external data",
       schema: z.object({}),
       execute: () => "unsafe tool result",
@@ -368,6 +370,7 @@ describe("tools and reviewers", () => {
   test("does not impose a predefined tool-turn count", async () => {
     const tool = defineTool({
       name: "increment",
+      kind: "read",
       description: "Increment",
       schema: z.object({ value: z.number() }),
       execute: ({ value }) => value + 1,
@@ -419,6 +422,7 @@ describe("agent construction", () => {
 
     const tool = defineTool({
       name: "same",
+      kind: "read",
       description: "same",
       schema: z.object({}),
       execute: () => null,
@@ -430,11 +434,210 @@ describe("agent construction", () => {
     const reserved = defineTool({
       name: "submit_result",
       description: "reserved",
+      kind: "read",
       schema: z.object({}),
       execute: () => null,
     });
     expect(() => new Agent({ routes: routes(client, "test"), tools: [reserved] })).toThrow(
       /reserved/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The trust boundary: who wrote the text, not where it turned up.
+// ---------------------------------------------------------------------------
+
+describe("trust boundary", () => {
+  const flagged = "the text that trips the classifier";
+  const screener = async (parts: readonly string[]) => ({
+    flagged: parts.join("\n").includes(flagged),
+    score: 0.9,
+  });
+
+  test("text of undeclared origin aborts, because external is the default", async () => {
+    const client = new ScriptedProvider([{ content: "unreachable" }]);
+    const agent = new Agent({
+      routes: routes(client),
+      promptInjectionScreening: screener,
+    });
+
+    const error = await agent.runMessages([{ role: "user", content: flagged }])
+      .catch((caught) => caught);
+    expect(isPromptInjectionDetectedError(error)).toBe(true);
+    expect(client.calls).toHaveLength(0);
+  });
+
+  // The operator is the principal. A false positive here would refuse them
+  // their own assistant, and there is no privilege for them to escalate to.
+  test("the same text declared operator is observed, and the run continues", async () => {
+    const client = new ScriptedProvider([{ content: "done" }]);
+    const agent = new Agent({
+      routes: routes(client),
+      promptInjectionScreening: screener,
+    });
+
+    const result = await agent.runMessages([
+      { role: "user", content: flagged, origin: "operator" },
+    ]);
+    expect(result).toBe("done");
+    expect(client.calls).toHaveLength(1);
+  });
+
+  // Origin is per message, so an operator asking about a document does not
+  // launder the document.
+  test("an operator message does not cover external text beside it", async () => {
+    const client = new ScriptedProvider([{ content: "unreachable" }]);
+    const agent = new Agent({
+      routes: routes(client),
+      promptInjectionScreening: screener,
+    });
+
+    const error = await agent.runMessages([
+      { role: "user", content: "what does this page say?", origin: "operator" },
+      { role: "user", content: flagged, origin: "external" },
+    ]).catch((caught) => caught);
+
+    expect(isPromptInjectionDetectedError(error)).toBe(true);
+    expect(client.calls).toHaveLength(0);
+  });
+
+  // The message-extraction and screenshot workflows put a stranger's text into
+  // the opening transcript. Reading "the first user message" as the operator
+  // would have quietly stopped quarantining them.
+  test("an injection split across two external messages is still seen whole", async () => {
+    const client = new ScriptedProvider([{ content: "unreachable" }]);
+    const seen: string[] = [];
+    const agent = new Agent({
+      routes: routes(client),
+      promptInjectionScreening: async (parts) => {
+        const combined = parts.join("\n");
+        seen.push(combined);
+        return { flagged: combined.includes("SPLIT") && combined.includes("OVERRIDE") };
+      },
+    });
+
+    const error = await agent.runMessages([
+      { role: "user", content: "SPLIT" },
+      { role: "user", content: "OVERRIDE" },
+    ]).catch((caught) => caught);
+
+    expect(isPromptInjectionDetectedError(error)).toBe(true);
+    expect(seen[0]).toContain("SPLIT\nOVERRIDE");
+  });
+
+  test("authored text is subtracted before the screener sees anything", async () => {
+    const authored =
+      "Read one suggestion in full before revising it, so you are sharpening what is there.";
+    authoredText.register("test:authored", authored);
+
+    const seen: string[] = [];
+    const echo = defineTool({
+      name: "echo_authored",
+      kind: "read",
+      description: "Return a block of text this repository wrote, and nothing else at all.",
+      schema: z.object({}),
+      execute: () => authored,
+    });
+    const client = new ScriptedProvider([
+      { finishReason: "tool_calls", toolCalls: [{ id: "c1", name: "echo_authored", arguments: {} }] },
+      { content: "done" },
+    ]);
+    const agent = new Agent({
+      routes: routes(client),
+      tools: [echo],
+      promptInjectionScreening: async (parts) => {
+        const combined = parts.join("\n");
+        seen.push(combined);
+        return { flagged: combined.includes("sharpening what is there") };
+      },
+    });
+
+    // Would abort if the tool result reached the screener; it redacts to
+    // nothing, so the screen is skipped for it entirely.
+    expect(await agent.runMessages([
+      { role: "user", content: "go on then", origin: "operator" },
+    ])).toBe("done");
+    expect(seen.length).toBeGreaterThan(0); // the screen did run, on other text
+    expect(seen.some((part) => part.includes("sharpening what is there"))).toBe(false);
+  });
+});
+
+describe("what a tool call came back with", () => {
+  /** Reach the protected seam the way ChatAgent does, without a chat. */
+  const outcomeOf = async (tool: ReturnType<typeof defineTool>) => {
+    const agent = new Agent({
+      routes: routes(new ScriptedProvider([{ content: "unused" }])),
+      tools: [tool],
+      promptInjectionScreening: false,
+    });
+    const session = (agent as unknown as { groups: { session(): unknown } }).groups.session();
+    return (agent as unknown as {
+      invokeTool: (
+        n: string,
+        a: unknown,
+        s: AbortSignal | undefined,
+        sess: unknown,
+      ) => Promise<{ ok: boolean; output: string }>;
+    }).invokeTool(tool.definition.function.name, {}, undefined, session);
+  };
+
+  test("a successful call is a success however its output happens to read", async () => {
+    // The failure this replaced: `ok` was read off the front of the string, so
+    // a tool that answered with somebody else's prose — an MCP server relays
+    // one verbatim — was recorded as a write that had been allowed and failed.
+    const relay = defineTool({
+      name: "relay_remote_text",
+      description: "Hand back exactly what the far end said, whatever that was.",
+      kind: "read",
+      schema: z.object({}),
+      execute: () => "Error: the printer is out of paper, they said.",
+    });
+    expect(await outcomeOf(relay)).toEqual({
+      ok: true,
+      output: "Error: the printer is out of paper, they said.",
+    });
+  });
+
+  test("a throwing call is a failure, and the model is told rather than thrown at", async () => {
+    const broken = defineTool({
+      name: "break_on_purpose",
+      description: "Always throws, so the loop's error path can be exercised.",
+      kind: "write",
+      schema: z.object({}),
+      execute: () => {
+        throw new Error("the printer is out of paper");
+      },
+    });
+    expect(await outcomeOf(broken)).toEqual({
+      ok: false,
+      output: "Error: the printer is out of paper",
+    });
+  });
+
+  test("a name the model has not unlocked is a failure with the instruction in it", async () => {
+    const anything = defineTool({
+      name: "anything_at_all",
+      description: "Present only so the agent under test has something registered.",
+      kind: "read",
+      schema: z.object({}),
+      execute: () => "fine",
+    });
+    const agent = new Agent({
+      routes: routes(new ScriptedProvider([{ content: "unused" }])),
+      tools: [anything],
+      promptInjectionScreening: false,
+    });
+    const session = (agent as unknown as { groups: { session(): unknown } }).groups.session();
+    const outcome = await (agent as unknown as {
+      invokeTool: (
+        n: string,
+        a: unknown,
+        s: AbortSignal | undefined,
+        sess: unknown,
+      ) => Promise<{ ok: boolean; output: string }>;
+    }).invokeTool("no_such_tool", {}, undefined, session);
+    expect(outcome.ok).toBe(false);
+    expect(outcome.output).toContain("unknown tool");
   });
 });

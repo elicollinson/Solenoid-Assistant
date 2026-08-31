@@ -21,6 +21,7 @@ import { and, eq, inArray, isNotNull, notInArray, or } from "drizzle-orm";
 import type { Db } from "../index";
 import * as s from "../schema";
 import { CATALOGUED_SLUGS } from "../../workflows/sync";
+import { type Tx } from "./_shared";
 
 export interface PruneResult {
   /** The slugs that were removed, in the order they were found. */
@@ -136,7 +137,6 @@ export function pruneUncataloguedWorkflows(db: Db): PruneResult {
   });
 }
 
-type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 /** How many rows on another surface point at one of these, and will stop. */
 function count(t: Tx, table: typeof s.recommendations, column: Parameters<typeof inArray>[0], ids: string[]): number {

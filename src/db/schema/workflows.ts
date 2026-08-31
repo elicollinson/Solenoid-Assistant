@@ -49,6 +49,20 @@ export const workflowSchedules = sqliteTable("workflow_schedules", {
   tz: text().notNull().default(APP_TZ),
   enabled: integer({ mode: "boolean" }).notNull().default(true),
   jitterSecs: integer().notNull().default(0),
+  /**
+   * What to run it WITH.
+   *
+   * The column whose absence made a config file necessary. A schedule is
+   * "this work, with these arguments, at this time", and without the middle
+   * third the only place the arguments could live was outside the database —
+   * which is how this service ended up with two schedulers, one of them
+   * invisible to the screen that draws schedules.
+   *
+   * Validated against the workflow's own schema when the run starts, not here:
+   * a schedule whose arguments have stopped matching the code should fail
+   * loudly at its next firing rather than be silently unschedulable.
+   */
+  args: json<Record<string, unknown>>().notNull().default(sql`'{}'`),
   nextRunAt: ts(),
   lastRunAt: ts(),
   label: text(),

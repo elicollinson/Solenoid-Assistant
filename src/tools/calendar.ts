@@ -37,7 +37,7 @@ import {
   setCalendarAttendees,
 } from "../db/mutations/calendar";
 import type { ToolGroupContext } from "./groups";
-import { instant } from "./_shared";
+import { instant, limit } from "./_shared";
 import { narrativeLines } from "../db/queries/_narrative";
 
 /** A week, which is what the Calendar screen draws and what `calendar_list`
@@ -158,7 +158,7 @@ export function calendarGroup(context: ToolGroupContext): ToolGroup {
           "Include items that were cancelled. They stay on file — use this when somebody is asking what " +
             "happened to something they expected to find.",
         ),
-      limit: z.number().int().positive().max(200).default(50),
+      limit: limit({ keeps: "the ones that start soonest" }),
     }),
     execute: ({ from, to, kind, includeCancelled, limit }) => {
       const start = from ? new Date(from) : new Date();

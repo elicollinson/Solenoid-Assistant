@@ -24,6 +24,7 @@
 // `entities` row exists before the row that reuses its id, and the decision
 // exists before the actions that name it.
 import { and, desc, eq, gte, sql } from "drizzle-orm";
+import type { ApprovalOutcome } from "../../shared/chat";
 import { ulid, type Db } from "../index";
 import * as s from "../schema";
 import { clearSlot, narrate, touch, writePairs, type Pair, type Tx } from "./_shared";
@@ -355,7 +356,7 @@ export function openApproval(db: Db, draft: ApprovalDraft, now = new Date()): Op
   });
 }
 
-export type ApprovalOutcome = "approved" | "declined" | "expired";
+export type { ApprovalOutcome } from "../../shared/chat";
 
 /**
  * Close an approval, and say who closed it.

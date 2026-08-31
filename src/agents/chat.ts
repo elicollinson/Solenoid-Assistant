@@ -18,7 +18,7 @@
 // message this agent reads out of iMessage was written by somebody else, and
 // ../core/rawAgent.ts screens every tool result for injection whether or not
 // this file is involved.
-import { Agent, type AgentOptions } from "../core/rawAgent";
+import { Agent, type AgentOptions, type ToolOutcome } from "../core/rawAgent";
 import type { ChatMessage } from "../core/providers";
 import type { z } from "zod";
 import { loaderName, type ToolSession } from "../core/toolGroups";
@@ -85,7 +85,7 @@ export class ChatAgent extends Agent {
     rawArgs: unknown,
     signal: AbortSignal | undefined,
     session: ToolSession,
-  ): Promise<string> {
+  ): Promise<ToolOutcome> {
     const turn = currentTurn();
     const tool = this.tools.get(name) ?? session.resolve(name);
 
@@ -103,18 +103,24 @@ export class ChatAgent extends Agent {
         description: tool.definition.function.description,
         ...(signal ? { signal } : {}),
       });
-      if (decision.outcome !== "approved") return declined(name, decision.outcome);
+      // Refused, and the model is told so in a sentence rather than by an
+      // exception — but it is not a failed call, because no call was made.
+      if (decision.outcome !== "approved") {
+        return { ok: true, output: declined(name, decision.outcome) };
+      }
       gated = decision.decisionId;
     }
 
     const started = performance.now();
-    const output = await super.invokeTool(name, rawArgs, signal, session);
-    this.report(turn, name, rawArgs, tool, output, performance.now() - started, session);
+    const result = await super.invokeTool(name, rawArgs, signal, session);
+    this.report(turn, name, rawArgs, tool, result, performance.now() - started, session);
     // The second sentence of the approval's outcome line. Only now is it true:
     // until this point the only honest thing to write was which button was
     // pressed. See `noteApprovalOutcome` in ../db/mutations/chat.ts.
-    if (gated) turn.settled(gated, output.startsWith("Error: ") ? output : null, displayName(name));
-    return output;
+    if (gated) {
+      turn.settled(gated, result.ok ? null : result.output, displayName(name));
+    }
+    return result;
   }
 
   /**
@@ -155,17 +161,17 @@ export class ChatAgent extends Agent {
   /**
    * Tell the screen what just ran.
    *
-   * `ok` is read off the string the base class returns, because that is the
-   * only signal there is: `invokeTool` catches a failing tool and hands the
-   * model the error rather than throwing, which is right for the model and
-   * would otherwise leave the transcript drawing a failed call as a clean one.
+   * `ok` comes off the outcome rather than off its wording: `invokeTool`
+   * catches a failing tool and hands the model the error rather than throwing,
+   * which is right for the model and would otherwise leave the transcript
+   * drawing a failed call as a clean one.
    */
   private report(
     turn: ChatTurn,
     name: string,
     rawArgs: unknown,
     tool: AgentTool,
-    output: string,
+    result: ToolOutcome,
     elapsedMs: number,
     session: ToolSession,
   ): void {
@@ -183,7 +189,7 @@ export class ChatAgent extends Agent {
       kind: tool.kind,
       arg: displayArg(rawArgs),
       duration: displayDuration(elapsedMs),
-      ok: !output.startsWith("Error: "),
+      ok: result.ok,
     });
   }
 }

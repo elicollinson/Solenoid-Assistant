@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type {
   ChatConversationRow,
+  ChatEvent,
   ChatListPayload,
   ChatPayload,
   ChatToolCall,
@@ -22,26 +23,6 @@ import type {
 import type { Surface } from "../../../src/shared/surface";
 
 export type * from "../../../src/shared/chat";
-
-/** The events `POST /api/chat/messages` streams. Mirrors src/chat/turn.ts. */
-export type ChatEvent =
-  | { type: "opened"; group: string }
-  | { type: "say"; body: string }
-  | { type: "tool"; name: string; kind: "read" | "write"; arg: string | null; duration: string; ok: boolean }
-  | {
-    type: "approval";
-    decisionId: string;
-    ref: string;
-    title: string;
-    why: string | null;
-    hold: string | null;
-    tool: string;
-    facts: Array<[string, string]>;
-    actions: Array<{ id: string; label: string; stance: "affirm" | "neutral" | "quiet" | "danger" | "bare" }>;
-  }
-  | { type: "settled"; decisionId: string; outcome: "approved" | "declined" | "expired" }
-  | { type: "message"; messageId: string; body: string; note: string | null; toolSummary: string | null }
-  | { type: "error"; message: string };
 
 /**
  * The turn happening right now.
@@ -398,7 +379,16 @@ export function spoken(live: LiveTurn): string {
   return said.join("\n\n");
 }
 
-/** One event, folded into the turn on screen. */
+/**
+ * One event, folded into the turn on screen.
+ *
+ * The `default` is not dead code. This runs against whatever the server is
+ * actually streaming, which on a reload mid-deploy is not necessarily the
+ * version this bundle was built from — and a fold that fell off the end of the
+ * switch returned `undefined`, which `setLive` then wrote over the turn in
+ * flight, taking it off the screen with nothing logged. An event this build
+ * does not know is one to ignore.
+ */
 function apply(turn: LiveTurn, event: ChatEvent): LiveTurn {
   switch (event.type) {
     case "opened":
@@ -423,6 +413,8 @@ function apply(turn: LiveTurn, event: ChatEvent): LiveTurn {
     case "error":
       return { ...turn, error: event.message };
     case "message":
+      return turn;
+    default:
       return turn;
   }
 }

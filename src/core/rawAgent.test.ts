@@ -562,3 +562,82 @@ describe("trust boundary", () => {
     expect(seen.some((part) => part.includes("sharpening what is there"))).toBe(false);
   });
 });
+
+describe("what a tool call came back with", () => {
+  /** Reach the protected seam the way ChatAgent does, without a chat. */
+  const outcomeOf = async (tool: ReturnType<typeof defineTool>) => {
+    const agent = new Agent({
+      routes: routes(new ScriptedProvider([{ content: "unused" }])),
+      tools: [tool],
+      promptInjectionScreening: false,
+    });
+    const session = (agent as unknown as { groups: { session(): unknown } }).groups.session();
+    return (agent as unknown as {
+      invokeTool: (
+        n: string,
+        a: unknown,
+        s: AbortSignal | undefined,
+        sess: unknown,
+      ) => Promise<{ ok: boolean; output: string }>;
+    }).invokeTool(tool.definition.function.name, {}, undefined, session);
+  };
+
+  test("a successful call is a success however its output happens to read", async () => {
+    // The failure this replaced: `ok` was read off the front of the string, so
+    // a tool that answered with somebody else's prose — an MCP server relays
+    // one verbatim — was recorded as a write that had been allowed and failed.
+    const relay = defineTool({
+      name: "relay_remote_text",
+      description: "Hand back exactly what the far end said, whatever that was.",
+      kind: "read",
+      schema: z.object({}),
+      execute: () => "Error: the printer is out of paper, they said.",
+    });
+    expect(await outcomeOf(relay)).toEqual({
+      ok: true,
+      output: "Error: the printer is out of paper, they said.",
+    });
+  });
+
+  test("a throwing call is a failure, and the model is told rather than thrown at", async () => {
+    const broken = defineTool({
+      name: "break_on_purpose",
+      description: "Always throws, so the loop's error path can be exercised.",
+      kind: "write",
+      schema: z.object({}),
+      execute: () => {
+        throw new Error("the printer is out of paper");
+      },
+    });
+    expect(await outcomeOf(broken)).toEqual({
+      ok: false,
+      output: "Error: the printer is out of paper",
+    });
+  });
+
+  test("a name the model has not unlocked is a failure with the instruction in it", async () => {
+    const anything = defineTool({
+      name: "anything_at_all",
+      description: "Present only so the agent under test has something registered.",
+      kind: "read",
+      schema: z.object({}),
+      execute: () => "fine",
+    });
+    const agent = new Agent({
+      routes: routes(new ScriptedProvider([{ content: "unused" }])),
+      tools: [anything],
+      promptInjectionScreening: false,
+    });
+    const session = (agent as unknown as { groups: { session(): unknown } }).groups.session();
+    const outcome = await (agent as unknown as {
+      invokeTool: (
+        n: string,
+        a: unknown,
+        s: AbortSignal | undefined,
+        sess: unknown,
+      ) => Promise<{ ok: boolean; output: string }>;
+    }).invokeTool("no_such_tool", {}, undefined, session);
+    expect(outcome.ok).toBe(false);
+    expect(outcome.output).toContain("unknown tool");
+  });
+});

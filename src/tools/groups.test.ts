@@ -84,6 +84,20 @@ describe("all ten together", () => {
     }
   });
 
+  // The catalog splits itself into surfaces and sources and says what is true
+  // of each. It said "none of the sources has a write tool", which was wrong
+  // about okf — it has four — for as long as okf has been in that block. A
+  // sentence in a comment is not enforceable; this is.
+  test("the three source groups this app only reads through hold no writes", () => {
+    for (const name of ["imessage", "photos", "contacts"]) {
+      const [group] = buildToolGroups(context, [name], { trust: "full" });
+      expect(group!.tools.filter((tool) => tool.kind === "write")).toEqual([]);
+    }
+    // And okf, which sits beside them because it is read the same way, does.
+    const [okf] = buildToolGroups(context, ["okf"], { trust: "full" });
+    expect(okf!.tools.filter((tool) => tool.kind === "write").length).toBeGreaterThan(0);
+  });
+
   test("read-only is what you get by not asking", () => {
     const implicit = buildToolGroups(context, NAMES);
     const explicit = buildToolGroups(context, NAMES, { trust: "read_only" });

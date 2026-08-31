@@ -44,7 +44,7 @@ import { annotateActivityItem } from "../db/mutations/activity";
 import { describeTable } from "../db/schemaDoc";
 import { narrativeBySubject, narrativeLines } from "../db/queries/_narrative";
 import type { ToolGroupContext } from "./groups";
-import { instant } from "./_shared";
+import { instant, iso, limit } from "./_shared";
 
 /* ── small shared pieces ────────────────────────────────────────────────── */
 
@@ -52,8 +52,6 @@ const idSchema = z
   .string()
   .min(1)
   .describe("The feed entry's id, as returned by activity_list.");
-
-const iso = (at: Date | null | undefined): string | null => at?.toISOString() ?? null;
 
 /** The two progress columns as the one thing they are, or nothing. A step
  *  count with only half of it filled in is not a progress bar. */
@@ -233,7 +231,7 @@ export function activityGroup(context: ToolGroupContext): ToolGroup {
           "Include entries the person cleared from their feed. They cleared them on purpose, so leave this " +
             "false unless you are specifically looking back over what was cleared.",
         ),
-      limit: z.number().int().positive().max(200).default(50),
+      limit: limit({ keeps: "the newest" }),
     }),
     execute: ({ state, prominence, workflowId, since, until, unreadOnly, includeDismissed, limit }) => {
       const where: SQL[] = [];

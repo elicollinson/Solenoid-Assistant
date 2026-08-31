@@ -16,78 +16,18 @@
 // treats that as "not in a chat" rather than as an error. An agent invoked from
 // a workflow has no screen to ask, and must not block waiting for one.
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { ToolKind } from "../core/tools";
 
 /**
- * A `[label, value]` line of machine fact, as `attributes` stores it and as the
- * approval bubble draws it under the ask.
- */
-export type Fact = readonly [label: string, value: string];
-
-/** One button on an approval. Mirrors `actions` in ../db/schema/decisions.ts. */
-export interface ChatAction {
-  id: string;
-  label: string;
-  stance: "affirm" | "neutral" | "quiet" | "danger" | "bare";
-}
-
-/**
- * Everything the screen learns while a turn runs.
+ * The wire shape, from the one file both ends compile against.
  *
- * Deliberately flat and JSON-only: these go out over SSE and are read by
- * `web/src/app/api.ts` without a schema on either end beyond this union.
+ * `ChatEvent` used to be declared here and again by hand in
+ * web/src/app/chat.ts, with nothing to hold the two together — see the note on
+ * it in ../shared/chat.ts for what that cost. Re-exported rather than merely
+ * imported so that everything about one turn is still reachable from this file,
+ * which is where the rest of the codebase looks for it.
  */
-export type ChatEvent =
-  /** The model fetched a group's tools. The screen says so, because opening
-   *  ten groups and opening one are very different turns to watch. */
-  | { type: "opened"; group: string }
-  /**
-   * The agent said something on its way to doing something else.
-   *
-   * Separate from `message` because it is not the answer: it is the sentence
-   * before the act, and the approval bubble underneath it is unreadable without
-   * it. Not stored — only the turn's final prose is written down — so a reload
-   * shows the outcome where the live stream showed the intent.
-   */
-  | { type: "say"; body: string }
-  /** One completed tool call, as ToolCalls.tsx draws it. */
-  | {
-    type: "tool";
-    name: string;
-    kind: ToolKind;
-    arg: string | null;
-    duration: string;
-    ok: boolean;
-  }
-  /** A write is waiting on you. The turn is stopped until /decisions answers. */
-  | {
-    type: "approval";
-    decisionId: string;
-    /** The short reference the bubble prints: `ap/0824-2`. */
-    ref: string;
-    title: string;
-    /** Why it is asking at all. The tool's own first sentence. */
-    why: string | null;
-    /** What it has not done while it waits. */
-    hold: string | null;
-    tool: string;
-    facts: readonly Fact[];
-    actions: readonly ChatAction[];
-  }
-  /** How an approval ended — including "expired", which the screen would
-   *  otherwise have to infer from a stream that simply stopped. */
-  | { type: "settled"; decisionId: string; outcome: ApprovalOutcome }
-  /** The turn's prose, once. */
-  | {
-    type: "message";
-    messageId: string;
-    body: string;
-    note: string | null;
-    toolSummary: string | null;
-  }
-  | { type: "error"; message: string };
-
-export type ApprovalOutcome = "approved" | "declined" | "expired";
+export type { ApprovalOutcome, ChatEvent, ChatFact } from "../shared/chat";
+import type { ApprovalOutcome, ChatEvent } from "../shared/chat";
 
 /** How an approval ended, and which decision it was. */
 export interface ApprovalDecision {
@@ -129,6 +69,11 @@ export interface ChatTurn {
    * The other half of the transcript's outcome line: "You said 'Go ahead',
    * 15:20." is written the moment you press the button, and this is the
    * sentence that can only be written once the call has returned.
+   *
+   * `error` is null when the call worked, and is the failure as the model was
+   * told it otherwise. Null rather than "did the output start with 'Error: '" —
+   * see `ToolOutcome` in ../core/rawAgent.ts for the record this was getting
+   * wrong.
    */
   settled(decisionId: string, error: string | null, called: string): void;
 }

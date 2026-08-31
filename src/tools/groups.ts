@@ -97,8 +97,15 @@ export const TOOL_GROUP_CATALOG: Readonly<Record<string, ToolGroupFactory>> = {
   knowledge: knowledgeGroup,
   activity: activityGroup,
   // The sources: what the assistant reads the world through. Everything these
-  // answer with was written by somebody else — see ../safety/trust.ts — which
-  // is why none of them has a write tool.
+  // answer with was written by somebody else — see ../safety/trust.ts — so
+  // `imessage`, `photos` and `contacts` have no write tool at all and the
+  // read-only form of each is the group itself.
+  //
+  // `okf` is the exception and is listed here because it is READ the same way:
+  // it is the memory the agent forms out of everything above it. It carries
+  // four writes (okf_create, okf_patch, okf_move, okf_deprecate), so unlike its
+  // three neighbours it has a read-only form that is genuinely smaller — which
+  // is the whole reason `readOnly` filters rather than asserts.
   okf: okfGroup,
   imessage: imessageGroup,
   photos: photosGroup,

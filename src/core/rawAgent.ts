@@ -92,6 +92,32 @@ export type PromptInjectionBoundary =
 // here rather than pedantic.
 export type { ScreenAction, TextOrigin };
 
+/**
+ * What one tool call came back with, and whether it worked.
+ *
+ * `ok` is carried rather than inferred. It used to be inferred: a failure was a
+ * string beginning "Error: " and every caller that needed to know re-read the
+ * prose this class had just written. That is a contract a tool can meet by
+ * accident — an MCP server relays a remote message verbatim (../mcp/adapter.ts),
+ * and one starting "Error: " would have been recorded in a `decisions` row as a
+ * write that was allowed and failed, when it had succeeded.
+ *
+ * `output` is what the model sees either way. A failed call is still a turn of
+ * the conversation, not an exception: the model is told what went wrong so it
+ * can correct itself, which is why nothing here throws.
+ */
+export interface ToolOutcome {
+  ok: boolean;
+  output: string;
+}
+
+/** A failure, worded for the model. The "Error: " prefix stays in the text
+ *  because that is how every model in this codebase has been read it — it is
+ *  simply no longer the thing anybody tests against. */
+function failed(message: string): ToolOutcome {
+  return { ok: false, output: `Error: ${message}` };
+}
+
 export class PromptInjectionDetectedError extends Error {
   readonly code = "PROMPT_INJECTION_DETECTED";
 
@@ -760,7 +786,7 @@ export class Agent {
             continue;
           }
 
-          const output = await this.invokeTool(
+          const result = await this.invokeTool(
             call.name,
             call.arguments,
             options.signal,
@@ -770,7 +796,7 @@ export class Agent {
             role: "tool",
             toolCallId: call.id,
             toolName: call.name,
-            content: output,
+            content: result.output,
           });
         }
 
@@ -936,15 +962,17 @@ export class Agent {
     rawArgs: unknown,
     signal: AbortSignal | undefined,
     session: ToolSession,
-  ): Promise<string> {
+  ): Promise<ToolOutcome> {
     const tool = this.tools.get(name) ?? session.resolve(name);
     if (!tool) {
       // A name the model knows from somewhere but has not unlocked deserves the
       // instruction rather than "unknown tool", which reads as "it is gone".
       const owner = session.unopenedOwnerOf(name);
-      return owner
-        ? `Error: "${name}" is not available until you call ${loaderName(owner)}.`
-        : `Error: unknown tool "${name}"`;
+      return failed(
+        owner
+          ? `"${name}" is not available until you call ${loaderName(owner)}.`
+          : `unknown tool "${name}"`,
+      );
     }
     return withSpanKind(
       "TOOL",
@@ -978,7 +1006,7 @@ export class Agent {
             [SemanticConventions.OUTPUT_MIME_TYPE]:
               typeof result === "string" ? "text/plain" : "application/json",
           });
-          return output;
+          return { ok: true, output };
         } catch (err) {
           if (
             isPromptInjectionDetectedError(err) ||
@@ -989,7 +1017,7 @@ export class Agent {
           span.recordException(err instanceof Error ? err : new Error(String(err)));
           span.setStatus({ code: SpanStatusCode.ERROR });
           // Feed errors back to the model so it can self-correct rather than crashing.
-          return `Error: ${err instanceof Error ? err.message : String(err)}`;
+          return failed(err instanceof Error ? err.message : String(err));
         }
       },
     );

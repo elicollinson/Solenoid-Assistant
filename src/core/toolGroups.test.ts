@@ -343,13 +343,18 @@ describe("Agent with tool groups", () => {
     });
     const session = (agent as unknown as { groups: ToolBelt }).groups.session();
     const invoke = (agent as unknown as {
-      invokeTool: (n: string, a: unknown, s?: AbortSignal, sess?: unknown) => Promise<string>;
+      invokeTool: (
+        n: string,
+        a: unknown,
+        s?: AbortSignal,
+        sess?: unknown,
+      ) => Promise<{ ok: boolean; output: string }>;
     }).invokeTool.bind(agent);
 
     // Entirely authored: redacted to nothing, so the screener is never reached.
-    await expect(invoke("get_widgets_tools", {}, undefined, session)).resolves.toContain(
-      "# Widgets",
-    );
+    const briefing = await invoke("get_widgets_tools", {}, undefined, session);
+    expect(briefing.ok).toBe(true);
+    expect(briefing.output).toContain("# Widgets");
     // An ordinary result has no such licence, whatever tool produced it.
     await expect(invoke("widgets_list", {}, undefined, session)).rejects.toBeInstanceOf(
       PromptInjectionDetectedError,

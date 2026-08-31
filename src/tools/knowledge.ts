@@ -44,6 +44,7 @@ import { describeTable } from "../db/schemaDoc";
 import { loadKnowledge, loadKnowledgeObject } from "../db/queries/knowledge";
 import { GROUPS } from "../db/okf/classify";
 import type { ToolGroupContext } from "./groups";
+import { limit } from "./_shared";
 
 // ---------------------------------------------------------------------------
 // Small helpers, kept out of the tool bodies
@@ -234,7 +235,7 @@ const shelfSchema = z
       "you care about what a memory is about rather than where it is filed.",
   );
 
-const limitSchema = z.number().int().positive().max(200).default(50);
+const limitSchema = limit({ keeps: "the ones nearest the top of the list" });
 
 export function knowledgeGroup(context: ToolGroupContext): ToolGroup {
   const { db } = context;

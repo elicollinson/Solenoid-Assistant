@@ -30,7 +30,7 @@ import * as s from "../db/schema";
 import { describeTable } from "../db/schemaDoc";
 import type { ToolGroupContext } from "./groups";
 import { loadRecommendation, loadRecommendations } from "../db/queries/recommendations";
-import { instant } from "./_shared";
+import { instant, limit, pairs, toPairs } from "./_shared";
 import {
   answerRecommendation,
   citeForRecommendation,
@@ -55,13 +55,7 @@ const confidenceSchema = z
       "being shown — the honest word then is the answer, not what you thought of it beforehand.",
   );
 
-const effectSchema = z
-  .array(
-    z.object({
-      label: z.string().min(1).describe("The left column, e.g. 'Questions I'd stop asking'."),
-      value: z.string().min(1).describe("The right column, e.g. 'roughly 12 a quarter'."),
-    }),
-  )
+const effectSchema = pairs("Questions I'd stop asking", "roughly 12 a quarter")
   .describe(
     "The 'What changes if you say yes' table, in the order it should read. These are claims about work " +
       "that has not happened yet, so they are written rather than counted — say what you actually expect, " +
@@ -190,7 +184,7 @@ export function createRecommendationTools(db: Db): RecommendationTools {
         .enum(["Waiting on you", "Standing", "Set aside"])
         .optional()
         .describe("Return only the suggestions on this shelf. Broader than `status`; use one or the other."),
-      limit: z.number().int().positive().max(200).default(50),
+      limit: limit({ keeps: "the ones the list draws first" }),
     }),
     execute: ({ status, group, limit }) => {
       const status_ = statuses();
@@ -251,7 +245,7 @@ export function createRecommendationTools(db: Db): RecommendationTools {
       const { formedAt, effect, ...rest } = args;
       const id = proposeRecommendation(db, {
         ...rest,
-        ...(effect ? { effect: effect.map((p) => [p.label, p.value] as const) } : {}),
+        ...(effect ? { effect: toPairs(effect) } : {}),
         ...(formedAt ? { formedAt: new Date(formedAt) } : {}),
       });
       return { id, status: "proposed" };
@@ -275,7 +269,7 @@ export function createRecommendationTools(db: Db): RecommendationTools {
     execute: ({ id, effect, ...patch }) => {
       reviseRecommendation(db, id, {
         ...patch,
-        ...(effect ? { effect: effect.map((p) => [p.label, p.value] as const) } : {}),
+        ...(effect ? { effect: toPairs(effect) } : {}),
       });
       return { id, revised: true };
     },

@@ -48,6 +48,7 @@ import {
   setWorkflowSummary,
 } from "../db/mutations/workflows";
 import type { ToolGroupContext } from "./groups";
+import { iso, limit } from "./_shared";
 
 const slugSchema = z
   .string()
@@ -59,8 +60,6 @@ const slugSchema = z
 
 /** ISO 8601, or null. Dates cross this boundary as text or they cross it as
  *  whatever the caller's serialiser felt like. */
-const iso = (at: Date | null): string | null => at?.toISOString() ?? null;
-
 export function workflowsGroup(context: ToolGroupContext): ToolGroup {
   const { db } = context;
 
@@ -183,7 +182,7 @@ export function workflowsGroup(context: ToolGroupContext): ToolGroup {
           "Only the ones with code behind them. Worth passing true before you suggest anything about how a " +
             "workflow behaves, since the rest have runs on the record and no behaviour to change.",
         ),
-      limit: z.number().int().positive().max(200).default(50),
+      limit: limit({ keeps: "the ones the list draws first" }),
     }),
     execute: ({ paused, scheduled, runnable, limit }) => {
       const payload = loadWorkflows(db);
@@ -313,7 +312,7 @@ export function workflowsGroup(context: ToolGroupContext): ToolGroup {
         .enum(s.LOG_LEVEL)
         .optional()
         .describe("Only lines at exactly this level. 'error' is the usual one; omit for the whole log."),
-      limit: z.number().int().positive().max(500).default(200).describe("The first N lines after filtering."),
+      limit: limit({ max: 500, default: 200, keeps: "the first lines after filtering" }),
     }),
     execute: ({ runId, level, limit }) => {
       const [run] = db

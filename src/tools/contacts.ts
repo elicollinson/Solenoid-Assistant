@@ -34,6 +34,7 @@ import type { Db } from "../db";
 import * as s from "../db/schema";
 import { describeTable } from "../db/schemaDoc";
 import type { ToolGroupContext } from "./groups";
+import { limit } from "./_shared";
 
 export const lookupContactTool = defineTool({
   name: "lookup_contact",
@@ -211,7 +212,7 @@ export function createContactTools(db: Db): ContactTools {
     schema: z.object({
       trust: trustSchema.optional(),
       kind: kindSchema.optional(),
-      limit: z.number().int().positive().max(200).default(50),
+      limit: limit({ keeps: "the first alphabetically" }),
     }),
     execute: ({ trust, kind, limit }) => {
       const filters = [

@@ -31,6 +31,13 @@ export interface ChatChoice {
   stance: "affirm" | "neutral" | "quiet" | "danger" | "bare";
 }
 
+/** A `[label, value]` line of machine fact, as `attributes` stores it and as
+ *  the approval bubble draws it under the ask. */
+export type ChatFact = readonly [label: string, value: string];
+
+/** How an approval ended. "expired" is the clock, not a person. */
+export type ApprovalOutcome = "approved" | "declined" | "expired";
+
 /** The approval a turn is sitting on, or the one it sat on and got answered. */
 export interface ChatApproval {
   decisionId: string;
@@ -111,3 +118,69 @@ export interface ChatPayload {
    *  rather than drawing live buttons that answer nothing. */
   waiting: number;
 }
+
+/**
+ * Everything the screen learns while a turn runs — the frames
+ * `POST /api/chat/:id/messages` streams.
+ *
+ * Here rather than in src/chat/turn.ts because BOTH ends of the wire are typed
+ * from it: the server emits these (src/chat/turn.ts, src/http/routes/chat.ts)
+ * and the browser folds them into the turn on screen (web/src/app/chat.ts).
+ * They were two hand-maintained copies, and the client's fold switches
+ * exhaustively over its own union — so a kind added on one side and not the
+ * other type-checked cleanly on both and dropped the live turn off the screen
+ * at runtime.
+ *
+ * Deliberately flat and JSON-only. `kind` is spelled out rather than imported
+ * from src/core/tools.ts for the reason at the top of this file: the browser
+ * half compiles against it and has no Bun types.
+ */
+export type ChatEvent =
+  /** The model fetched a group's tools. The screen says so, because opening
+   *  ten groups and opening one are very different turns to watch. */
+  | { type: "opened"; group: string }
+  /**
+   * The agent said something on its way to doing something else.
+   *
+   * Separate from `message` because it is not the answer: it is the sentence
+   * before the act, and the approval bubble underneath it is unreadable without
+   * it. Not stored — only the turn's final prose is written down — so a reload
+   * shows the outcome where the live stream showed the intent.
+   */
+  | { type: "say"; body: string }
+  /** One completed tool call, as ToolCalls.tsx draws it. */
+  | {
+    type: "tool";
+    name: string;
+    kind: "read" | "write";
+    arg: string | null;
+    duration: string;
+    ok: boolean;
+  }
+  /** A write is waiting on you. The turn is stopped until /decisions answers. */
+  | {
+    type: "approval";
+    decisionId: string;
+    /** The short reference the bubble prints: `ap/0824-2`. */
+    ref: string;
+    title: string;
+    /** Why it is asking at all. The tool's own first sentence. */
+    why: string | null;
+    /** What it has not done while it waits. */
+    hold: string | null;
+    tool: string;
+    facts: readonly ChatFact[];
+    actions: readonly ChatChoice[];
+  }
+  /** How an approval ended — including "expired", which the screen would
+   *  otherwise have to infer from a stream that simply stopped. */
+  | { type: "settled"; decisionId: string; outcome: ApprovalOutcome }
+  /** The turn's prose, once. */
+  | {
+    type: "message";
+    messageId: string;
+    body: string;
+    note: string | null;
+    toolSummary: string | null;
+  }
+  | { type: "error"; message: string };

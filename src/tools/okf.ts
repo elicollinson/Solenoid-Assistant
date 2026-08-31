@@ -35,6 +35,7 @@ import {
 import { OkfStore, type OkfStoreOptions } from "../okf/store";
 import type { BodyOp } from "../okf/body";
 import type { ToolGroupContext } from "./groups";
+import { limit } from "./_shared";
 
 const statusSchema = z
   .enum(["draft", "stable", "deprecated"])
@@ -206,7 +207,7 @@ export function createOkfTools(opts: OkfStoreOptions): OkfTools {
         .boolean()
         .default(false)
         .describe("Return only concepts past their stale_after date — i.e. due for a re-check."),
-      limit: z.number().int().positive().max(100).default(20),
+      limit: limit({ max: 100, default: 20, keeps: "the first matches the store returns" }),
     }),
     execute: (args) => store.search(args),
   });

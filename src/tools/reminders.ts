@@ -40,10 +40,9 @@ import {
   createReminder,
   dismissReminder,
   reviseReminder,
-  type MetaPair,
 } from "../db/mutations/reminders";
 import type { ToolGroupContext } from "./groups";
-import { instant } from "./_shared";
+import { instant, limit, pairs, toPairs } from "./_shared";
 
 const idSchema = z
   .string()
@@ -62,13 +61,7 @@ const openStateSchema = z
       "which of the two happened.",
   );
 
-const metaSchema = z
-  .array(
-    z.object({
-      label: z.string().min(1).describe("The left column, e.g. 'Invoices'."),
-      value: z.string().min(1).describe("The right column, e.g. 'two, £84 between them'."),
-    }),
-  )
+const metaSchema = pairs("Invoices", "two, £84 between them")
   .describe(
     "The pairs under 'This reminder', in the order they should read. Only for things no column holds — a " +
       "count you made, an amount, a name. Do NOT write a 'Set by', 'Due', 'Closed', 'Source', 'Blocks' or " +
@@ -100,9 +93,6 @@ const clearableDueAt = z
     "A new ISO 8601 due timestamp, or an empty string to take the date off entirely and move it to " +
       "'Someday'. Rescheduling is a real edit and belongs here; do not close one and make another to move it.",
   );
-
-const pairs = (meta: { label: string; value: string }[]): MetaPair[] =>
-  meta.map((pair) => [pair.label, pair.value] as const);
 
 export function remindersGroup(context: ToolGroupContext): ToolGroup {
   const db = context.db;
@@ -147,7 +137,7 @@ export function remindersGroup(context: ToolGroupContext): ToolGroup {
             "'attention' to find the ones asking for you, or 'cancelled' to tell what was called off from " +
             "what was finished, which the bucket alone cannot.",
         ),
-      limit: z.number().int().positive().max(200).default(50),
+      limit: limit({ keeps: "the ones the list draws first — overdue, then today" }),
     }),
     execute: ({ group, state, limit }) => {
       const stored = states();
@@ -253,7 +243,7 @@ export function remindersGroup(context: ToolGroupContext): ToolGroup {
         ...(dueAt ? { dueAt: new Date(dueAt) } : {}),
         ...(setAt ? { setAt: new Date(setAt) } : {}),
         origin: { kind: originKind, ...(originId ? { id: originId } : {}), ...(originLabel ? { label: originLabel } : {}) },
-        ...(meta ? { meta: pairs(meta) } : {}),
+        ...(meta ? { meta: toPairs(meta) } : {}),
       });
       return { id, state: args.state };
     },
@@ -285,7 +275,7 @@ export function remindersGroup(context: ToolGroupContext): ToolGroup {
         ...patch,
         // "" is the only way to say "no date", and it means Someday.
         ...(dueAt === undefined ? {} : { dueAt: dueAt === "" ? null : new Date(dueAt) }),
-        ...(meta ? { meta: pairs(meta) } : {}),
+        ...(meta ? { meta: toPairs(meta) } : {}),
       });
       return { id, revised: true };
     },

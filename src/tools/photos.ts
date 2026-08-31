@@ -38,6 +38,7 @@ import type { Db } from "../db";
 import * as s from "../db/schema";
 import { describeTable } from "../db/schemaDoc";
 import type { ToolGroupContext } from "./groups";
+import { iso, limit } from "./_shared";
 import {
   ClassificationResultSchema,
   type ClassificationResult,
@@ -387,15 +388,7 @@ export async function describeScreenshots(
 // Tool wrapper — same capability, exposed to the model via a Zod schema.
 // ---------------------------------------------------------------------------
 
-const limitSchema = z
-  .number()
-  .int()
-  .positive()
-  .max(500)
-  .default(100)
-  .describe(
-    "Maximum screenshots to return; keeps the most recent when the window has more (default 100).",
-  );
+const limitSchema = limit({ max: 500, default: 100, keeps: "the most recent" });
 
 export const getRecentScreenshotsTool = defineTool({
   name: "get_recent_screenshots",
@@ -701,12 +694,6 @@ export interface StoredScreenshotView {
   analysis: StoredAnalysisView | null;
 }
 
-/** Timestamps are stored as unix milliseconds and read back as Date objects.
- *  Nothing a model reads should be a raw millisecond count. */
-function isoOrNull(when: Date | null): string | null {
-  return when ? when.toISOString() : null;
-}
-
 /**
  * The stored row, found by whichever of its two names the caller is holding.
  *
@@ -778,7 +765,7 @@ export function readStoredScreenshot(db: Db, id: string): StoredScreenshotView |
     photosUuid: shot.photosUuid,
     originalFilename: shot.originalFilename,
     capturedAt: shot.capturedAt.toISOString(),
-    addedAt: isoOrNull(shot.addedAt),
+    addedAt: iso(shot.addedAt),
     width: shot.width,
     height: shot.height,
     path: shot.path,

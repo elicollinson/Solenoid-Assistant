@@ -38,6 +38,7 @@ import {
 import { fetchTrustedMessages } from "../imessage/trusted";
 import type { SAFETY_STATE, TRUST_STATE } from "../db/schema/_shared";
 import type { ToolGroupContext } from "./groups";
+import { limit } from "./_shared";
 
 const BASE_DESCRIPTION =
   "Read recent iMessage/SMS messages from the local macOS Messages database (read-only). " +
@@ -54,24 +55,13 @@ const INDEX_DESCRIPTION =
   "puts somebody else's words in your context. The counts cover the entire window; `limit` " +
   "caps only how many rows you get, most recently active first.";
 
-const limitSchema = z
-  .number()
-  .int()
-  .positive()
-  .max(500)
-  .default(200)
-  .describe("Maximum messages to return; keeps the most recent when the window has more (default 200)");
+const limitSchema = limit({ max: 500, default: 200, keeps: "the most recent" });
 
-const conversationLimitSchema = z
-  .number()
-  .int()
-  .positive()
-  .max(200)
-  .default(50)
-  .describe(
-    "Maximum conversations to return, most recently active first (default 50). The counts in the " +
-      "response are for the whole window regardless of this.",
-  );
+const conversationLimitSchema = limit({ keeps: "the most recently active" }).describe(
+  "How many conversations to answer with, at most 200. Defaults to 50. The cap keeps the most " +
+    "recently active and drops the rest; the counts in the response are for the whole window " +
+    "regardless of it.",
+);
 
 // Shared fetch body: both tool variants funnel through here, differing only in
 // how the window was decided (model-chosen vs. caller-enforced).

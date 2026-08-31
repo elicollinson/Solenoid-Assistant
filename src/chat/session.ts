@@ -43,7 +43,7 @@ import {
   type ApprovalOutcome,
   type ApprovalRequest,
   type ChatEvent,
-  type Fact,
+  type ChatFact,
 } from "./turn";
 
 /**
@@ -185,7 +185,7 @@ export async function* runChatTurn(
         db,
         decisionId,
         error
-          ? `${called} was allowed and failed: ${error.replace(/^Error: /, "")}`
+          ? `${called} was allowed and failed: ${error}`
           : `${called} ran and finished.`,
       );
     },
@@ -355,8 +355,8 @@ function whyFor(request: ApprovalRequest): string | null {
  * unbounded value here would put a tool's entire prose argument into a
  * label/value row built for "Ferris hold".
  */
-function factsFor(request: ApprovalRequest): Fact[] {
-  const facts: Fact[] = [["Call", displayName(request.tool)]];
+function factsFor(request: ApprovalRequest): ChatFact[] {
+  const facts: ChatFact[] = [["Call", displayName(request.tool)]];
   const args = request.args;
   if (args && typeof args === "object") {
     for (const [key, value] of Object.entries(args as Record<string, unknown>)) {

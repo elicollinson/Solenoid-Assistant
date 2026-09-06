@@ -48,6 +48,13 @@ next configured route. Add `--json` to print the complete structured result.
 
 The server defaults to `http://localhost:3000`; OpenAPI documentation is available at `/openapi`.
 
+## Deployment
+
+The production image and digest-promotion flow are documented in
+[`deploy/mini-cloud.md`](deploy/mini-cloud.md). Container deployment runs the
+portable API, UI, worker, memory, and observability paths; macOS-only Photos and
+direct iMessage/Contacts access remain host-only.
+
 ## Runtime configuration
 
 The application reads and validates runtime settings through `src/core/config.ts`.

@@ -10,6 +10,7 @@
 #   docker build -f deploy/Dockerfile -t solenoid-assistant:local .
 
 ARG BUN_VERSION=1.3.6
+ARG VERSION=dev
 
 # ── dependencies (dev included — vite and the React compiler live there) ─────
 FROM oven/bun:${BUN_VERSION}-slim AS deps
@@ -34,8 +35,13 @@ RUN bun install --frozen-lockfile --production
 
 # ── the image that ships ────────────────────────────────────────────────────
 FROM oven/bun:${BUN_VERSION}-slim AS runtime
+ARG VERSION
 WORKDIR /app
 ENV NODE_ENV=production
+
+LABEL org.opencontainers.image.source="https://github.com/elicollinson/Solenoid-Assistant" \
+      org.opencontainers.image.title="Solenoid Assistant" \
+      org.opencontainers.image.version="${VERSION}"
 
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY package.json bun.lock tsconfig.json tasks.yaml ./
@@ -46,7 +52,7 @@ COPY --from=web /app/web/dist ./web/dist
 
 # Mountpoints have to exist and be owned by `bun` *in the image*: Docker seeds
 # an empty named volume from the image directory it covers, ownership included.
-RUN mkdir -p /app/data /app/okf /app/models /app/.screenshots \
+RUN mkdir -p /app/data /app/backups /app/okf /app/models /app/.screenshots \
  && chown -R bun:bun /app
 
 USER bun

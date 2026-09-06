@@ -15,8 +15,15 @@ export const clock = (d: Date) => HHMM.format(d);
 /** "2026-08-25" — comparable as a string, which is the point. */
 export const dayKey = (d: Date) => DAY_KEY.format(d);
 export const localHour = (d: Date) => Number(clock(d).slice(0, 2));
-/** "Tue, 25 Aug" */
-export const dayLabel = (d: Date) => DAY_LABEL.format(d);
+/** "Tue 25 Aug" — assemble the parts so ICU cannot vary the punctuation. */
+export const dayLabel = (d: Date) => {
+  const parts = Object.fromEntries(
+    DAY_LABEL.formatToParts(d)
+      .filter(({ type }) => type !== "literal")
+      .map(({ type, value }) => [type, value]),
+  );
+  return `${parts.weekday} ${parts.day} ${parts.month}`;
+};
 /** "Aug 9" */
 export const shortDay = (d: Date) => SHORT_DAY.format(d);
 

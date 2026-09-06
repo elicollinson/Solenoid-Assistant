@@ -78,6 +78,8 @@ jobs:
 
       - name: Scan the published image
         uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/arm64
         with:
           image-ref: ghcr.io/elicollinson/solenoid-assistant@${{ steps.push.outputs.digest }}
           format: table

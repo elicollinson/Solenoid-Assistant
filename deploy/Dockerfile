@@ -44,7 +44,7 @@ LABEL org.opencontainers.image.source="https://github.com/elicollinson/Solenoid-
       org.opencontainers.image.version="${VERSION}"
 
 COPY --from=prod-deps /app/node_modules ./node_modules
-COPY package.json bun.lock tsconfig.json tasks.yaml ./
+COPY package.json bun.lock tsconfig.json ./
 COPY drizzle ./drizzle
 COPY src ./src
 COPY scripts ./scripts

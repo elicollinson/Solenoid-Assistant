@@ -119,9 +119,9 @@ describe("reading the week", () => {
     expect(week.count).toBe(1);
     expect(week.items[0].id).toBe(id);
     // Both readings of the span, because the agent reasons in one and speaks
-    // in the other.
+    // in the other. ICU data differs on whether en-GB inserts this comma.
     expect(week.items[0].startsAt).toBe(at(25, 14));
-    expect(week.items[0].local).toBe("Tue 25 Aug 14:00 – 15:00");
+    expect(week.items[0].local).toMatch(/^Tue,? 25 Aug 14:00 – 15:00$/);
   });
 
   test("a meeting already running when the window opens is on it", async () => {

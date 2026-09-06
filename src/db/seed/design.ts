@@ -12,9 +12,8 @@ import { inArray, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "../index";
 import { ulid } from "../ids";
 import * as s from "../schema";
-import { ACTIVITY, OVERNIGHT_LEDE, RECOMMENDATION, REMINDERS, WORKFLOWS } from "./fixtures";
+import { ACTIVITY, OVERNIGHT_LEDE, RECOMMENDATIONS_LEDE, REMINDERS, WORKFLOWS } from "./fixtures";
 import { CALENDAR, CALENDAR_RESTRAINT, WEEKDAYS, type Clock, type DayAnchor } from "./calendar";
-import { RECOMMENDATIONS, RECOMMENDATIONS_LEDE } from "./recommendations";
 import { REMINDER_DETAIL, type EvidenceFixture } from "./reminders";
 import {
   PHONE_CALENDAR_DAYS,
@@ -44,7 +43,6 @@ export interface SeedResult {
   activityItems: number;
   reminders: number;
   calendar: number;
-  recommendations: number;
   decisions: number;
   actions: number;
   evidence: number;
@@ -849,109 +847,20 @@ export function seedDesignFixtures(db: Db, options: { now?: Date } = {}): SeedRe
 
     // ── standing suggestions ─────────────────────────────────────────────
     //
-    // The affirm/quiet pair is a decision like any other, so it is one: the
-    // aside already counts open decisions, and a recommendation that asked for
-    // a word by some other mechanism would be a second way to be asked.
+    // None. The Recommendations surface is written by the agent at runtime
+    // through src/db/mutations/recommendations.ts, so the seed leaves the table
+    // empty: a suggestion is a claim about work that actually happened, and one
+    // transcribed from a design file is a claim about nothing.
     //
-    // Home filters recommendations out of "what needs you" — the design gives
-    // the standing suggestion its own card rather than a line in that list —
-    // so seeding three more open ones does not change the header's count.
-    for (const rec of RECOMMENDATIONS) {
-      const formedAt = at(rec.formed);
-      const decidedAt = rec.decided ? at(rec.decided) : null;
-      const id = entity("recommendation", formedAt);
-
-      // Only something still being asked has a decision open on it.
-      let decisionId: string | null = null;
-      if (rec.status === "proposed") {
-        decisionId = entity("decision", formedAt);
-        t.insert(s.decisions)
-          .values({ id: decisionId, subjectId: id, title: rec.title, body: rec.blurb, state: "open", blocking: false, openedAt: formedAt })
-          .run();
-        decisionCount += 1;
-      }
-
-      t.insert(s.recommendations)
-        .values({
-          id,
-          title: rec.title,
-          status: rec.status,
-          confidence: rec.confidence,
-          formedAt,
-          decidedAt,
-          decidedBy: decidedAt ? "user" : null,
-          basisLabel: rec.basisLabel ?? null,
-          basisCount: rec.basisCount ?? null,
-          basisRunCount: rec.basisRunCount ?? null,
-          scopeLabel: rec.scopeLabel,
-          scopeOkfUri: rec.scopeUri,
-          decisionId,
-        })
-        .run();
-
-      narrate(id, "blurb", rec.blurb, formedAt);
-      rec.prose.forEach((text, i) => narrate(id, "account", text, formedAt, i));
-      narrate(id, "restraint", rec.restraint, formedAt);
-
-      // The one pair that counts in the agent's own unit; the other three under
-      // "This suggestion" are readings of columns and are derived at query time.
-      t.insert(s.attributes)
-        .values({ id: ulid(), subjectId: id, groupSlot: "meta", ordinal: 0, label: "From", value: rec.from })
-        .run();
-      rec.effect.forEach(([label, value], i) => {
-        t.insert(s.attributes)
-          .values({ id: ulid(), subjectId: id, groupSlot: "effect", ordinal: i, label, value })
-          .run();
-      });
-
-      if (decisionId && rec.affirm && rec.quiet) {
-        addActions(id, decisionId, [
-          { label: rec.affirm, stance: "affirm", effectKind: "set_policy" },
-          { label: rec.quiet, stance: "quiet", effectKind: "resolve" },
-        ]);
-      }
-
-      if (rec.evidence) seedEvidence(id, rec.evidence);
-    }
-
-    // ── "worth a look" ───────────────────────────────────────────────────
+    // The screen's lede below is still seeded, because a lede is authored copy
+    // about the screen rather than a row on it. With no rows the surface reads
+    // "…Nothing is waiting on you right now.", which is true.
     //
-    // The standup suggestion the Activity aside draws. It is a recommendation
-    // like the five above and is stored as one, so it also appears on the
-    // Recommendations list — the design authored it for the card and never put
-    // it in the list, but an aside offering something the list does not hold is
-    // the agent contradicting itself in two places at once.
-    //
-    // It carries one sentence and no account of itself, so the detail draws the
-    // sections it has and nothing else.
-    const recId = entity("recommendation");
-    const recDecisionId = entity("decision");
-    t.insert(s.decisions)
-      .values({
-        id: recDecisionId,
-        subjectId: recId,
-        title: RECOMMENDATION.title,
-        body: RECOMMENDATION.body,
-        state: "open",
-        blocking: false,
-        openedAt: now,
-      })
-      .run();
-    decisionCount += 1;
-    t.insert(s.recommendations)
-      .values({
-        id: recId,
-        title: RECOMMENDATION.title,
-        status: "proposed",
-        confidence: "worth_a_look",
-        formedAt: now,
-        basisLabel: RECOMMENDATION.basisLabel,
-        basisCount: RECOMMENDATION.basisCount,
-        decisionId: recDecisionId,
-      })
-      .run();
-    narrate(recId, "account", RECOMMENDATION.body);
-    addActions(recId, recDecisionId, RECOMMENDATION.actions.map((a) => ({ ...a, effect: {} })));
+    // The Activity aside's "worth a look" card reads the newest proposed
+    // recommendation straight off this table (src/db/queries/home.ts), so it
+    // draws nothing until the agent forms one. `worthALook` is already nullable
+    // and AgentAside already handles the null.
+
 
     // ── app copy that is authored, not derived ───────────────────────────
     //
@@ -1000,7 +909,6 @@ export function seedDesignFixtures(db: Db, options: { now?: Date } = {}): SeedRe
       activityItems: ACTIVITY.length,
       reminders: REMINDERS.length,
       calendar: CALENDAR.length,
-      recommendations: RECOMMENDATIONS.length + 1,
       decisions: decisionCount,
       actions: actionCount,
       evidence: evidenceCount,

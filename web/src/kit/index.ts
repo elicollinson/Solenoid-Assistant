@@ -24,7 +24,11 @@ export { Tabs, type TabItem } from "./core/Tabs";
 
 // agent — runs, traces, evidence
 export { ActivityItem } from "./agent/ActivityItem";
+export { ApprovalBubble, type ApprovalChoice } from "./agent/ApprovalBubble";
 export { CalendarEvent } from "./agent/CalendarEvent";
+export { ChatTurn } from "./agent/ChatTurn";
+export { ConversationRow } from "./agent/ConversationRow";
+export { Composer } from "./agent/Composer";
 export {
   EvidenceBrief,
   EvidenceList,
@@ -48,6 +52,7 @@ export { TraceTree, type TraceNode } from "./agent/TraceTree";
 // mobile — the phone's own vocabulary
 export { Agenda, AgendaNow, AgendaRow } from "./mobile/Agenda";
 export { AskButton } from "./mobile/AskButton";
+export { AskDock } from "./mobile/AskDock";
 export { DayStrip, DayStripCell, type DayStripDay } from "./mobile/DayStrip";
 export { Sheet } from "./mobile/Sheet";
 export { TabBar, TabBarItem, type TabBarEntry } from "./mobile/TabBar";

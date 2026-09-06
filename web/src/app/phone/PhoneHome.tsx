@@ -8,7 +8,7 @@
 // Each tab fetches for itself. The alternative — reading all four here so the
 // state could live in one place — would put four requests on the wire to draw
 // one screen, on the frame least able to afford them.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { usePrefersDusk } from "../frame";
 import {
   useCalendar,
@@ -26,6 +26,8 @@ import { ActivityPhone } from "./ActivityPhone";
 import { CalendarPhone } from "./CalendarPhone";
 import { MemoryPhone } from "./MemoryPhone";
 import { WorkflowsPhone } from "./WorkflowsPhone";
+import { ChatPhone } from "./ChatPhone";
+import { useChat } from "../chat";
 import { PhoneNotice, PhoneScreen, type PhoneTab } from "./chrome";
 
 /** What each screen has open, kept per screen rather than as one field: coming
@@ -36,6 +38,11 @@ export function PhoneHome() {
   const dusk = usePrefersDusk();
   const [tab, setTab] = useState<PhoneTab>("Activity");
   const [open, setOpen] = useState<OpenBy>({});
+  // What the ask dock was last used to say, if anything. It is handed to the
+  // Chat tab, which starts a conversation with it and sends it — the design's
+  // `seed`. Cleared once spent, so switching back to Chat later does not send
+  // it a second time.
+  const [seed, setSeed] = useState<string | null>(null);
 
   // Nothing writes to the database yet, so settling something settles it here:
   // the same bargain the desktop strikes, and the same two sets holding it.
@@ -75,21 +82,31 @@ export function PhoneHome() {
     setOpen((current) => ({ ...current, [view]: effect.id ?? null }));
   };
 
+  /** Said from another screen: go to Chat and let it start one with this. */
+  const ask = (text: string) => {
+    setSeed(text);
+    setTab("Chat");
+  };
+
   return (
     <div data-theme={dusk ? "dusk" : undefined} style={{ display: "contents" }}>
+      {tab === "Chat" ? (
+        <Chat onTab={setTab} seed={seed} onSeeded={() => setSeed(null)} />
+      ) : null}
       {tab === "Activity" ? (
-        <Activity tab={tab} onTab={setTab} resolved={resolved} onInvoke={invoke} onResolve={resolve} />
+        <Activity tab={tab} onTab={setTab} onAsk={ask} resolved={resolved} onInvoke={invoke} onResolve={resolve} />
       ) : null}
       {tab === "Calendar" ? (
-        <Calendar tab={tab} onTab={setTab} openId={openOn("Calendar")} onOpen={setOpenOn("Calendar")} onInvoke={invoke} />
+        <Calendar tab={tab} onTab={setTab} onAsk={ask} openId={openOn("Calendar")} onOpen={setOpenOn("Calendar")} onInvoke={invoke} />
       ) : null}
       {tab === "Things I know" ? (
-        <Memory tab={tab} onTab={setTab} openId={openOn("Things I know")} onOpen={setOpenOn("Things I know")} />
+        <Memory tab={tab} onTab={setTab} onAsk={ask} openId={openOn("Things I know")} onOpen={setOpenOn("Things I know")} />
       ) : null}
       {tab === "Workflows" ? (
         <Workflows
           tab={tab}
           onTab={setTab}
+          onAsk={ask}
           openSlug={openOn("Workflows")}
           onOpen={setOpenOn("Workflows")}
           pausedLocally={pausedLocally}
@@ -103,13 +120,51 @@ export function PhoneHome() {
 }
 
 const isTab = (view: string): view is PhoneTab =>
-  view === "Activity" || view === "Calendar" || view === "Things I know" || view === "Workflows";
+  view === "Chat" || view === "Activity" || view === "Calendar" ||
+  view === "Things I know" || view === "Workflows";
 
-type Chrome = { tab: PhoneTab; onTab: (tab: PhoneTab) => void };
+type Chrome = { tab: PhoneTab; onTab: (tab: PhoneTab) => void; onAsk: (text: string) => void };
+
+/**
+ * Its own component so the live connection is opened when Chat is and closed
+ * when it is — see the same note on the desktop's.
+ *
+ * `seed` is what the ask dock said on another screen. Started here rather than
+ * there because starting a conversation and sending into it are two requests,
+ * and the screen that owns the connection is the one that should make them.
+ */
+function Chat({
+  onTab,
+  seed,
+  onSeeded,
+}: {
+  onTab: (tab: PhoneTab) => void;
+  seed: string | null;
+  onSeeded: () => void;
+}) {
+  const chat = useChat("phone");
+  const { start, send, openId } = chat;
+
+  // Two steps and they cannot be one: a conversation has to exist before
+  // anything can be said into it. `start` opens it, this fires again when
+  // `openId` lands, and the seed goes in then.
+  useEffect(() => {
+    if (!seed) return;
+    if (!openId) {
+      start();
+      return;
+    }
+    send(seed);
+    onSeeded();
+  }, [seed, openId, start, send, onSeeded]);
+
+  return <ChatPhone chat={chat} onTab={onTab} />;
+}
 
 function Activity({
   tab,
   onTab,
+  onAsk,
   resolved,
   onInvoke,
   onResolve,
@@ -127,7 +182,7 @@ function Activity({
   };
 
   return (
-    <PhoneScreen meta={home.status === "ready" ? home.data.rail.agent.line : undefined} tab={tab} onTab={onTab}>
+    <PhoneScreen meta={home.status === "ready" ? home.data.rail.agent.line : undefined} tab={tab} onTab={onTab} onAsk={onAsk}>
       {home.status === "loading" ? <PhoneNotice label="Reading" text="Fetching what I did overnight." /> : null}
       {home.status === "error" ? (
         <PhoneNotice
@@ -143,6 +198,7 @@ function Activity({
 function Calendar({
   tab,
   onTab,
+  onAsk,
   openId,
   onOpen,
   onInvoke,
@@ -151,7 +207,7 @@ function Calendar({
   const one = useCalendarItem(openId);
 
   return (
-    <PhoneScreen meta={list.status === "ready" ? list.data.range : undefined} tab={tab} onTab={onTab}>
+    <PhoneScreen meta={list.status === "ready" ? list.data.range : undefined} tab={tab} onTab={onTab} onAsk={onAsk}>
       {list.status === "loading" ? <PhoneNotice label="Reading" text="Laying out your week." /> : null}
       {list.status === "error" ? <PhoneNotice label="No answer" text={`I couldn't read the week — ${list.message}.`} /> : null}
       {list.status === "ready" ? (
@@ -161,13 +217,13 @@ function Calendar({
   );
 }
 
-function Memory({ tab, onTab, openId, onOpen }: Chrome & { openId: string | null; onOpen: (id: string | null) => void }) {
+function Memory({ tab, onTab, onAsk, openId, onOpen }: Chrome & { openId: string | null; onOpen: (id: string | null) => void }) {
   const list = useKnowledge("phone");
   const one = useKnowledgeObject(openId);
   const facts = list.status === "ready" ? list.data.rows.reduce((sum, row) => sum + row.facts, 0) : 0;
 
   return (
-    <PhoneScreen meta={list.status === "ready" ? `${facts} facts` : undefined} tab={tab} onTab={onTab}>
+    <PhoneScreen meta={list.status === "ready" ? `${facts} facts` : undefined} tab={tab} onTab={onTab} onAsk={onAsk}>
       {list.status === "loading" ? <PhoneNotice label="Reading" text="Going through what I've written down." /> : null}
       {list.status === "error" ? <PhoneNotice label="No answer" text={`I couldn't read the store — ${list.message}.`} /> : null}
       {list.status === "ready" ? <MemoryPhone knowledge={list.data} detail={one} openId={openId} onOpen={onOpen} /> : null}
@@ -178,6 +234,7 @@ function Memory({ tab, onTab, openId, onOpen }: Chrome & { openId: string | null
 function Workflows({
   tab,
   onTab,
+  onAsk,
   openSlug,
   onOpen,
   pausedLocally,
@@ -204,7 +261,7 @@ function Workflows({
   };
 
   return (
-    <PhoneScreen meta={list.status === "ready" ? `${count} workflows` : undefined} tab={tab} onTab={onTab}>
+    <PhoneScreen meta={list.status === "ready" ? `${count} workflows` : undefined} tab={tab} onTab={onTab} onAsk={onAsk}>
       {list.status === "loading" ? <PhoneNotice label="Reading" text="Listing everything I run." /> : null}
       {list.status === "error" ? <PhoneNotice label="No answer" text={`I couldn't list them — ${list.message}.`} /> : null}
       {list.status === "ready" ? (

@@ -1,7 +1,7 @@
 // What happens when you press Run.
 //
 // The catalog says a workflow exists; this says what executing it means. Same
-// bargain as src/tasks/registry.ts: one Zod schema per workflow validates the
+// bargain the retired task registry struck: one Zod schema per workflow validates the
 // arguments whichever way they arrive — a form in the browser, a JSON body from
 // curl — and one `execute` is the seam both go through, so a run started from
 // the UI exercises exactly the code path the HTTP endpoints already do.
@@ -12,7 +12,8 @@
 // workflow itself is the only thing that knows how to say what it did, so it
 // says it here rather than leaving the runner to guess from a blob of JSON.
 import { z } from "zod";
-import { runTask } from "../tasks";
+import { weatherAgent } from "../agents/demo";
+import { weatherPrompt } from "../prompts";
 import { extractMessages } from "./messageExtraction";
 import { classifySafety } from "./safetyClassification";
 import {
@@ -224,12 +225,15 @@ const WORKFLOWS: readonly RunnableWorkflow[] = [
     slug: "weather-briefing",
     schema: z.object({ city: z.string().min(1, "name a city") }),
     execute: async ({ city }) => {
-      // Through the task registry rather than around it, so a run from here and
-      // the 07:00 cron firing are demonstrably the same execution path.
-      const result = await runTask("weather", { city });
-      const answer = typeof result.output === "string" ? result.output : JSON.stringify(result.output);
+      // Straight to the agent. This used to go through a second registry —
+      // `runTask("weather")` — which existed so that `tasks.yaml` could fire it
+      // on a cron. That was the whole of the task layer: a parallel way to
+      // schedule and run a unit of work, invisible to the screen that draws
+      // schedules and to the agent that edits them. The scheduler reads
+      // `workflow_schedules` now, so there is one kind of unit of work again.
+      const answer = await weatherAgent.run(weatherPrompt, { city });
       return {
-        output: result.output,
+        output: answer,
         effects: [`Looked up the weather in ${city}.`],
         prose: [answer],
       };

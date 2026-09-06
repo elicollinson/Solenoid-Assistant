@@ -226,6 +226,18 @@ export function pauseWorkflow(slug: string, paused: boolean): Promise<{ paused: 
   return send(`/api/workflows/${encodeURIComponent(slug)}/pause`, "POST", { paused });
 }
 
+/**
+ * Adopt or decline a suggestion, on the record rather than in this tab.
+ *
+ * The screen has already moved the row by the time this lands — an answer that
+ * waited for a round trip would leave the button you pressed sitting there
+ * looking unpressed. This is what makes it survive the reload, and a refusal
+ * here is the screen having to take the answer back.
+ */
+export function answerRecommendation(id: string, stance: "adopted" | "declined"): Promise<{ status: string }> {
+  return send(`/api/recommendations/${encodeURIComponent(id)}/answer`, "POST", { stance });
+}
+
 /** Replace the standing instruction. Empty text retires it without a successor. */
 export function saveInstructions(slug: string, text: string): Promise<{ text: string | null }> {
   return send(`/api/workflows/${encodeURIComponent(slug)}/instructions`, "PUT", { text });

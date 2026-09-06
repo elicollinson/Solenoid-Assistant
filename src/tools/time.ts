@@ -3,6 +3,7 @@ import { defineTool } from "../core/tools";
 
 export const getTimeTool = defineTool({
   name: "get_time",
+  kind: "read",
   description:
     "Get the current date and time. Returns UTC in the same ISO 8601 format as read_imessages " +
     "timestamps (directly comparable as strings), plus the local timezone and day of week. " +

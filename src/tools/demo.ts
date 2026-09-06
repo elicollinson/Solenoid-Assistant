@@ -6,6 +6,7 @@ import { evaluateArithmetic } from "../utils/arithmetic";
 
 export const weatherTool = defineTool({
   name: "get_weather",
+  kind: "read",
   description: "Get current weather for a city",
   schema: z.object({ city: z.string() }),
   execute: ({ city }) => {
@@ -17,6 +18,7 @@ export const weatherTool = defineTool({
 });
 export const calculateTool = defineTool({
   name: "calculate",
+  kind: "read",
   description: "Evaluate a math expression",
   schema: z.object({ expression: z.string() }),
   execute: ({ expression }) => String(evaluateArithmetic(expression)),

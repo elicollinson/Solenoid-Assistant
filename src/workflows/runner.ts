@@ -58,6 +58,15 @@ export interface StartedRun {
 export interface StartOptions {
   now?: Date;
   /**
+   * Who set this off. Defaults to a person pressing Run.
+   *
+   * Not cosmetic: the Activity feed, the run history and the calendar all read
+   * it, and a run the clock started that is written down as "manual / user"
+   * tells you that you did something you did not do. The worker passes
+   * "schedule"; nothing else currently needs to.
+   */
+  trigger?: (typeof s.RUN_TRIGGER)[number];
+  /**
    * Where the code behind a slug comes from. The registry, everywhere but a
    * test — every real workflow reaches a model, and what is worth checking here
    * is the bookkeeping around one, not the one.
@@ -139,6 +148,30 @@ function stillOpen(db: Db, runId: string): boolean {
   return run?.state === "running";
 }
 
+/**
+ * Whether this workflow already has a run going.
+ *
+ * The scheduler's guard. croner's own `protect` cannot do this job: it skips a
+ * firing while the HANDLER is still running, and the handler here returns as
+ * soon as the run row exists — the work continues under its own span. So an
+ * hourly rule over a ninety-minute job would start a second, a third and a
+ * fourth, all writing to the same workflow.
+ *
+ * A question rather than a refusal inside `startWorkflowRun`, because starting
+ * a second run deliberately is a legitimate thing for a person to do from the
+ * Run button. It is the clock that should not.
+ */
+export function hasRunInFlight(db: Db, slug: string): boolean {
+  const [running] = db
+    .select({ id: s.workflowRuns.id })
+    .from(s.workflowRuns)
+    .innerJoin(s.workflows, eq(s.workflows.id, s.workflowRuns.workflowId))
+    .where(and(eq(s.workflows.slug, slug), eq(s.workflowRuns.state, "running")))
+    .limit(1)
+    .all();
+  return Boolean(running);
+}
+
 /** The next log line's number, so a cancel can write after what is already there. */
 function nextSeq(db: Db, runId: string): number {
   const [last] = db
@@ -159,6 +192,7 @@ function nextSeq(db: Db, runId: string): number {
  */
 export function startWorkflowRun(db: Db, slug: string, rawArgs: unknown, options: StartOptions = {}): StartedRun {
   const now = options.now ?? new Date();
+  const trigger = options.trigger ?? "manual";
   const lookup = options.lookup ?? runnableWorkflow;
 
   const [workflow] = db.select().from(s.workflows).where(eq(s.workflows.slug, slug)).limit(1).all();
@@ -189,8 +223,11 @@ export function startWorkflowRun(db: Db, slug: string, rawArgs: unknown, options
         workflowId: workflow.id,
         versionId: workflow.currentVersionId,
         ordinal,
-        trigger: "manual",
-        triggeredBy: "user",
+        trigger,
+        // The actor follows the trigger rather than being a second thing to
+        // get wrong: only a person can press Run, and only the clock can fire
+        // a schedule.
+        triggeredBy: trigger === "manual" ? "user" : "system",
         state: "running",
         // One step until a workflow reports its own stages. Said rather than
         // left null, so the detail pane can draw a meter at all.

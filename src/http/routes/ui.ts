@@ -8,6 +8,11 @@ import { loadRecommendation, loadRecommendations } from "../../db/queries/recomm
 import { loadReminder, loadReminders } from "../../db/queries/reminders";
 import { loadWorkflow, loadWorkflows } from "../../db/queries/workflows";
 import { NoSuchWorkflowError, setWorkflowInstructions, setWorkflowPaused } from "../../db/mutations/workflows";
+import {
+  NoSuchRecommendationError,
+  RecommendationSettledError,
+  answerRecommendation,
+} from "../../db/mutations/recommendations";
 import { WorkflowArgsError } from "../../workflows/registry";
 import {
   NotRunnableError,
@@ -233,6 +238,40 @@ export function createUiRoutes(resolveDb: () => Db = getDb) {
       {
         params: t.Object({ id: t.String() }),
         detail: { summary: "One suggestion: what I noticed, what would change, and what I formed it from" },
+      },
+    )
+    .post(
+      "/api/recommendations/:id/answer",
+      ({ params, body, set }) => {
+        try {
+          answerRecommendation(resolveDb(), params.id, body.stance, { by: "user" });
+          return { status: body.stance };
+        } catch (error) {
+          if (error instanceof NoSuchRecommendationError) {
+            set.status = 404;
+            return { error: error.message };
+          }
+          // Already answered — by you in another tab, or withdrawn by me while
+          // this page was open. A 409 rather than a 500: the request was fine,
+          // the question is simply not open any more, and the next read says so.
+          if (error instanceof RecommendationSettledError) {
+            set.status = 409;
+            return { error: error.message };
+          }
+          set.status = 500;
+          return { error: error instanceof Error ? error.message : "Could not write it down" };
+        }
+      },
+      {
+        params: t.Object({ id: t.String() }),
+        body: t.Object({ stance: t.Union([t.Literal("adopted"), t.Literal("declined")]) }),
+        detail: { summary: "Adopt or decline a suggestion, closing the question behind it" },
+        response: {
+          200: t.Object({ status: t.String() }),
+          404: t.Object({ error: t.String() }),
+          409: t.Object({ error: t.String() }),
+          500: t.Object({ error: t.String() }),
+        },
       },
     )
     .get("/api/calendar", ({ query }) => loadCalendar(resolveDb(), new Date(), asked(query)), {

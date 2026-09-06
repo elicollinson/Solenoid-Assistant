@@ -84,7 +84,11 @@ export function mcpToolToAgentTool(
     return parts.join("\n");
   }
 
-  return { definition, schema, execute };
+  // A remote server tells us a name, a description and a schema. It does not
+  // tell us whether the call changes anything, and nothing here can work it
+  // out — so every MCP tool is a write. That is the safe direction: it keeps
+  // them out of any group filtered down to reads for an untrusted context.
+  return { definition, kind: "write", schema, execute };
 }
 
 // ---------------------------------------------------------------------------

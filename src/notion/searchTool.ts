@@ -41,6 +41,7 @@ const searchSchema = z.object({
 export function createNotionSearchTool(config: RuntimeConfig = loadRuntimeConfig()) {
   return defineTool({
     name: "notion-search-by-name",
+    kind: "read",
     description:
       "Search a specific Notion data source for a page by exact or partial name. " +
       "Returns a JSON object: { found, exact_match, page, candidates }. " +

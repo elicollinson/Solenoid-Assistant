@@ -14,7 +14,6 @@ const result = seedDesignFixtures(db);
 console.log(
   `seeded ${path} — ${result.workflows} workflows, ${result.runs} runs, ${result.runSteps} run steps, ` +
     `${result.activityItems} activity items, ${result.reminders} reminders, ${result.calendar} calendar entries, ` +
-    `${result.recommendations} recommendations, ` +
     `${result.decisions} decisions, ${result.actions} actions, ${result.sources} cited sources, ` +
     `${result.evidence} evidence links`,
 );

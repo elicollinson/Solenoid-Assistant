@@ -24,6 +24,7 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
     "db:seed": "bun run scripts/db-seed.ts",
+    "db:sync-workflows": "bun run scripts/db-sync-workflows.ts",
     "db:prune": "bun run scripts/db-prune.ts",
     "dev:web": "bun x vite --config web/vite.config.ts",
     "build:web": "bun x vite build --config web/vite.config.ts",

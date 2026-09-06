@@ -12,7 +12,6 @@ on:
       - package.json
       - scripts/**
       - src/**
-      - tasks.yaml
       - tsconfig.json
       - web/**
   workflow_dispatch: {}
@@ -69,6 +68,7 @@ jobs:
           context: .
           file: deploy/Dockerfile
           platforms: linux/arm64
+          pull: true
           push: true
           tags: ghcr.io/elicollinson/solenoid-assistant:${{ github.sha }}
           build-args: |

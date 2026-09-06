@@ -28,6 +28,7 @@
     "db:prune": "bun run scripts/db-prune.ts",
     "dev:web": "bun x vite --config web/vite.config.ts",
     "build:web": "bun x vite build --config web/vite.config.ts",
+    "release:preflight": "bun run scripts/release-preflight.ts",
     "make:icons": "bun run scripts/make-icons.ts",
     "serve:tailscale": "bun run scripts/serve-tailscale.ts",
     "db:index-okf": "bun run scripts/db-index-okf.ts"
@@ -73,6 +74,7 @@
   ],
   "overrides": {
     "adm-zip": "0.6.0",
+    "fast-uri": "3.1.6",
     "sharp": "0.35.0"
   }
 }

@@ -1,0 +1,59 @@
+name: release preflight
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .dockerignore
+      - .github/workflows/release-preflight.yml
+      - .github/workflows/release.yml
+      - bun.lock
+      - deploy/Dockerfile
+      - drizzle/**
+      - package.json
+      - scripts/**
+      - src/**
+      - tsconfig.json
+      - web/**
+  workflow_dispatch: {}
+
+concurrency:
+  group: solenoid-assistant-release-preflight-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  arm64-image:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build the production image locally
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/arm64
+          pull: true
+          load: true
+          tags: solenoid-assistant:release-preflight
+          build-args: |
+            VERSION=${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Scan fixable HIGH/CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/arm64
+        with:
+          image-ref: solenoid-assistant:release-preflight
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+

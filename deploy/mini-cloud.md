@@ -26,6 +26,26 @@ manual dispatch:
 The image tag is the source commit SHA for debugging; deployment always uses the
 digest emitted by the build.
 
+## Release preflight
+
+Run the same ARM64 production-image gate before asking for merge:
+
+```bash
+bun run release:preflight
+```
+
+The command requires a running Docker daemon with Buildx and a local Trivy CLI.
+It fails with setup instructions when one is unavailable, builds
+`deploy/Dockerfile` for `linux/arm64`, verifies the loaded image's platform, and
+rejects every fixable HIGH or CRITICAL OS/library vulnerability. Install Trivy
+with `brew install trivy` on macOS or follow Trivy's installation instructions
+on Linux.
+
+`.github/workflows/release-preflight.yml` repeats that image build and policy on
+pull requests that can affect the release. The release workflow still scans the
+published digest after merge, so a local cache or registry difference cannot
+bypass the deployment gate.
+
 ## One-time GitHub setup
 
 Create a fine-grained personal access token limited to the

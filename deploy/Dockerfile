@@ -39,6 +39,10 @@ ARG VERSION
 WORKDIR /app
 ENV NODE_ENV=production
 
+RUN apt-get update \
+ && apt-get upgrade -y \
+ && rm -rf /var/lib/apt/lists/*
+
 LABEL org.opencontainers.image.source="https://github.com/elicollinson/Solenoid-Assistant" \
       org.opencontainers.image.title="Solenoid Assistant" \
       org.opencontainers.image.version="${VERSION}"

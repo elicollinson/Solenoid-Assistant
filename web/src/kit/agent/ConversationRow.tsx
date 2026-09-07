@@ -20,6 +20,7 @@ export function ConversationRow({
   state,
   selected = false,
   touch = false,
+  voiceInvoked = false,
   onOpen,
   style,
 }: {
@@ -30,6 +31,7 @@ export function ConversationRow({
   selected?: boolean;
   /** The phone: 44px of row, and a press state rather than a hover one. */
   touch?: boolean;
+  voiceInvoked?: boolean;
   onOpen: () => void;
   style?: CSSProperties;
 }) {
@@ -90,7 +92,15 @@ export function ConversationRow({
         >
           {lede}
         </span>
-        <span style={{ font: "var(--text-mono-meta)", color: "var(--text-4)" }}>{when}</span>
+        <span style={{ display: "flex", alignItems: "center", gap: "var(--sp-2)", font: "var(--text-mono-meta)", color: "var(--text-4)" }}>
+          <span>{when}</span>
+          {voiceInvoked ? (
+            <span style={{ color: "var(--signal-green)", display: "inline-flex", alignItems: "center", gap: "3px" }}>
+              <span style={{ width: "4px", height: "4px", borderRadius: "50%", backgroundColor: "var(--signal-green)", display: "inline-block" }} />
+              voice
+            </span>
+          ) : null}
+        </span>
       </span>
     </div>
   );

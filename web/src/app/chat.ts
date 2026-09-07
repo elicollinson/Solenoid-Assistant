@@ -55,6 +55,8 @@ export interface ChatState {
   title: string | null;
   /** What the server has written down for the open one. */
   stored: ChatTurnRow[];
+  model: string | null;
+  voiceInvoked: boolean;
   lede: string;
   restraint: string | null;
   /** How many conversations are waiting on you. */
@@ -291,6 +293,8 @@ export function useChat(surface: Surface = "desktop"): ChatState {
     openId,
     title: payload?.title ?? null,
     stored: payload?.turns ?? [],
+    model: payload?.model ?? null,
+    voiceInvoked: Boolean(payload?.voiceInvoked),
     lede: (payload ?? list)?.lede ?? "",
     restraint: (payload ?? list)?.restraint ?? null,
     waiting: list?.waiting ?? 0,

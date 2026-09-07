@@ -92,6 +92,9 @@ const runtimeConfigSchema = z.object({
   NOTION_DS_MUSIC: optionalEnvString,
   NOTION_DS_GAMES: optionalEnvString,
   TAVILY_API_KEY: optionalEnvString,
+  GEMINI_API_KEY: optionalEnvString,
+  GEMINI_LIVE_MODEL: optionalEnvString.default("models/gemini-3.1-flash-live-preview"),
+  GEMINI_VOICE: optionalEnvString.default("Sulafat"),
 });
 
 export interface RuntimeConfig {
@@ -155,6 +158,11 @@ export interface RuntimeConfig {
   };
   tavily: {
     apiKey?: string;
+  };
+  gemini: {
+    apiKey?: string;
+    liveModel: string;
+    voice: string;
   };
 }
 
@@ -296,6 +304,13 @@ export function loadRuntimeConfig(
     },
     tavily: {
       ...(parsed.TAVILY_API_KEY ? { apiKey: parsed.TAVILY_API_KEY } : {}),
+    },
+    gemini: {
+      ...(parsed.GEMINI_API_KEY || process.env.GEMINI_API_KEY
+        ? { apiKey: parsed.GEMINI_API_KEY ?? process.env.GEMINI_API_KEY }
+        : {}),
+      liveModel: parsed.GEMINI_LIVE_MODEL,
+      voice: parsed.GEMINI_VOICE,
     },
   };
 }

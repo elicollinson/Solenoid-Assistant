@@ -29,6 +29,7 @@ export { CalendarEvent } from "./agent/CalendarEvent";
 export { ChatTurn } from "./agent/ChatTurn";
 export { ConversationRow } from "./agent/ConversationRow";
 export { Composer } from "./agent/Composer";
+export { RetroWigglyLine, type RetroWigglyLineProps } from "./agent/RetroWigglyLine";
 export {
   EvidenceBrief,
   EvidenceList,

@@ -456,3 +456,21 @@ export function noteApprovalOutcome(db: Db, decisionId: string, followed: string
     touch(tx, decisionId, now);
   });
 }
+
+/**
+ * Mark that voice has been invoked for a conversation, setting its model.
+ */
+export function markConversationVoiceInvoked(
+  db: Db,
+  conversationId: string,
+  model = "models/gemini-3.1-flash-live-preview",
+): void {
+  db.update(s.conversations)
+    .set({
+      voiceInvoked: true,
+      model,
+    })
+    .where(eq(s.conversations.id, conversationId))
+    .run();
+}
+

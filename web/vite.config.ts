@@ -12,7 +12,7 @@ export default defineConfig({
   server: {
     port: 5173,
     // The API lives in the Elysia server (bun run start:server, PORT=3000).
-    proxy: { "/api": { target: "http://localhost:3000", changeOrigin: true } },
+    proxy: { "/api": { target: "http://localhost:3000", changeOrigin: true, ws: true } },
   },
   build: { outDir: "dist", emptyOutDir: true },
 });

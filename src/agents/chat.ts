@@ -202,7 +202,7 @@ export class ChatAgent extends Agent {
  * date, and reads a written date more reliably than an offset it has to
  * subtract from.
  */
-function today(now = new Date()): string {
+export function today(now = new Date()): string {
   const when = new Intl.DateTimeFormat("en-GB", {
     timeZone: APP_TZ,
     weekday: "long",

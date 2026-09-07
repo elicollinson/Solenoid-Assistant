@@ -1,5 +1,15 @@
-import { ApprovalBubble, Button, ChatTurn, Composer, ConversationRow, MonoLabel, StatusMark } from "../kit";
+import {
+  ApprovalBubble,
+  Button,
+  ChatTurn,
+  Composer,
+  ConversationRow,
+  MonoLabel,
+  RetroWigglyLine,
+  StatusMark,
+} from "../kit";
 import { spoken, useFollowBottom, type ChatState } from "./chat";
+import { useVoiceMode } from "./useVoiceMode";
 
 /**
  * Talking to the agent, on the desktop.
@@ -18,6 +28,10 @@ export function ChatView({ chat }: { chat: ChatState }) {
   const { box, content } = useFollowBottom();
   const live = chat.live;
   const open = Boolean(chat.openId);
+  const voice = useVoiceMode({
+    conversationId: chat.openId,
+    onTurnComplete: chat.reload,
+  });
 
   return (
     <>
@@ -58,14 +72,45 @@ export function ChatView({ chat }: { chat: ChatState }) {
                 : EMPTY_LIST}
             </p>
           </div>
-          {chat.waiting ? (
-            <span style={{ display: "flex", alignItems: "center", gap: "var(--sp-3)", flexShrink: 0 }}>
-              <StatusMark state="attention" size={11} />
-              <span style={{ font: "var(--text-mono)", color: "var(--text-3)" }}>
-                {chat.waiting === 1 ? "one is waiting on you" : `${chat.waiting} are waiting on you`}
+          <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-4)", flexShrink: 0 }}>
+            {open ? (
+              <span
+                style={{
+                  font: "var(--text-mono-meta)",
+                  padding: "4px 8px",
+                  borderRadius: "var(--radius-control)",
+                  background: "var(--surface-raised)",
+                  border: "1px solid var(--border)",
+                  color: chat.voiceInvoked || voice.active ? "var(--text-1)" : "var(--text-3)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  fontSize: "11px",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                }}
+              >
+                <span
+                  style={{
+                    width: "6px",
+                    height: "6px",
+                    borderRadius: "50%",
+                    backgroundColor: chat.voiceInvoked || voice.active ? "var(--signal-green)" : "var(--text-4)",
+                  }}
+                />
+                {chat.voiceInvoked || voice.active ? "Gemini 3.1 Live Flash" : "Gemma 4 31B"}
               </span>
-            </span>
-          ) : null}
+            ) : null}
+
+            {chat.waiting ? (
+              <span style={{ display: "flex", alignItems: "center", gap: "var(--sp-3)" }}>
+                <StatusMark state="attention" size={11} />
+                <span style={{ font: "var(--text-mono)", color: "var(--text-3)" }}>
+                  {chat.waiting === 1 ? "one is waiting on you" : `${chat.waiting} are waiting on you`}
+                </span>
+              </span>
+            ) : null}
+          </div>
         </header>
 
         <div ref={box} style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "0 var(--sp-10) var(--sp-9)" }}>
@@ -120,17 +165,32 @@ export function ChatView({ chat }: { chat: ChatState }) {
           style={{
             display: "flex",
             flexDirection: "column",
+            gap: "var(--sp-4)",
             padding: "var(--sp-6) var(--sp-10) var(--sp-8)",
             borderTop: "var(--border)",
             background: "var(--surface-panel)",
           }}
         >
+          {voice.active ? (
+            <div style={{ maxWidth: "var(--measure)" }}>
+              <RetroWigglyLine
+                active={voice.active}
+                analyserNode={voice.analyserNode}
+                isSpeaking={voice.isSpeaking}
+                isMuted={voice.isMuted}
+                onToggleMute={voice.toggleMute}
+                onEndVoice={voice.stopVoice}
+              />
+            </div>
+          ) : null}
           <div style={{ maxWidth: "var(--measure)" }}>
             <Composer
               onSend={chat.send}
               busy={Boolean(live)}
               waiting={Boolean(live?.pending)}
-              placeholder="Tell me what to do"
+              voiceActive={voice.active}
+              onToggleVoice={voice.active ? voice.stopVoice : voice.startVoice}
+              placeholder={voice.active ? "Voice mode active — speak or type" : "Tell me what to do"}
               style={{ borderTop: "none", padding: 0 }}
             />
           </div>
@@ -180,6 +240,7 @@ export function ChatView({ chat }: { chat: ChatState }) {
               lede={row.lede}
               when={row.when}
               state={row.state}
+              voiceInvoked={row.voiceInvoked}
               selected={row.id === chat.openId}
               onOpen={() => chat.open(row.id)}
             />

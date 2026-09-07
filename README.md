@@ -247,6 +247,10 @@ Agent modules use the same runtime configuration and return a common lifecycle r
 
 ## The web app
 
+For an implementation-backed manual test inventory, safe fixture setup,
+expected results, evidence capture, failure checks, and the release smoke set,
+see [the manual UI functionality-testing runbook](docs/manual-ui-testing.md).
+
 ```bash
 bun run db:seed        # load the design's content into SQLite, once
 bun run db:index-okf   # project okf/ into SQLite, if you have a bundle

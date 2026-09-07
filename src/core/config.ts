@@ -33,7 +33,10 @@ const runtimeConfigSchema = z.object({
   OPENROUTER_BASE_URL: optionalEnvString.default("https://openrouter.ai/api/v1"),
   OPENROUTER_API_KEY: optionalEnvString,
   OPENROUTER_MODEL: optionalEnvString.default("google/gemma-4-31b-it"),
-  STRUCTURED_OUTPUT_STRATEGY: z.enum(["native", "two-stage"]).optional(),
+  STRUCTURED_OUTPUT_STRATEGY: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.enum(["native", "two-stage"]).optional(),
+  ),
   PROMPT_GUARD_MODEL_PATH: optionalEnvString.default(
     "models/prompt-guard-2-86m",
   ),

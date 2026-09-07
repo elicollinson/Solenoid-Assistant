@@ -110,6 +110,31 @@ describe("loadRuntimeConfig", () => {
     ).toBe("two-stage");
   });
 
+  test("treats blank structured-output overrides as unset", () => {
+    for (const value of ["", "  \t\n"]) {
+      expect(
+        loadRuntimeConfig({
+          OLLAMA_API_URL: "https://ollama.com",
+          STRUCTURED_OUTPUT_STRATEGY: value,
+        }).structuredOutputStrategy,
+      ).toBe("two-stage");
+    }
+  });
+
+  test("preserves valid structured-output overrides and rejects invalid values", () => {
+    expect(
+      loadRuntimeConfig({ STRUCTURED_OUTPUT_STRATEGY: "native" })
+        .structuredOutputStrategy,
+    ).toBe("native");
+    expect(
+      loadRuntimeConfig({ STRUCTURED_OUTPUT_STRATEGY: "two-stage" })
+        .structuredOutputStrategy,
+    ).toBe("two-stage");
+    expect(() =>
+      loadRuntimeConfig({ STRUCTURED_OUTPUT_STRATEGY: "automatic" })
+    ).toThrow(/native.*two-stage/);
+  });
+
   test("requires all Notion data source ids only when requested", () => {
     const config = loadRuntimeConfig({});
     expect(() => requireNotionDataSourceIds(config)).toThrow(/NOTION_DS_BOOKS/);

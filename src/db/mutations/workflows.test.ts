@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { createDb, runMigrations, type Db } from "../index";
 import * as s from "../schema";
 import { loadWorkflow, loadWorkflows } from "../queries/workflows";
@@ -248,9 +248,27 @@ describe("the schedule", () => {
 });
 
 describe("permissions", () => {
+  // Scoped to the workflow under test rather than counting the table, because
+  // the catalog now seeds the rules its own workflows ship with — see
+  // `seedPermissions` in ../../workflows/sync.ts. A count across every workflow
+  // was only ever right while nothing else had any.
+  const mine = () => {
+    const [row] = db
+      .select({ id: s.workflows.id })
+      .from(s.workflows)
+      .where(eq(s.workflows.slug, "weather-briefing"))
+      .limit(1)
+      .all();
+    return row!.id;
+  };
   const live = () =>
-    db.select().from(s.workflowPermissions).where(isNull(s.workflowPermissions.retiredAt)).all();
-  const all = () => db.select().from(s.workflowPermissions).all();
+    db
+      .select()
+      .from(s.workflowPermissions)
+      .where(and(eq(s.workflowPermissions.workflowId, mine()), isNull(s.workflowPermissions.retiredAt)))
+      .all();
+  const all = () =>
+    db.select().from(s.workflowPermissions).where(eq(s.workflowPermissions.workflowId, mine())).all();
 
   test("a grant is the one live rule for its capability", () => {
     grantWorkflowPermission(db, "weather-briefing", { capability: "spend", mode: "ask", limitAmountCents: 5000 });

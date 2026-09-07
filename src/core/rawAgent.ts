@@ -3,6 +3,7 @@
 import { Ollama } from "ollama";
 import { z } from "zod";
 import { type AgentTool } from "./tools";
+import { currentConsent } from "./consent";
 import { ToolBelt, ToolSession, loaderName, type ToolGroup } from "./toolGroups";
 import {
   OllamaProvider,
@@ -988,6 +989,32 @@ export class Agent {
         try {
           const args = tool.schema.parse(rawArgs); // validate at the boundary
           span.setAttribute(SemanticConventions.INPUT_VALUE, safeJson(args));
+
+          // Whoever is behind this run gets asked before anything changes.
+          // After the parse, so a call that cannot be made is refused on its
+          // own terms rather than put to somebody; before the execute, which
+          // is the only ordering that means anything. Reads are never gated:
+          // there is nothing to authorise about looking.
+          if (tool.kind === "write") {
+            const gate = currentConsent();
+            const verdict = await gate?.({
+              tool: name,
+              kind: tool.kind,
+              args,
+              description: tool.definition.function.description,
+            });
+            if (verdict && !verdict.allow) {
+              span.setAttributes({
+                "consent.allowed": false,
+                [SemanticConventions.OUTPUT_VALUE]: verdict.tell,
+              });
+              // Not an error. Nothing failed and nothing ran — the same shape
+              // a declined approval takes in ../agents/chat.ts, and for the
+              // same reason: a refused write is a turn of the conversation.
+              return { ok: true, output: verdict.tell };
+            }
+          }
+
           log.info(`[tool] ${name}(${JSON.stringify(args)})`);
           const result = await this.awaitWithSignal(
             Promise.resolve(tool.execute(args, { signal })),

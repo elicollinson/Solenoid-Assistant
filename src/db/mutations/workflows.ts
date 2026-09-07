@@ -23,6 +23,7 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { ulid, type Db } from "../index";
 import * as s from "../schema";
+import { clearSlot, narrate, touch, writePairs, type Pair } from "./_shared";
 
 /** Thrown when the slug names nothing this database knows — HTTP 404. */
 export class NoSuchWorkflowError extends Error {
@@ -345,4 +346,303 @@ function livePermission(workflowId: string, capability: string) {
     eq(s.workflowPermissions.capability, capability),
     isNull(s.workflowPermissions.retiredAt),
   );
+}
+
+// ---------------------------------------------------------------------------
+// A write that waited
+// ---------------------------------------------------------------------------
+
+/** What a deferred write needs recorded so a person can answer it later. */
+export interface DeferredWrite {
+  workflowId: string;
+  runId: string;
+  /** The tool the run wanted to call, and what it wanted to call it with. */
+  tool: string;
+  args: unknown;
+  /** The capability whose rule said to ask — `okf.write`. Shown as a fact, so
+   *  the answer to "why am I being asked this" is on the card. */
+  capability: string;
+  /** The tool's own first sentence: what the act is, in its own words. */
+  why: string;
+}
+
+/**
+ * Write down a change a run wanted to make and did not.
+ *
+ * The other half of `ask`. A run at three in the morning has nobody to put a
+ * question to, so the question is written down instead and joins everything
+ * else waiting on the person — `blocking: false`, because unlike a chat
+ * approval no run is sitting stopped on this one. The run carried on without
+ * the write and finished.
+ *
+ * The affirm action carries `effectKind: "tool_call"` and the call itself, so
+ * the record says exactly what would happen rather than "approve this", and
+ * `answerDeferredWrite` is what actually runs it when you say yes.
+ *
+ * ## The feed entry is not decoration
+ *
+ * A `decisions` row on its own is INVISIBLE in this product, and the first
+ * version of this function wrote one and stopped. Three surfaces read a gate
+ * and all three reach it through `activity_items`: the home feed selects from
+ * that table, the rail counts it, and `openGates` in ../queries/workflows.ts
+ * joins `decisions` to it to find the gate a run is sitting on — its own
+ * comment says so ("a run does not own its decision; the feed entry about the
+ * run does"). Writing the decision without the feed entry is writing a record
+ * nothing reads, which is the failure this whole area was rebuilt to end.
+ */
+export function deferWorkflowWrite(
+  db: Db,
+  write: DeferredWrite,
+  now: Date = new Date(),
+): string {
+  return db.transaction((t) => {
+    const decisionId = ulid(now.getTime());
+    t.insert(s.entities)
+      .values({ id: decisionId, kind: "decision", createdAt: now, updatedAt: now })
+      .run();
+    t.insert(s.decisions)
+      .values({
+        id: decisionId,
+        // The run is what it is about, so the decision hangs off it the way a
+        // recommendation's hangs off the recommendation.
+        subjectId: write.runId,
+        title: `I wanted to run ${write.tool}, and stopped to ask.`,
+        body: write.why,
+        state: "open",
+        // Nothing is held. The run did not wait and has already finished.
+        blocking: false,
+        openedAt: now,
+      })
+      .run();
+
+    // The facts under the ask, in the slot every other gate in the product
+    // uses for them. The capability first: it is the answer to "why is this
+    // being put to me at all", and it names the rule you would edit.
+    writePairs(t, decisionId, "effect", [
+      ["Governed by", write.capability],
+      ["Call", write.tool],
+      ...argumentPairs(write.args),
+    ]);
+
+    // What is true while it waits, which for a deferred write is everything:
+    // it did not happen, and the run it belonged to is over.
+    narrate(
+      t,
+      decisionId,
+      "restraint",
+      "Nothing was written. The run finished without it.",
+      now,
+    );
+
+    // The feed entry, without which none of the above is visible anywhere —
+    // and it comes BEFORE the buttons, because the buttons hang off it.
+    const activityId = ulid(now.getTime());
+    t.insert(s.entities)
+      .values({ id: activityId, kind: "activity_item", createdAt: now, updatedAt: now })
+      .run();
+    t.insert(s.activityItems)
+      .values({
+        id: activityId,
+        occurredAt: now,
+        // It wants you specifically, which is what the loud mark is for.
+        state: "attention",
+        title: `${write.tool} is waiting on you`,
+        badge: write.capability,
+        prominence: "prominent",
+        framed: true,
+        workflowId: write.workflowId,
+        runId: write.runId,
+        decisionId,
+      })
+      .run();
+
+    // `subjectId` is the FEED ROW, not the decision — ../queries/home.ts reads
+    // buttons by the id of the item they are drawn under, and the seed writes
+    // them the same way. The decision is carried separately, in `decisionId`,
+    // which is what says pressing one settles a question. Hanging these off the
+    // decision instead put them in the database and on no screen.
+    const button = (
+      ordinal: number,
+      label: string,
+      stance: (typeof s.ACTION_STANCE)[number],
+      effectKind: (typeof s.ACTION_EFFECT_KIND)[number],
+      effect: Record<string, unknown>,
+    ) =>
+      t.insert(s.actions)
+        .values({
+          id: ulid(now.getTime()),
+          subjectId: activityId,
+          decisionId,
+          ordinal,
+          label,
+          stance,
+          effectKind,
+          effect,
+          destructive: false,
+          createdAt: now,
+        })
+        .run();
+
+    button(0, "Write it", "affirm", "tool_call", { tool: write.tool, args: write.args });
+    button(1, "Leave it", "quiet", "resolve", {});
+
+    return decisionId;
+  });
+}
+
+/**
+ * Do the thing a deferred write was asking about, or let it go.
+ *
+ * The other end of `deferWorkflowWrite`, and the reason its affirm action
+ * carries a real `{ tool, args }` rather than a flag. `run` is handed in rather
+ * than imported: this module writes rows and does not execute tools, and the
+ * caller (../../http/routes/workflows.ts) is what knows how to rebuild one.
+ *
+ * The write order is the one that survives a crash between two statements: the
+ * call happens first and its outcome is recorded second, so the worst case is a
+ * decision that stays open over a write that happened — which a person re-reads
+ * and can act on — rather than a decision marked done over a write that never
+ * did.
+ */
+export function settleDeferredWrite(
+  db: Db,
+  settlement: {
+    decisionId: string;
+    actionId: string;
+    /** True when the call was made. False when they left it. */
+    ran: boolean;
+    /** What happened, in one sentence. Null when they simply declined. */
+    outcome: string | null;
+    failed?: boolean;
+  },
+  now: Date = new Date(),
+): void {
+  db.transaction((t) => {
+    const [open] = t
+      .select({ id: s.decisions.id })
+      .from(s.decisions)
+      .where(and(eq(s.decisions.id, settlement.decisionId), eq(s.decisions.state, "open")))
+      .limit(1)
+      .all();
+    if (!open) throw new NoSuchWorkflowDecisionError(settlement.decisionId);
+
+    t.update(s.decisions)
+      .set({
+        // A decline is an answer and resolves. Only the clock leaves one
+        // unanswered, and nothing here is on a clock.
+        state: "resolved",
+        resolvedAt: now,
+        resolvedBy: "user",
+        chosenActionId: settlement.actionId,
+      })
+      .where(eq(s.decisions.id, settlement.decisionId))
+      .run();
+
+    t.update(s.actions)
+      .set({
+        invokedAt: now,
+        invokedBy: "user",
+        invokeState: settlement.failed ? "failed" : "ok",
+      })
+      .where(eq(s.actions.id, settlement.actionId))
+      .run();
+
+    if (settlement.outcome) {
+      clearSlot(t, settlement.decisionId, "outcome");
+      narrate(t, settlement.decisionId, "outcome", settlement.outcome, now);
+    }
+
+    // The feed entry stops asking. It stays in the feed rather than being
+    // dismissed, because what the agent wanted and what you said about it is
+    // the record, and a feed that deletes its own history answers nothing.
+    t.update(s.activityItems)
+      .set({
+        state: settlement.failed ? "failed" : settlement.ran ? "done" : "idle",
+        title: settlement.outcome ?? "You left it.",
+        prominence: "quiet",
+        framed: false,
+      })
+      .where(eq(s.activityItems.decisionId, settlement.decisionId))
+      .run();
+
+    touch(t, settlement.decisionId, now);
+  });
+}
+
+/** Thrown when an action names no open deferred write — HTTP 404 or 409. */
+export class NoSuchWorkflowDecisionError extends Error {
+  constructor(id: string) {
+    super(`No open decision with id ${id}. It may already have been answered.`);
+    this.name = "NoSuchWorkflowDecisionError";
+  }
+}
+
+/** What one of a deferred write's two buttons means, and whether it still can. */
+export interface DeferredWriteButton {
+  decisionId: string;
+  runId: string;
+  tool: string;
+  args: unknown;
+  /** True for "Write it", false for "Leave it". */
+  approves: boolean;
+  /** False once the question has been answered. The call MUST NOT be made
+   *  again on a false: `settleDeferredWrite` would refuse the second settle,
+   *  but only after the write had already happened twice. */
+  open: boolean;
+}
+
+/**
+ * The affirm button's payload, the decision it belongs to, and whether that
+ * decision is still open.
+ *
+ * `open` is not a nicety. The route runs the call BEFORE recording the outcome
+ * — deliberately, so a crash between the two leaves a question open over a
+ * write that happened rather than a record claiming a write that did not. That
+ * ordering makes a replayed `actionId` a second real write: the tool runs
+ * again, and only then does `settleDeferredWrite` notice the decision is closed
+ * and throw. So the state is read here, with the call, and checked before it.
+ */
+export function readDeferredWrite(
+  db: Db,
+  actionId: string,
+): DeferredWriteButton | undefined {
+  const [row] = db
+    .select({
+      decisionId: s.actions.decisionId,
+      effectKind: s.actions.effectKind,
+      effect: s.actions.effect,
+      runId: s.activityItems.runId,
+      state: s.decisions.state,
+    })
+    .from(s.actions)
+    .innerJoin(s.activityItems, eq(s.activityItems.decisionId, s.actions.decisionId))
+    .innerJoin(s.decisions, eq(s.decisions.id, s.actions.decisionId))
+    .where(eq(s.actions.id, actionId))
+    .limit(1)
+    .all();
+  if (!row?.decisionId || !row.runId) return undefined;
+  const open = row.state === "open";
+
+  // "Leave it" is a `resolve`, which has no call in it. Both buttons come
+  // through here so the route has one shape to handle.
+  if (row.effectKind !== "tool_call") {
+    return { decisionId: row.decisionId, runId: row.runId, tool: "", args: undefined, approves: false, open };
+  }
+  const effect = row.effect as { tool?: unknown; args?: unknown };
+  if (typeof effect.tool !== "string") return undefined;
+  return { decisionId: row.decisionId, runId: row.runId, tool: effect.tool, args: effect.args, approves: true, open };
+}
+
+/** The arguments as `[label, value]` lines, capped the way an approval's are —
+ *  a person checks an id against one they know, they do not read a payload. */
+function argumentPairs(args: unknown): Pair[] {
+  if (!args || typeof args !== "object") return [];
+  const pairs: Pair[] = [];
+  for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
+    if (value === undefined || value === null || value === "") continue;
+    const rendered = typeof value === "string" ? value : JSON.stringify(value);
+    pairs.push([key, rendered.length > 120 ? `${rendered.slice(0, 119)}…` : rendered]);
+    if (pairs.length >= 6) break;
+  }
+  return pairs;
 }

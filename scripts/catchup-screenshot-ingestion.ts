@@ -15,6 +15,8 @@ import {
   shutdownNotionMcpCache,
 } from "../src/mcp/notionCache";
 import { ingestRecentScreenshots } from "../src/workflows/screenshotIngestion";
+import { withWorkflowPermissions } from "../src/workflows/permissions";
+import { getDb } from "../src/db";
 
 const DEFAULT_LIMIT = 500;
 const MAX_LIMIT = 5_000;
@@ -113,11 +115,16 @@ try {
     : `from the last ${options.hoursBack} hour(s)`;
   console.log(`Catching up screenshots ${range}, limit ${options.limit}...`);
 
-  const result = await ingestRecentScreenshots({
-    fromTime: options.fromTime,
-    hoursBack: options.hoursBack,
-    limit: options.limit,
-  });
+  // The same rules the scheduled run is under. This is the most unattended
+  // caller there is — a long sweep with nobody watching it — so it is the last
+  // place a write should go through because nothing was looking.
+  const result = await withWorkflowPermissions(getDb(), "screenshot-ingestion", () =>
+    ingestRecentScreenshots({
+      fromTime: options.fromTime,
+      hoursBack: options.hoursBack,
+      limit: options.limit,
+    }),
+  );
 
   if (options.json) {
     console.log(JSON.stringify(result, null, 2));

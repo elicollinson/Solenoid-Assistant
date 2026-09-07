@@ -140,6 +140,7 @@ set `structuredOutputStrategy` to `native` or `two-stage`; the global
 | POST | `/api/workflows/:slug/stop` | Stop the run it has going, and stop recording what it returns |
 | POST | `/api/workflows/:slug/pause` | Pause or resume a workflow |
 | PUT | `/api/workflows/:slug/instructions` | Replace the standing instruction, retiring the one it supersedes |
+| POST | `/api/workflows/decisions` | Answer a write a workflow deferred, making the call if you say so |
 | GET | `/api/runs/:runId/logs` | Everything logged under one run id, from VictoriaLogs where there is one |
 | POST | `/api/logs` | Accept structured log records from the browser app into the same store |
 
@@ -824,6 +825,93 @@ Two properties it is built to hold, and both are tested:
 
 Anything that cannot run says so at every boot and every reload, because a
 schedule that silently does nothing is the failure all of this exists to end.
+
+## What a workflow may do on its own
+
+The same failure, one layer up. `workflow_permissions` has been in the schema
+from the beginning — one live rule per capability, `allow`/`ask`/`deny`, retired
+rather than overwritten so a run in June stays readable against June's rules.
+The agent could write them, the detail pane drew them, and **nothing read
+them**. Every unattended write in this service went ahead because no code
+existed that could have refused one.
+
+`src/workflows/permissions.ts` is that code. A capability is the tool's family —
+`okf_create` and `okf_patch` are both `okf.write`, `notion-create-pages` is
+`notion.write` — which is the vocabulary `workflows_set_permissions` already
+told the agent to use, so a rule the agent writes and a rule the runner checks
+meet at the same string with no table between them.
+
+| Mode | What happens |
+| --- | --- |
+| `allow` | The write happens. |
+| `deny` | It does not, and the model is told to say so in its result rather than find another route. |
+| `ask` | It does not happen **now**. The run finishes without it, and what it wanted to do is written down as an open decision beside everything else waiting on you. |
+
+**`ask` does not block, and that is the whole point.** In a chat it means stop
+and put a button in front of you, which is what §Chat already does, because you
+are sitting there. At three in the morning there is nobody to stop for, and a
+run that waits until a ten-minute timer expires has turned a question into a
+failed run and thrown the question away. So the intent is recorded: a
+`decisions` row with `blocking: false`, a feed entry so the question is actually
+visible, and an action carrying `effectKind: "tool_call"` and the real
+`{ tool, args }` — so the record says what would happen rather than "approve
+this". Pressing **Write it** in the morning makes the call for real
+(`src/workflows/deferred.ts`): the tool is rebuilt from the group catalog, or
+from the Notion MCP client for a remote one, the arguments are re-validated
+against its schema, and the outcome is written back onto the decision and the
+feed row.
+
+**The rule is checked again before it runs.** A capability narrowed to `deny`
+between the run asking and you answering refuses the write now — otherwise a
+bubble written at 3am would be a way around a standing refusal made at 9.
+
+**The default is `ask`.** A capability with no rule on the workflow and none
+globally is asked about rather than allowed — the safe answer is the one you get
+by forgetting. So the writes this service already makes on its own are seeded
+explicitly in `src/workflows/catalog.ts`, applied by `bun run db:sync-workflows`
+on the same terms as `rrule`:
+
+| Workflow | Capability | Why |
+| --- | --- | --- |
+| `message-extraction` | `okf.write` | It ends by handing graded memories to `okfManagerAgent`, which holds the four OKF writes. |
+| `screenshot-ingestion` | `notion.write` | It creates and updates pages in your workspace. |
+| `screenshot-ingestion` | `tavily.write` | An artefact of `src/mcp/adapter.ts` marking every remote tool a write: a server does not say whether a call changes anything, so the safe guess is that it does, and a web search is caught by it. |
+
+Seeded once, never re-seeded — including where you have retired one. A rule you
+revoked must not come back on the next sync, which is the deleted-3am-schedule
+bug wearing a different hat.
+
+The gate is entered by `src/workflows/runner.ts` around the whole run, beside
+the log context, and reaches `Agent.invokeTool` through one AsyncLocalStorage
+(`src/core/consent.ts`). It is ambient rather than a constructor option for one
+concrete reason: `okfManagerAgent` is a module-level singleton built at import,
+long before any run exists, and it is the agent that writes memory out of other
+people's messages. An option every agent factory had to remember to pass would
+be a hole exactly where a hole is least affordable, and an invisible one — an
+agent built without it behaves identically until the day it writes something it
+should have asked about.
+
+Reads are never gated: a read changes nothing a later read would see.
+
+**Three callers execute a workflow's body without opening a run** —
+`GET /message-extraction` and its legacy alias, `GET /screenshots/ingest`, and
+`scripts/catchup-screenshot-ingestion.ts`, which exists because the sweep
+outlives any sensible HTTP timeout. They make the same OKF and Notion writes the
+scheduled run does, so they are governed by the same rows, entered through
+`withWorkflowPermissions(db, slug, …)`. A back door around a standing `deny` is
+not a smaller failure than no gate at all. What they cannot do is **defer**: a
+deferred write is answered through the run it belonged to, and they have none,
+so `ask` refuses and says the question was not recorded — start it from the
+Workflows screen and the same write is kept for you instead. Anywhere else there
+is no gate, because there is no workflow to have a rule about.
+
+**Answering is not replayable.** The call is made before its outcome is
+recorded — deliberately, so a crash between the two leaves a question open over
+a write that happened rather than a record claiming one that did not. The cost
+is that a repeated `actionId` would otherwise be a second real write, with the
+409 arriving from the settle afterwards, too late. So `readDeferredWrite` reads
+the decision's state alongside the call and the route refuses a closed one, and
+a claim held across the call refuses the same question asked twice at once.
 
 ## Observability
 

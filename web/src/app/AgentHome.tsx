@@ -17,13 +17,14 @@ import { ThingsIKnowView } from "./ThingsIKnowView";
 import { WorkflowDetail, type WorkflowEdits, type WorkflowTrigger } from "./WorkflowDetail";
 import { WorkflowsView } from "./WorkflowsView";
 import { useChat } from "./chat";
-import { pendingDecisionFor, withoutResolved } from "./settle";
+import { isDeferredWrite, pendingDecisionFor, withoutResolved } from "./settle";
 import {
   useCalendar,
   useCalendarItem,
   useHome,
   useKnowledge,
   useKnowledgeObject,
+  answerDeferredWrite as writeDeferred,
   answerRecommendation as writeAnswer,
   useRecommendation,
   useRecommendations,
@@ -114,6 +115,11 @@ function DesktopHome() {
   // How many of the reminders and suggestions the rail was counting have since
   // been answered here. The rail's numbers are the server's; these are what is
   // no longer true about them.
+  // Which deferred write is being run right now, and what went wrong if it
+  // was refused. Separate from `resolved` because this one can fail: the rule
+  // may have been narrowed to deny since the run asked.
+  const [pendingWrite, setPendingWrite] = useState<string | null>(null);
+  const [writeError, setWriteError] = useState<string | null>(null);
   const [remindersCleared, setRemindersCleared] = useState(0);
   const [recommendationsCleared, setRecommendationsCleared] = useState(0);
 
@@ -126,6 +132,17 @@ function DesktopHome() {
       return;
     }
     const decisionId = home.status === "ready" ? pendingDecisionFor(home.data, action.id) : null;
+
+    // A `tool_call` is the one button on this page that DOES something rather
+    // than closing a question: a workflow deferred a write because its
+    // permission said a person decides, and this is that write being made. It
+    // goes to the server and waits, where everything else settles locally.
+    if (action.effectKind === "tool_call" || action.effectKind === "resolve") {
+      if (decisionId && home.status === "ready" && isDeferredWrite(home.data, action.id)) {
+        answerDeferred(action.id, decisionId);
+        return;
+      }
+    }
     if (decisionId) setResolved((current) => new Set(current).add(decisionId));
   };
 
@@ -161,6 +178,28 @@ function DesktopHome() {
     });
   };
 
+  /**
+   * A deferred write, answered.
+   *
+   * The screen waits for the server here, unlike every other button on this
+   * page. The others close a question — true the instant you press them. This
+   * one runs a tool that can still be refused by a rule narrowed since the run
+   * asked, so moving the row first would show you a write as done that the
+   * server was about to turn down.
+   */
+  const answerDeferred = (actionId: string, decisionId: string) => {
+    // One at a time. These make real writes, and a double click is two.
+    if (pendingWrite) return;
+    setWriteError(null);
+    setPendingWrite(actionId);
+    writeDeferred(actionId)
+      .then(() => setResolved((current) => new Set(current).add(decisionId)))
+      .catch((error: unknown) => {
+        setWriteError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => setPendingWrite(null));
+  };
+
   const resolve = (decisionId: string) => setResolved((current) => new Set(current).add(decisionId));
 
   const toggleTheme = () => setTheme((t) => (t === "paper" ? "dusk" : "paper"));
@@ -188,6 +227,13 @@ function DesktopHome() {
         <Notice
           label="No answer"
           text={`I couldn't reach the API — ${home.message}. Start it with \`bun run start:server\`, and seed it with \`bun run db:seed\` if you haven't yet.`}
+        />
+      ) : null}
+
+      {writeError ? (
+        <Notice
+          label="Not written"
+          text={`${writeError} Nothing changed; the question is still open, and re-reading will say so.`}
         />
       ) : null}
 

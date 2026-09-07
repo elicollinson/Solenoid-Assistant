@@ -312,8 +312,17 @@ describe("writing", () => {
     await call("workflows_set_permissions", { slug: "weather-briefing", capability: "spend", mode: "unset" });
     expect((await call("workflows_read", { slug: "weather-briefing" })).permissions).toEqual([]);
     // Retired rather than deleted: a run has to stay readable against the rule
-    // it actually ran under.
-    expect(db.select().from(s.workflowPermissions).all().length).toBe(1);
+    // it actually ran under. Counted for THIS workflow — the catalog seeds the
+    // rules its own workflows ship with, so the table is not empty to begin
+    // with (see `seedPermissions` in ../workflows/sync.ts).
+    const [weather] = db
+      .select({ id: s.workflows.id })
+      .from(s.workflows)
+      .where(eq(s.workflows.slug, "weather-briefing"))
+      .all();
+    expect(
+      db.select().from(s.workflowPermissions).where(eq(s.workflowPermissions.workflowId, weather!.id)).all().length,
+    ).toBe(1);
   });
 
   test("a limit crosses in cents, and a capability with nothing in it never reaches the database", async () => {

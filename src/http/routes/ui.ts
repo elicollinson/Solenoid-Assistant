@@ -7,7 +7,15 @@ import { loadKnowledge, loadKnowledgeObject } from "../../db/queries/knowledge";
 import { loadRecommendation, loadRecommendations } from "../../db/queries/recommendations";
 import { loadReminder, loadReminders } from "../../db/queries/reminders";
 import { loadWorkflow, loadWorkflows } from "../../db/queries/workflows";
-import { NoSuchWorkflowError, setWorkflowInstructions, setWorkflowPaused } from "../../db/mutations/workflows";
+import {
+  NoSuchWorkflowDecisionError,
+  NoSuchWorkflowError,
+  readDeferredWrite,
+  settleDeferredWrite,
+  setWorkflowInstructions,
+  setWorkflowPaused,
+} from "../../db/mutations/workflows";
+import { runDeferredWrite } from "../../workflows/deferred";
 import {
   NoSuchRecommendationError,
   RecommendationSettledError,
@@ -40,6 +48,17 @@ import {
  * The database is injected so a test can point the routes at a temporary file
  * instead of the real one.
  */
+/**
+ * The deferred writes being made right now, by decision id.
+ *
+ * A double click is two requests, and both read the same open decision before
+ * either has settled it — so the row is not enough on its own and this is the
+ * thing that actually stops the tool running twice. Module-level for the same
+ * reason `inFlight` is in ../../workflows/runner.ts: what is in flight is a
+ * property of the process, not of a request or of the database.
+ */
+const answering = new Set<string>();
+
 export function createUiRoutes(resolveDb: () => Db = getDb) {
   /**
    * Which frame is asking.
@@ -238,6 +257,101 @@ export function createUiRoutes(resolveDb: () => Db = getDb) {
       {
         params: t.Object({ id: t.String() }),
         detail: { summary: "One suggestion: what I noticed, what would change, and what I formed it from" },
+      },
+    )
+    .post(
+      "/api/workflows/decisions",
+      async ({ body, set }) => {
+        const db = resolveDb();
+        const call = readDeferredWrite(db, body.actionId);
+        if (!call) {
+          set.status = 404;
+          return { error: `No deferred write is waiting on action ${body.actionId}` };
+        }
+        // Answered already — in another tab, or by this one a moment ago. The
+        // call runs before the outcome is recorded, so without this a replayed
+        // actionId is a SECOND real write, and the 409 arrives from the settle
+        // afterwards, too late to have prevented anything.
+        if (!call.open) {
+          set.status = 409;
+          return { error: `That write has already been answered. Re-read; the feed says what was chosen.` };
+        }
+        // And the same question asked twice at once, which the row above cannot
+        // see: both requests read `open` before either settles. One claim per
+        // decision, held across the call, released whatever happens — the same
+        // shape `inFlight` takes in ../../workflows/runner.ts, and for the same
+        // reason. In-process because this route lives in one process; the row
+        // check above is what survives a restart.
+        if (answering.has(call.decisionId)) {
+          set.status = 409;
+          return { error: "That write is being made right now. Re-read in a moment for what it did." };
+        }
+        answering.add(call.decisionId);
+
+        try {
+          // "Leave it" settles without running anything. Nothing was written
+          // when the run wanted to, and nothing is written now.
+          if (!call.approves) {
+            settleDeferredWrite(db, {
+              decisionId: call.decisionId,
+              actionId: body.actionId,
+              ran: false,
+              outcome: "You left it. Nothing was written.",
+            });
+            return { ran: false, outcome: "You left it. Nothing was written." };
+          }
+
+          // The call FIRST, its outcome second. A crash between the two leaves
+          // a question still open over a write that happened, which you can
+          // read and act on — where the reverse leaves the record claiming a
+          // write that never did.
+          const result = await runDeferredWrite(
+            db,
+            { runId: call.runId, tool: call.tool, args: call.args },
+            // Just the handle, as ../routes/chat.ts builds its agent. The OKF
+            // group falls back to the bundle this module ships beside, which
+            // is the same one the run that deferred this was writing to.
+            { db },
+          );
+          settleDeferredWrite(db, {
+            decisionId: call.decisionId,
+            actionId: body.actionId,
+            ran: result.ran,
+            outcome: result.summary,
+            failed: !result.ran,
+          });
+          return { ran: result.ran, outcome: result.summary };
+        } catch (error) {
+          if (error instanceof NoSuchWorkflowDecisionError) {
+            // Answered between the check above and the settle below. Not a
+            // failure on this end: re-read and the feed says what was chosen.
+            set.status = 409;
+            return { error: error.message };
+          }
+          throw error;
+        } finally {
+          answering.delete(call.decisionId);
+        }
+      },
+      {
+        body: t.Object({
+          actionId: t.String({
+            minLength: 1,
+            description:
+              "The id of the button that was pressed. Never a boolean and never the tool name: " +
+              "a client that could post its own call could run something nobody deferred.",
+          }),
+        }),
+        detail: {
+          summary:
+            "Answer a write a workflow deferred, running it if you say so. The rule is checked " +
+            "again first, so a capability narrowed since it was asked is refused now.",
+        },
+        response: {
+          200: t.Object({ ran: t.Boolean(), outcome: t.String() }),
+          404: t.Object({ error: t.String() }),
+          409: t.Object({ error: t.String() }),
+        },
       },
     )
     .post(

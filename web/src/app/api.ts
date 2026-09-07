@@ -242,3 +242,21 @@ export function answerRecommendation(id: string, stance: "adopted" | "declined")
 export function saveInstructions(slug: string, text: string): Promise<{ text: string | null }> {
   return send(`/api/workflows/${encodeURIComponent(slug)}/instructions`, "PUT", { text });
 }
+
+/**
+ * Answer a write a workflow deferred, and — if you say so — actually make it.
+ *
+ * The one action on this surface whose answer DOES something rather than
+ * closing a question. A run at three in the morning wanted to write, its
+ * permission said a person decides, so it wrote down the call instead and
+ * finished without it; this is that call being made.
+ *
+ * Unlike `answerRecommendation` the screen should not move first. The others
+ * settle a question, which is true the moment you press them; this one runs a
+ * tool, which can be refused by a rule narrowed since it was asked, fail on the
+ * far end, or belong to a server that is not connected. The honest sentence is
+ * the one the server sends back.
+ */
+export function answerDeferredWrite(actionId: string): Promise<{ ran: boolean; outcome: string }> {
+  return send("/api/workflows/decisions", "POST", { actionId });
+}

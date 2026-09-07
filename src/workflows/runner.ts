@@ -22,6 +22,7 @@ const log = baseLog.child("workflow");
 import { SemanticConventions, safeJson, withSpanKind } from "../core/tracing";
 import { catalogEntry } from "./catalog";
 import { parseWorkflowArgs, runnableWorkflow, type RunnableWorkflow, type WorkflowOutcome } from "./registry";
+import { withRunPermissions } from "./permissions";
 
 /** Thrown when the slug names nothing this database knows — HTTP 404. */
 export class UnknownWorkflowError extends Error {
@@ -245,7 +246,11 @@ export function startWorkflowRun(db: Db, slug: string, rawArgs: unknown, options
   const controller = new AbortController();
   inFlight.set(runId, controller);
 
-  return { runId, ordinal, settled: execute(db, runId, runnable, args, ordinal, controller.signal) };
+  return {
+    runId,
+    ordinal,
+    settled: execute(db, runId, runnable, args, ordinal, controller.signal, workflow.id),
+  };
 }
 
 /**
@@ -262,6 +267,7 @@ function execute(
   args: unknown,
   ordinal: number,
   signal: AbortSignal,
+  workflowId: string,
 ): Promise<void> {
   // Everything the work says, at any depth, comes out carrying this run's id
   // without a single signature between here and there having to mention it.
@@ -269,7 +275,17 @@ function execute(
   // run rather than the four sentences the runner wrote down about it.
   return withLogContext(
     { component: "workflow", run_id: runId, workflow: runnable.slug },
-    () => run(db, runId, runnable, args, ordinal, signal),
+    // And every WRITE inside it, at any depth, through any agent, is governed
+    // by this workflow's permissions — for the same reason and by the same
+    // mechanism. Here rather than passed to each agent because the agents that
+    // matter are module-level singletons built long before any run exists:
+    // `okfManagerAgent` is constructed at import and is the one that writes
+    // memory out of other people's messages. An option every factory had to
+    // remember would be a hole exactly where a hole is least affordable.
+    () => withRunPermissions(
+      { db, workflowId, runId, slug: runnable.slug },
+      () => run(db, runId, runnable, args, ordinal, signal),
+    ),
   );
 }
 

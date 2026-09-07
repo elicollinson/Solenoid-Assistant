@@ -1,5 +1,7 @@
 import { Elysia, t } from "elysia";
 import { log } from "../../core/logger";
+import { getDb } from "../../db";
+import { withWorkflowPermissions } from "../../workflows/permissions";
 import { getRecentScreenshots, describeScreenshots } from "../../tools/photos";
 import { OsxPhotosError } from "../../utils/osxPhotos";
 import {
@@ -308,7 +310,11 @@ export const screenshotRoutes = new Elysia({ name: "routes.screenshots" })
       }
 
       try {
-        return await ingestRecentScreenshots({ hoursBack, fromTime, limit });
+        // Under `screenshot-ingestion`'s own rules — the same Notion writes the
+        // scheduled run makes, governed by the same rows rather than by nothing.
+        return await withWorkflowPermissions(getDb(), "screenshot-ingestion", () =>
+          ingestRecentScreenshots({ hoursBack, fromTime, limit }),
+        );
       } catch (err) {
         log.error("GET /screenshots/ingest failed", {
           hoursBack: hoursBack ?? "unset",

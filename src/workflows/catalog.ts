@@ -30,6 +30,20 @@ export interface WorkflowCatalogEntry {
   cadence: string;
   /** Set only where a schedule genuinely fires it. */
   rrule: string | null;
+  /**
+   * What this workflow may do unaccompanied, as it SHIPS.
+   *
+   * Seeded into `workflow_permissions` on the first `db:sync-workflows` and
+   * never touched again — the same bargain as `rrule`, and for the same reason:
+   * the row is a decision somebody made and this file does not get to overrule
+   * it on the next sync.
+   *
+   * A capability nobody lists is `ask` (see ../workflows/permissions.ts), so
+   * every entry below is a write this service ALREADY makes on its own. Writing
+   * them down is the point: they were implicit, which meant there was nothing
+   * to revoke and nothing to read.
+   */
+  permissions?: readonly { capability: string; mode: "allow" | "ask" | "deny" }[];
   inputs: readonly WorkflowInputField[];
 }
 
@@ -59,6 +73,10 @@ export const WORKFLOW_CATALOG: readonly WorkflowCatalogEntry[] = [
     trigger: "on_demand",
     cadence: "On demand",
     rrule: null,
+    // It ends by handing what survived the grader to `okfManagerAgent`, which
+    // holds okf_create/patch/move/deprecate. That is the whole point of the
+    // workflow, so it ships allowed — and is now a rule you can turn off.
+    permissions: [{ capability: "okf.write", mode: "allow" }],
     inputs: [
       field("start", "From", {
         kind: "datetime",
@@ -75,6 +93,9 @@ export const WORKFLOW_CATALOG: readonly WorkflowCatalogEntry[] = [
     trigger: "on_demand",
     cadence: "On demand",
     rrule: null,
+    // None, and the description says why: the classifier agent holds no tools
+    // at all. "Writes nothing" is a claim this makes enforceable rather than
+    // merely true today.
     inputs: [
       field("hoursBack", "Hours back", { kind: "number", default: 24 }),
       field("limit", "Most screenshots", {
@@ -92,6 +113,15 @@ export const WORKFLOW_CATALOG: readonly WorkflowCatalogEntry[] = [
     trigger: "on_demand",
     cadence: "On demand",
     rrule: null,
+    // Two, because two MCP servers are reached. `notion.write` is the real
+    // one: it creates and updates pages in your workspace. `tavily.write` is
+    // an artefact of ../mcp/adapter.ts marking every remote tool a write — a
+    // remote server does not say whether a call changes anything, so the safe
+    // guess is that it does, and a web search is caught by it.
+    permissions: [
+      { capability: "notion.write", mode: "allow" },
+      { capability: "tavily.write", mode: "allow" },
+    ],
     inputs: [
       field("hoursBack", "Hours back", { kind: "number", default: 24 }),
       field("limit", "Most screenshots", {

@@ -1,5 +1,7 @@
 import { Elysia, t } from "elysia";
+import { getDb } from "../../db";
 import { extractMessages } from "../../workflows/messageExtraction";
+import { withWorkflowPermissions } from "../../workflows/permissions";
 
 interface MessageContext {
   query: { start?: string; end?: string };
@@ -24,7 +26,12 @@ const messageHandler = async ({ query, set }: MessageContext) => {
     };
   }
   try {
-    return await extractMessages({ start, end });
+    // Under `message-extraction`'s own rules, exactly as the scheduled run is.
+    // This endpoint runs the same body and makes the same OKF writes; what it
+    // cannot do is defer one, because there is no run to answer it through.
+    return await withWorkflowPermissions(getDb(), "message-extraction", () =>
+      extractMessages({ start, end }),
+    );
   } catch (error) {
     set.status = 502;
     return { error: error instanceof Error ? error.message : "Agent call failed" };

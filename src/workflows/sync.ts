@@ -22,10 +22,10 @@
 //
 // Additive, and it never deletes: the design's fixtures share this table and
 // the feed, calendar and reminders all point at them.
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { ulid, type Db } from "../db";
 import * as s from "../db/schema";
-import { WORKFLOW_CATALOG } from "./catalog";
+import { WORKFLOW_CATALOG, type WorkflowCatalogEntry } from "./catalog";
 
 export interface SyncResult {
   added: number;
@@ -58,6 +58,7 @@ export function syncWorkflowCatalog(db: Db, now: Date = new Date()): SyncResult 
           updated += 1;
         }
         upsertSchedule(t, existing.id, entry.rrule, entry.cadence);
+        seedPermissions(t, existing.id, entry.permissions, now);
         continue;
       }
 
@@ -90,6 +91,7 @@ export function syncWorkflowCatalog(db: Db, now: Date = new Date()): SyncResult 
       t.update(s.workflows).set({ currentVersionId: versionId }).where(eq(s.workflows.id, id)).run();
 
       upsertSchedule(t, id, entry.rrule, entry.cadence);
+      seedPermissions(t, id, entry.permissions, now);
       added += 1;
     }
 
@@ -129,6 +131,58 @@ function upsertSchedule(t: Tx, workflowId: string, rrule: string | null, label: 
   t.insert(s.workflowSchedules)
     .values({ id: ulid(), workflowId, rrule, label, enabled: true })
     .run();
+}
+
+/**
+ * Give a workflow the permissions it ships with — ONCE, per capability.
+ *
+ * Seed, not synchronise, exactly like `upsertSchedule`: a capability this
+ * workflow has ever had a rule for is left completely alone, including when the
+ * catalog disagrees with it and including when that rule has been retired.
+ * Somebody revoked `okf.write` on the message extractor, or an agent proposed a
+ * narrowing and they took it; a sync is not the moment to hand it back.
+ *
+ * A capability with no rule here and none globally is `ask` — see
+ * ../workflows/permissions.ts. So the entries seeded here are not a widening:
+ * they are this service's existing unattended writes, written down where they
+ * can be read and turned off.
+ */
+function seedPermissions(
+  t: Tx,
+  workflowId: string,
+  permissions: WorkflowCatalogEntry["permissions"],
+  now: Date,
+): void {
+  for (const { capability, mode } of permissions ?? []) {
+    // Any row at all, live OR retired — not just a live one. A retired rule is
+    // somebody having revoked this capability, and seeding "only if nothing is
+    // in force" would hand it straight back on the next sync, which is the
+    // deleted-3am-schedule bug wearing a different hat. Same test as
+    // `upsertSchedule`, and for the same reason.
+    const [existing] = t
+      .select({ id: s.workflowPermissions.id })
+      .from(s.workflowPermissions)
+      .where(and(
+        eq(s.workflowPermissions.workflowId, workflowId),
+        eq(s.workflowPermissions.capability, capability),
+      ))
+      .limit(1)
+      .all();
+    if (existing) continue;
+
+    t.insert(s.workflowPermissions)
+      .values({
+        id: ulid(now.getTime()),
+        workflowId,
+        capability,
+        mode,
+        createdAt: now,
+        // Not "user": nobody chose this, it is what the code ships with. The
+        // column is what tells a later reader whether a rule was a decision.
+        createdBy: "agent",
+      })
+      .run();
+  }
 }
 
 /** Every slug the catalog owns, for a caller that wants to log what it wrote. */

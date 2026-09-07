@@ -52,3 +52,29 @@ export function needsClause(open: number): string {
 
 /** Re-exported so a caller settling a gate does not have to know both modules. */
 export type { HomeAction };
+
+/**
+ * Whether this button belongs to a write a workflow deferred.
+ *
+ * Both of its buttons have to reach the server — "Write it" to make the call
+ * and "Leave it" to close the question — and neither can be settled in the
+ * browser like the rest of this surface, because the decision behind them is a
+ * real open row that a local settle would leave open forever.
+ *
+ * Told apart by the PAIR rather than by the button: a deferred write is the
+ * only thing in this feed carrying a `tool_call`, so an item that has one is
+ * one, and its quiet button is the other half of it.
+ */
+export function isDeferredWrite(home: HomePayload, actionId: string): boolean {
+  for (const section of home.sections) {
+    for (const item of section.items) {
+      if (!item.actions.some((a) => a.id === actionId)) continue;
+      return item.actions.some((a) => a.effectKind === "tool_call");
+    }
+  }
+  const worth = home.aside.worthALook;
+  if (worth?.actions.some((a) => a.id === actionId)) {
+    return worth.actions.some((a) => a.effectKind === "tool_call");
+  }
+  return false;
+}

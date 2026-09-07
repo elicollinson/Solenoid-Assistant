@@ -491,9 +491,10 @@ export function workflowsGroup(context: ToolGroupContext): ToolGroup {
     kind: "write",
     description:
       "Say what this workflow may do unaccompanied, one capability at a time. 'allow' lets it go ahead, " +
-      "'ask' makes the run stop and wait for a person, 'deny' refuses outright, and 'unset' removes this " +
+      "'ask' means it does not happen now — the run carries on without it and what it wanted to do is " +
+      "written down for a person to answer — 'deny' refuses outright, and 'unset' removes this " +
       "workflow's own answer so whatever governs everything else governs this too — which is not the same " +
-      "as denying it. " +
+      "as denying it. A capability with no answer anywhere behaves as 'ask'. " +
       "Widening a permission is the one change here that lets work happen with nobody watching, so it is a " +
       "thing to be told to do rather than a thing to decide: propose it and let a person say yes. " +
       "Narrowing one is yours to make when a run has gone somewhere it should not have. The rule it " +
@@ -512,8 +513,9 @@ export function workflowsGroup(context: ToolGroupContext): ToolGroup {
       mode: z
         .enum(["allow", "ask", "deny", "unset"])
         .describe(
-          "'allow' — it goes ahead on its own. 'ask' — the run holds and waits for a person. 'deny' — it " +
-            "is refused. 'unset' — this workflow says nothing about it and the global rule decides.",
+          "'allow' — it goes ahead on its own. 'ask' — it does not happen; the run finishes without it " +
+            "and the change waits for a person. 'deny' — it is refused outright. 'unset' — this workflow " +
+            "says nothing about it and the global rule decides.",
         ),
       limitAmountCents: z
         .number()

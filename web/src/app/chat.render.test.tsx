@@ -46,6 +46,8 @@ function stateFor(
     conversations: list.conversations,
     openId: payload?.conversationId ?? null,
     title: payload?.title ?? null,
+    model: payload?.model ?? null,
+    voiceInvoked: payload?.voiceInvoked ?? false,
     stored: payload?.turns ?? [],
     lede: (payload ?? list).lede,
     restraint: (payload ?? list).restraint,

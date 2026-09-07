@@ -24,6 +24,7 @@ export function Button({
   variant = "quiet",
   size = "md",
   disabled,
+  title,
   children,
   onClick,
   style,
@@ -31,6 +32,7 @@ export function Button({
   variant?: ButtonVariant;
   size?: ButtonSize;
   disabled?: boolean;
+  title?: string;
   children?: ReactNode;
   /** The event is passed through: a button inside a clickable row has to be
    *  able to stop the row from also firing. */
@@ -64,6 +66,7 @@ export function Button({
     <button
       type="button"
       disabled={disabled}
+      title={title}
       onClick={onClick}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}

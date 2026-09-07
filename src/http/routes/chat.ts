@@ -35,6 +35,7 @@ import {
 } from "../../db/mutations/chat";
 import { NotWaitingError, answerApproval, runChatTurn } from "../../chat/session";
 import type { ChatEvent } from "../../chat/turn";
+import { GeminiLiveSession } from "../../chat/geminiLive";
 
 /**
  * The agent, built once and only if somebody talks to it.
@@ -219,5 +220,69 @@ export function createChatRoutes(
           410: t.Object({ error: t.String() }),
         },
       },
-    );
+    )
+    .ws("/api/chat/:id/voice", {
+      params: t.Object({ id: t.String() }),
+      async open(ws) {
+        const db = resolveDb();
+        const conversationId = ws.data.params.id === "latest" ? latestConversation(db) : ws.data.params.id;
+        if (!exists(db, conversationId)) {
+          ws.send(JSON.stringify({ type: "error", message: `No conversation with id ${conversationId}` }));
+          ws.close();
+          return;
+        }
+
+        const liveSession = new GeminiLiveSession({
+          db,
+          conversationId,
+          onEvent: (event) => {
+            try {
+              ws.send(JSON.stringify(event));
+            } catch (err) {
+              log.warn("Failed to send event to voice client WS", {
+                conversationId,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          },
+        });
+
+        (ws.data as unknown as { liveSession?: GeminiLiveSession }).liveSession = liveSession;
+
+        try {
+          await liveSession.start();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          ws.send(JSON.stringify({ type: "error", message }));
+          ws.close();
+        }
+      },
+      message(ws, msg: unknown) {
+        const liveSession = (ws.data as unknown as { liveSession?: GeminiLiveSession }).liveSession;
+        if (!liveSession || liveSession.isClosed) return;
+
+        try {
+          const payload = typeof msg === "string" ? JSON.parse(msg) : msg;
+          if (payload && typeof payload === "object") {
+            const data = payload as { type?: string; data?: string; text?: string };
+            if (data.type === "audio" && typeof data.data === "string") {
+              liveSession.sendAudio(data.data);
+            } else if (data.type === "text" && typeof data.text === "string") {
+              liveSession.sendText(data.text);
+            } else if (data.type === "stop") {
+              liveSession.close();
+              ws.close();
+            }
+          }
+        } catch (err) {
+          log.warn("Invalid message from voice client WS", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+      close(ws) {
+        const liveSession = (ws.data as unknown as { liveSession?: GeminiLiveSession }).liveSession;
+        liveSession?.close();
+      },
+    });
 }

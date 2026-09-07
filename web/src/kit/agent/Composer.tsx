@@ -23,6 +23,8 @@ export function Composer({
   waiting = false,
   placeholder = "Ask Solenoid",
   size = "md",
+  voiceActive = false,
+  onToggleVoice,
   style,
 }: {
   onSend: (text: string) => void;
@@ -34,6 +36,8 @@ export function Composer({
   /** "touch" gives the phone its 44px targets and 16px text — anything smaller
    *  and iOS zooms the whole page on focus. */
   size?: "md" | "touch";
+  voiceActive?: boolean;
+  onToggleVoice?: () => void;
   style?: CSSProperties;
 }) {
   const [text, setText] = useState("");
@@ -97,6 +101,34 @@ export function Composer({
             outline: "none",
           }}
         />
+        {onToggleVoice ? (
+          <Button
+            variant={voiceActive ? "quiet" : "bare"}
+            size={size === "touch" ? "touch" : "md"}
+            onClick={onToggleVoice}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "var(--sp-2)",
+              font: "var(--text-mono-control)",
+              letterSpacing: "var(--tracking-control)",
+              color: voiceActive ? "var(--text-1)" : "var(--text-3)",
+              background: voiceActive ? "var(--surface-hover)" : undefined,
+            }}
+            title={voiceActive ? "End voice session" : "Start voice mode with Gemini 3.1 Live Flash Preview"}
+          >
+            <span
+              style={{
+                width: "6px",
+                height: "6px",
+                borderRadius: "50%",
+                backgroundColor: voiceActive ? "var(--signal-green)" : "var(--text-4)",
+                display: "inline-block",
+              }}
+            />
+            {voiceActive ? "End Voice" : "Voice"}
+          </Button>
+        ) : null}
         <Button
           variant="affirm"
           size={size === "touch" ? "touch" : "md"}
@@ -111,7 +143,9 @@ export function Composer({
           ? "Waiting on your answer above."
           : busy
             ? "Working. Enter sends when it's done."
-            : "Enter sends · shift-enter for a new line"}
+            : voiceActive
+              ? "Voice stream is open · speak or type"
+              : "Enter sends · shift-enter for a new line"}
       </span>
     </div>
   );

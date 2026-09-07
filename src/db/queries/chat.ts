@@ -99,6 +99,8 @@ export function loadConversations(
     .select({
       id: s.conversations.id,
       title: s.conversations.title,
+      model: s.conversations.model,
+      voiceInvoked: s.conversations.voiceInvoked,
       lastMessageAt: s.conversations.lastMessageAt,
       startedAt: s.conversations.startedAt,
     })
@@ -159,6 +161,8 @@ export function loadConversations(
       lede: ledeFor(tail),
       when: listStamp(row.lastMessageAt ?? row.startedAt ?? now, now),
       state: waiting.has(row.id) ? "attention" : tail ? "done" : "idle",
+      model: row.model ?? null,
+      voiceInvoked: Boolean(row.voiceInvoked),
     };
   });
 
@@ -230,7 +234,11 @@ export function loadChat(
   }));
 
   const conversation = db
-    .select({ title: s.conversations.title })
+    .select({
+      title: s.conversations.title,
+      model: s.conversations.model,
+      voiceInvoked: s.conversations.voiceInvoked,
+    })
     .from(s.conversations)
     .where(eq(s.conversations.id, conversationId))
     .get();
@@ -238,6 +246,8 @@ export function loadChat(
   return {
     conversationId,
     title: conversation?.title ?? null,
+    model: conversation?.model ?? null,
+    voiceInvoked: Boolean(conversation?.voiceInvoked),
     lede: surfaceNote(db, "chat", "line", surface),
     restraint: surfaceNote(db, "chat", "restraint", surface) || null,
     turns,

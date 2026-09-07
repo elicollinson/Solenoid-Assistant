@@ -91,6 +91,8 @@ export interface ChatConversationRow {
   when: string;
   /** The status mark beside it. "attention" means it is waiting on you. */
   state: "attention" | "running" | "done" | "failed" | "idle";
+  model?: string | null;
+  voiceInvoked?: boolean;
 }
 
 export interface ChatListPayload {
@@ -117,6 +119,8 @@ export interface ChatPayload {
    *  the run behind them. A reload after a restart finds these and can say so
    *  rather than drawing live buttons that answer nothing. */
   waiting: number;
+  model?: string | null;
+  voiceInvoked?: boolean;
 }
 
 /**

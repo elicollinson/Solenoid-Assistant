@@ -30,6 +30,8 @@ export const conversations = sqliteTable("conversations", {
   unreadCount: integer().notNull().default(0),
   trustState: text({ enum: TRUST_STATE }).notNull().default("unknown"),
   safetyState: text({ enum: SAFETY_STATE }).notNull().default("unscreened"),
+  model: text(),
+  voiceInvoked: integer({ mode: "boolean" }).notNull().default(false),
   archivedAt: ts(),
 }, (t) => [
   check("conversations_channel_check", inList(t.channel, CHANNEL)),

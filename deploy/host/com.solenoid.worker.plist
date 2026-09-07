@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  The cron worker (tasks.yaml). Separate from the server on purpose: a task
+  The cron worker (schedules from `workflow_schedules`). Separate from the
+  server on purpose: a task
   that wedges on a vision call should not take the UI down with it, and
   launchd restarts the two independently.
 

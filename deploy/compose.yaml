@@ -53,8 +53,9 @@ x-app: &app
     # Secrets, and writable on purpose: the Notion client rotates its refresh
     # token straight back into .env (src/mcp/notionClient.ts persistTokens).
     - ../.env:/app/.env
-    # Schedules, editable without a rebuild.
-    - ../tasks.yaml:/app/tasks.yaml:ro
+    # No schedule file. Schedules are rows in `workflow_schedules` on the
+    # volume below, edited through the Workflows screen or by asking the agent,
+    # and the worker re-reads them every 30s without a restart.
     # The knowledge bundle stays a directory of markdown on the host, because
     # it is meant to be read and edited by hand.
     - ../okf:/app/okf

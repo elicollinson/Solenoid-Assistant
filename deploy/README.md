@@ -57,7 +57,7 @@ HTTP API instead.
 
   volume solenoid-data     ── /app/data/solenoid.db (single writer: app + worker only)
   volume victorialogs-data ── /victoria-logs-data   (30d retention)
-  bind ../okf, ../models:ro, ../.env, ../tasks.yaml:ro
+  bind ../okf, ../models:ro, ../.env
 ```
 
 Four services, one image:
@@ -77,7 +77,7 @@ Four services, one image:
   files and has no musl build — Prompt Guard would not load at all on Alpine.
 - **Four stages**: `deps` (dev deps, for Vite) → `web` (`bun run build:web`) →
   `prod-deps` (`--production`) → `runtime`. The runtime image gets prod
-  `node_modules`, `src`, `scripts`, `drizzle`, `tasks.yaml` and `web/dist`.
+  `node_modules`, `src`, `scripts`, `drizzle` and `web/dist`.
 - **`node_modules` is never copied from the host.** `onnxruntime-node` and
   `sharp` are platform-specific; the macOS binaries are useless in the image.
   `.dockerignore` enforces it.
@@ -94,7 +94,6 @@ Four services, one image:
 | --- | --- | --- | --- |
 | `/app/data/solenoid.db` | named volume `solenoid-data` | rw | ext4 inside the VM: correct SQLite locking. Costs you direct Finder access — see backups below. |
 | `/app/.env` | bind `../.env` | **rw** | `src/mcp/notionClient.ts` rotates the Notion refresh token straight back into `.env`. Mount it read-only or hand it in as a Docker secret and the token rotation silently breaks. |
-| `/app/tasks.yaml` | bind `../tasks.yaml` | ro | Edit schedules and restart `worker`; no rebuild. |
 | `/app/okf` | bind `../okf` | rw | Markdown meant to be read and edited by hand. Plain file writes, so the bind mount is safe here in a way it is not for SQLite. |
 | `/app/models` | bind `../models` | ro | ~500MB, licence-gated, gitignored. Mount, don't bake. |
 | `/hostmirror` | bind `../hostmirror` | ro | Phase 2 only. |

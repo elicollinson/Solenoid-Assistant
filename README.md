@@ -48,6 +48,13 @@ next configured route. Add `--json` to print the complete structured result.
 
 The server defaults to `http://localhost:3000`; OpenAPI documentation is available at `/openapi`.
 
+## Deployment
+
+The production image and digest-promotion flow are documented in
+[`deploy/mini-cloud.md`](deploy/mini-cloud.md). Container deployment runs the
+portable API, UI, worker, memory, and observability paths; macOS-only Photos and
+direct iMessage/Contacts access remain host-only.
+
 ## Runtime configuration
 
 The application reads and validates runtime settings through `src/core/config.ts`.
@@ -240,6 +247,10 @@ web/            The browser half — its own tsconfig, because Bun has no DOM
 Agent modules use the same runtime configuration and return a common lifecycle resource when they own external connections. Base agents can optionally register reviewer components; the existing weather and iMessage flows opt into generate/grade/revise by configuring the rubric grader directly.
 
 ## The web app
+
+For an implementation-backed manual test inventory, safe fixture setup,
+expected results, evidence capture, failure checks, and the release smoke set,
+see [the manual UI functionality-testing runbook](docs/manual-ui-testing.md).
 
 ```bash
 bun run db:seed        # load the design's content into SQLite, once

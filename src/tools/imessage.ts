@@ -91,22 +91,30 @@ export interface TrustedMessageWindowResult {
 export function readTrustedMessageWindow(
   params: ReadTrustedMessageWindowParams = {},
 ): TrustedMessageWindowResult {
-  const { start, end } = resolveWindow(params);
   const limit = params.limit ?? 200;
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
     throw new RangeError("iMessage read limit must be an integer between 1 and 500");
   }
+  const result = readAllTrustedMessageWindow(params);
+  const messages = result.messages.slice(-limit);
+  return { ...result, returned: messages.length, messages };
+}
+
+/** Complete chronological snapshot for workflows; model-facing tools stay bounded. */
+export function readAllTrustedMessageWindow(
+  params: ReadWindow = {},
+): TrustedMessageWindowResult {
+  const { start, end } = resolveWindow(params);
   // Trusted-only by design (spec contactsRead §3): there is deliberately no
   // parameter to include unknown senders — an injected prompt must not be
   // able to ask its way past the trust boundary.
   const { messages, totalInWindow, droppedUntrusted } = fetchTrustedMessages({ start, end });
-  const recent = messages.slice(-limit);
   return {
-    returned: recent.length,
+    returned: messages.length,
     totalTrustedInWindow: messages.length,
     totalInWindow,
     droppedUntrusted,
-    messages: recent.map((m) => ({
+    messages: messages.map((m) => ({
       sender: m.sender,
       senderName: m.senderName,
       body: m.body,

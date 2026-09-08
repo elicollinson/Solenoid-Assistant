@@ -274,6 +274,11 @@ function Thread({ chat, chrome }: { chat: ChatState; chrome: Partial<Chrome> }) 
         </div>
       </div>
 
+      {voice.error ? (
+        <p role="alert" style={{ padding: "0 var(--gutter-phone) var(--sp-4)", margin: 0 }}>
+          Voice mode failed: {voice.error}
+        </p>
+      ) : null}
       {voice.active ? (
         <div style={{ padding: "0 var(--gutter-phone) var(--sp-4)" }}>
           <RetroWigglyLine

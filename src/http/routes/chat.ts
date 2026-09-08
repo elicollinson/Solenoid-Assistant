@@ -253,6 +253,7 @@ export function createChatRoutes(
           await liveSession.start();
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+          log.error("Voice session startup failed", { conversationId, error: message });
           ws.send(JSON.stringify({ type: "error", message }));
           ws.close();
         }

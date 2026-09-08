@@ -241,3 +241,22 @@ test("unknown classification categories are discarded", async () => {
     await stat(assetPath(hash, ".png", true)).catch(() => null),
   ).toBeNull();
 });
+
+test("an in-flight duplicate upload cannot resurrect a completed rejection", async () => {
+  await stagePhoto(photo, png, db);
+  const retry = stagePhoto(photo, png, db);
+  // Simulate the other process committing its decision while upload I/O awaits.
+  db.$client
+    .query("UPDATE source_candidates SET status='rejected' WHERE hash=?")
+    .run(hash);
+  db.$client
+    .query("DELETE FROM source_photo_candidates WHERE hash=?")
+    .run(hash);
+  expect(await retry).toEqual({ status: "rejected" });
+  expect(
+    await stat(assetPath(hash, ".png", true)).catch(() => null),
+  ).toBeNull();
+  expect(
+    db.$client.query("SELECT * FROM source_photo_candidates").all(),
+  ).toHaveLength(0);
+});

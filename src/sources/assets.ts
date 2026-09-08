@@ -103,7 +103,12 @@ export async function stagePhoto(
     assetPath(photo.hash, extension, old?.status !== "accepted"),
     bytes,
   );
-  db.$client.transaction(() => {
+  const status = db.$client.transaction(() => {
+    // The consumer can finish while an upload is writing its temporary file.
+    // A completed rejection must never be resurrected by that in-flight retry.
+    const latest = candidate(photo.hash, db);
+    if (latest?.status === "rejected" || latest?.status === "quarantined")
+      return latest.status;
     db.$client
       .query(
         "INSERT INTO source_candidates(hash,extension,created_at) VALUES(?,?,?) ON CONFLICT(hash) DO UPDATE SET status=CASE WHEN source_candidates.status='accepted' THEN 'accepted' ELSE 'pending' END",
@@ -114,22 +119,30 @@ export async function stagePhoto(
         "INSERT OR REPLACE INTO source_photo_candidates(id,hash,payload) VALUES(?,?,?)",
       )
       .run(photo.uuid, photo.hash, JSON.stringify(photo));
-    if (old?.status === "accepted")
+    if (latest?.status === "accepted")
       putRecord(
         "photos",
         photo.uuid,
         {
           ...photo,
           extension,
-          classification: old.classification
-            ? JSON.parse(old.classification)
+          classification: latest.classification
+            ? JSON.parse(latest.classification)
             : null,
         },
         photo.date,
         db,
       );
+    return latest?.status ?? "pending";
   })();
-  return { status: old?.status ?? "pending" };
+  if (status === "rejected" || status === "quarantined") {
+    await unlink(
+      assetPath(photo.hash, extension, old?.status !== "accepted"),
+    ).catch((e) => {
+      if (e.code !== "ENOENT") throw e;
+    });
+  }
+  return { status };
 }
 export async function finishCandidate(
   row: Candidate,

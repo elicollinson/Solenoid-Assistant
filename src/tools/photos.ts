@@ -968,18 +968,18 @@ run when text of external origin flags, and a screenshot whose safetyState reads
 'quarantined' is one it already refused.
 
 The two halves do not line up, and that is the thing to keep straight.
-get_recent_screenshots reads the LIBRARY through osxphotos, filtered by a time
-window and nothing else: it sees every screenshot the person took, and knows
-nothing about any of them beyond the file. photos_read reads the STORED row this
+get_recent_screenshots reads the collected LIBRARY, filtered by a time
+window. It contains only screenshots accepted as media recommendations by the
+collection classifier. photos_read reads the STORED row this
 app wrote while ingesting one, which carries the analysis and the text. A
 screenshot with no stored row has not been ingested; it has not gone missing.
 Cross from one to the other with the uuid.
 
 Neither tool hands you the picture. There is no way from here to see an image, to
-download an iCloud-only original, or to ask for one to be read — that is what the
+download a remote original, or to ask for one to be read — that is what the
 ingestion workflow is for, and it decides when to spend a vision call. A path of
-null with isMissing true is the ordinary state of a recent screenshot on a
-machine that has not synced, not a fault to work around.
+null does not imply that the remote original is missing; local image bytes may
+need to be fetched after source catch-up.
 
 Nothing here writes. The screenshots table is filled in by ingestion, so there
 is nowhere to record what you made of a picture; if what you found matters, say
@@ -989,8 +989,8 @@ it in your answer or put it somewhere that has a write tool of its own.
 const PURPOSE = `
 Screenshots are the record of what was actually on the person's screen: the
 receipt they meant to file, the error they hit, the page they were reading when
-they asked you about it. This group is how you reach them — the library itself
-through osxphotos, and whatever this app has since read off one. Only their own
+they asked you about it. This group reads the collected screenshot store
+and whatever this app has since read off one. Only accepted media recommendation
 screenshots are visible: content shared with them through Messages, shared
 iCloud albums, hidden photos and the trash are all excluded before you see
 anything.

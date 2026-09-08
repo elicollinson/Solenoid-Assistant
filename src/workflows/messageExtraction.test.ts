@@ -438,6 +438,7 @@ describe("message memory write isolation", () => {
     }
     expect(result.okfUpdate).toEqual({ actionsTaken: ["write-1", "write-2"], resultSummary: "safe\nsafe" });
     expect(result.screening.quarantinedMemoryUpdates).toBe(1);
+    expect(result.memoryContext).toEqual(["memory-1", "memory-2"]);
     expect(result.conversationSummaries).toEqual(["summary-0", "summary-1", "summary-2"]);
   });
 

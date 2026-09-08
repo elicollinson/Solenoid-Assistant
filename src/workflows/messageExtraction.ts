@@ -189,12 +189,7 @@ async function extractMessageChunk(
     });
   }
 
-  const memoryContext = extracted.memoryContext.filter((_, index) => {
-    const result = graded.results[index];
-    if (result?.status !== "fulfilled") return false;
-    const { memoryRelevance, memoryActionability } = result.value;
-    return (memoryRelevance + memoryActionability) / 2 > MEMORY_PASS_THRESHOLD;
-  });
+  const memoryContext: string[] = [];
 
   // Keep source provenance through the write stage. Never combine conversations
   // in a writer invocation, or a detection cannot be contained to its source.
@@ -215,6 +210,7 @@ async function extractMessageChunk(
         `Update the okf with these memories:\n${memories.map((memory) => `- ${memory}`).join("\n")}`,
         okfManagerResultSchema,
       );
+      memoryContext.push(...memories);
       if (okfUpdate === "none") okfUpdate = update;
       else {
         okfUpdate.actionsTaken.push(...update.actionsTaken);

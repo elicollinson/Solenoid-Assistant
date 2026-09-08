@@ -288,9 +288,9 @@ describe("message extraction isolation", () => {
 
 
 describe("message extraction chunks", () => {
-  test("covers more than 200 messages in chronological chunks of 50 and waits for each OKF write", async () => {
+  test("covers more than 200 messages in whole-conversation batches and waits for each OKF write", async () => {
     const messages = Array.from({ length: 205 }, (_, index) => message(
-      "conversation", `message-${index}`, new Date(Date.UTC(2026, 7, 1, 0, index)).toISOString(),
+      `conversation-${Math.floor(index / 50)}`, `message-${index}`, new Date(Date.UTC(2026, 7, 1, 0, index)).toISOString(),
     ));
     const window = { start: new Date("2026-08-01"), end: new Date("2026-08-31") };
     let reads = 0;
@@ -344,9 +344,44 @@ describe("message extraction chunks", () => {
     expect(result.screening).toEqual({ processedConversations: 5, quarantinedConversations: 0, failedConversations: 0 });
   });
 
+  test("groups interleaved conversations once and packs whole conversations, including an oversized one", async () => {
+    const sizes = [20, 30, 205, 25, 26];
+    // Interleave messages so each conversation crosses raw 50-message boundaries.
+    const messages = Array.from({ length: 205 }, (_, index) => sizes.flatMap((size, conversation) =>
+      index < size ? [message(`chat-${conversation}`, `message-${conversation}-${index}`,
+        new Date(Date.UTC(2026, 7, 1, 0, index)).toISOString())] : []
+    )).flat();
+    const seen: string[][] = [];
+    const writes: string[][] = [];
+    let batch: string[] = [];
+    const intake = new PromptProvider((prompt) => {
+      const bodies = [...prompt.matchAll(/"body":\s*"(message-\d+-\d+)"/g)].map((match) => match[1]!);
+      seen.push(bodies);
+      batch.push(bodies[0]!);
+      return { actionItems: bodies, conversationSummaries: [bodies[0]], memoryContext: [bodies[0]] };
+    });
+    const result = await extractMessages({}, {
+      retrieveMessages: retrieval(messages), intake: agent(intake), grader: passGrader(),
+      okfManager: agent(new PromptProvider(() => {
+        writes.push(batch);
+        batch = [];
+        return { actionsTaken: ["updated"], resultSummary: "updated" };
+      })),
+    });
+    expect(writes).toEqual([
+      ["message-0-0", "message-1-0"], ["message-2-0"], ["message-3-0"], ["message-4-0"],
+    ]);
+    expect(seen).toEqual(sizes.map((size, conversation) =>
+      Array.from({ length: size }, (_, index) => `message-${conversation}-${index}`)
+    ));
+    expect(result.actionItems.slice().sort()).toEqual(messages.map((m) => m.body).sort());
+    expect(result.conversationSummaries).toEqual(sizes.map((_, conversation) => `message-${conversation}-0`));
+    expect(result.screening).toEqual({ processedConversations: 5, quarantinedConversations: 0, failedConversations: 0 });
+  });
+
   test("an OKF write failure stops the run before later chunks", async () => {
     const intake = new PromptProvider(() => ({ actionItems: [], conversationSummaries: [], memoryContext: ["memory"] }));
-    const messages = Array.from({ length: 51 }, (_, index) => message("chat", `message-${index}`, "2026-08-01T00:00:00.000Z"));
+    const messages = Array.from({ length: 51 }, (_, index) => message(`chat-${Math.floor(index / 50)}`, `message-${index}`, "2026-08-01T00:00:00.000Z"));
     await expect(extractMessages({}, {
       retrieveMessages: retrieval(messages),
       intake: agent(intake),

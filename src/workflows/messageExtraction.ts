@@ -72,6 +72,22 @@ function groupConversations(messages: TrustedMessageView[]): Conversation[] {
   }));
 }
 
+// Preserve conversation context even when a single conversation exceeds the target.
+function* conversationBatches(conversations: Conversation[]): Generator<Conversation[]> {
+  let batch: Conversation[] = [];
+  let messageCount = 0;
+  for (const conversation of conversations) {
+    if (batch.length > 0 && messageCount + conversation.messages.length > 50) {
+      yield batch;
+      batch = [];
+      messageCount = 0;
+    }
+    batch.push(conversation);
+    messageCount += conversation.messages.length;
+  }
+  if (batch.length > 0) yield batch;
+}
+
 export async function extractMessages(
   params: MessageExtractionParams = {},
   dependencies: MessageExtractionDependencies = {},
@@ -89,10 +105,10 @@ export async function extractMessages(
       failedConversations: 0,
     },
   };
-  for (let offset = 0; offset < retrieved.messages.length; offset += 50) {
+  for (const conversations of conversationBatches(groupConversations(retrieved.messages))) {
     // Finish extraction, grading, and the OKF write before starting the next
     // chunk. Only the existing conversation/grading fanout within a chunk remains.
-    const chunk = await extractMessageChunk(retrieved.messages.slice(offset, offset + 50), dependencies);
+    const chunk = await extractMessageChunk(conversations, dependencies);
     result.actionItems.push(...chunk.actionItems);
     result.conversationSummaries.push(...chunk.conversationSummaries);
     result.memoryContext.push(...chunk.memoryContext);
@@ -111,10 +127,9 @@ export async function extractMessages(
 }
 
 async function extractMessageChunk(
-  messages: TrustedMessageView[],
+  conversations: Conversation[],
   dependencies: MessageExtractionDependencies,
 ): Promise<MessageExtractionResult> {
-  const conversations = groupConversations(messages);
   const intakeAgent = dependencies.intake ?? createImessageConversationAgent(runtimeConfig);
   const extraction = await runIsolated({
     items: conversations,

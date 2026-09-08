@@ -62,6 +62,11 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
 
     // 4. Close WebSocket
     if (wsRef.current) {
+      // A deliberate stop must not let a late close event clean up a new session.
+      wsRef.current.onopen = null;
+      wsRef.current.onmessage = null;
+      wsRef.current.onerror = null;
+      wsRef.current.onclose = null;
       try {
         if (wsRef.current.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({ type: "stop" }));
@@ -179,8 +184,7 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
       wsRef.current = ws;
 
       ws.onopen = () => {
-        setStatus("open");
-        setActive(true);
+        setStatus("connecting");
       };
 
       ws.onmessage = (event) => {
@@ -191,10 +195,12 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
             mimeType?: string;
             text?: string;
             message?: string;
+            reason?: string;
           };
 
           if (msg.type === "ready") {
             setStatus("open");
+            setActive(true);
           } else if (msg.type === "audio" && msg.data) {
             // Play received audio
             playPcmAudio(msg.data, audioCtx, analyser);
@@ -208,6 +214,12 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
             onTurnComplete?.();
           } else if (msg.type === "error") {
             setError(msg.message ?? "Voice stream error");
+            cleanup();
+            setStatus("error");
+          } else if (msg.type === "close") {
+            setError(msg.reason || "The voice session ended. Try starting it again.");
+            cleanup();
+            setStatus("error");
           }
         } catch {
           // Ignored
@@ -216,17 +228,20 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
 
       ws.onerror = () => {
         setError("WebSocket connection failed");
+        cleanup();
         setStatus("error");
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
+        setError((current) => current ?? (event.reason || "The voice connection closed. Try starting it again."));
         cleanup();
+        setStatus("error");
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
-      setStatus("error");
       cleanup();
+      setStatus("error");
     }
   }, [conversationId, cleanup, onTurnComplete]);
 

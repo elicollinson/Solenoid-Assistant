@@ -171,6 +171,11 @@ export function ChatView({ chat }: { chat: ChatState }) {
             background: "var(--surface-panel)",
           }}
         >
+          {voice.error ? (
+            <p role="alert" style={{ maxWidth: "var(--measure)", margin: 0 }}>
+              Voice mode failed: {voice.error}
+            </p>
+          ) : null}
           {voice.active ? (
             <div style={{ maxWidth: "var(--measure)" }}>
               <RetroWigglyLine

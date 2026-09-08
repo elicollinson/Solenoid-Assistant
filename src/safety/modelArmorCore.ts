@@ -12,6 +12,11 @@ export interface ModelArmorAssessment {
   filterResults?: Record<string, unknown>;
 }
 
+export type FetchLike = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
+
 export interface ModelArmorScannerOptions {
   projectId?: string;
   location?: string;
@@ -20,7 +25,7 @@ export interface ModelArmorScannerOptions {
   apiEndpoint?: string;
   credentialsJson?: string;
   credentialsBase64?: string;
-  fetchFn?: typeof fetch;
+  fetchFn?: FetchLike;
   getAuthToken?: () => Promise<string | undefined>;
 }
 
@@ -32,7 +37,7 @@ interface ResolvedModelArmorScannerOptions {
   apiEndpoint?: string;
   credentialsJson?: string;
   credentialsBase64?: string;
-  fetchFn: typeof fetch;
+  fetchFn: FetchLike;
   getAuthToken?: () => Promise<string | undefined>;
 }
 

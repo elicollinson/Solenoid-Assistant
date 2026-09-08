@@ -1,8 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  ModelArmorScanner,
-  type ModelArmorAssessment,
-} from "./modelArmorCore";
+import { ModelArmorScanner } from "./modelArmorCore";
 
 function mockResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -15,7 +12,7 @@ function mockResponse(body: unknown, init: ResponseInit = {}): Response {
 describe("ModelArmorScanner", () => {
   test("returns BENIGN when Model Armor returns NO_MATCH_FOUND", async () => {
     let requestedUrl = "";
-    let requestHeaders: HeadersInit | undefined;
+    let requestHeaders: Record<string, string> | undefined;
     let requestBody: string | undefined;
 
     const scanner = new ModelArmorScanner({
@@ -25,7 +22,7 @@ describe("ModelArmorScanner", () => {
       getAuthToken: async () => "fake-jwt-token",
       fetchFn: async (url, init) => {
         requestedUrl = url.toString();
-        requestHeaders = init?.headers;
+        requestHeaders = init?.headers as Record<string, string> | undefined;
         requestBody = init?.body as string;
         return mockResponse({
           sanitizationResult: {
@@ -110,7 +107,7 @@ describe("ModelArmorScanner", () => {
   });
 
   test("uses x-goog-api-key header when apiKey is configured", async () => {
-    let capturedHeaders: HeadersInit | undefined;
+    let capturedHeaders: Record<string, string> | undefined;
 
     const scanner = new ModelArmorScanner({
       projectId: "test-project",
@@ -118,7 +115,7 @@ describe("ModelArmorScanner", () => {
       templateId: "base-detector",
       apiKey: "AIzaSyFakeApiKey",
       fetchFn: async (_url, init) => {
-        capturedHeaders = init?.headers;
+        capturedHeaders = init?.headers as Record<string, string> | undefined;
         return mockResponse({
           sanitizationResult: {
             filterMatchState: "NO_MATCH_FOUND",

@@ -1,3 +1,4 @@
+import { getDb } from "../db";
 /**
  * Tracks which screenshots have already been ingested into Notion.
  *
@@ -11,7 +12,6 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
 
-const DEFAULT_DIR = path.join(process.cwd(), ".screenshots");
 const FILENAME = "processed.json";
 
 // ---------------------------------------------------------------------------
@@ -41,7 +41,11 @@ export type ProcessedMap = z.infer<typeof processedMapSchema>;
 
 /** Load the processed map from disk. A missing file is an empty state; corrupt
  * state fails loudly so a later run cannot silently re-ingest everything. */
-export async function loadProcessed(dir = DEFAULT_DIR): Promise<ProcessedMap> {
+export async function loadProcessed(dir?: string): Promise<ProcessedMap> {
+  if (dir === undefined) {
+    const rows=getDb().$client.query("SELECT id,payload FROM source_processed").all() as {id:string;payload:string}[];
+    return Object.fromEntries(rows.map(r=>[r.id,processedEntrySchema.parse(JSON.parse(r.payload))]));
+  }
   const filePath = path.join(dir, FILENAME);
   try {
     const data = await readFile(filePath, "utf8");
@@ -69,7 +73,13 @@ export async function loadProcessed(dir = DEFAULT_DIR): Promise<ProcessedMap> {
 }
 
 /** Persist the processed map atomically in the destination directory. */
-export async function saveProcessed(map: ProcessedMap, dir = DEFAULT_DIR): Promise<void> {
+export async function saveProcessed(map: ProcessedMap, dir?: string): Promise<void> {
+  if (dir === undefined) {
+    const parsed=processedMapSchema.parse(map);
+    const db=getDb();
+    db.$client.transaction(()=>{for(const [id,value] of Object.entries(parsed)) db.$client.query("INSERT OR REPLACE INTO source_processed(id,payload) VALUES(?,?)").run(id,JSON.stringify(value));})();
+    return;
+  }
   await mkdir(dir, { recursive: true });
   const filePath = path.join(dir, FILENAME);
   const temporaryPath = path.join(dir, `.${FILENAME}.${process.pid}.${randomUUID()}.tmp`);

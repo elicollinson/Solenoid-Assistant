@@ -86,3 +86,16 @@ describe("reasoning on LLM spans", () => {
     expect(attrs["llm.output_messages.0.message.finish_reason"]).toBe("length");
   });
 });
+
+test("private source classification gets a non-recording span across awaits",async()=>{
+  const {privateSourceContext}=await import("../privateSourceContext");
+  const {withSpanKind}=await import("./spans");
+  await privateSourceContext.run(true,async()=>{
+    await Promise.resolve();
+    await withSpanKind("LLM","candidate",{"input.value":"private screenshot"},async span=>{
+      expect(span.isRecording()).toBe(false);
+      expect(privateSourceContext.getStore()).toBe(true);
+    });
+  });
+  expect(privateSourceContext.getStore()).toBeUndefined();
+});

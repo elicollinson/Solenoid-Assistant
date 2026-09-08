@@ -1,3 +1,4 @@
+import { rejectCollectedPhoto } from "../sources/assets";
 import { createClassifierAgent } from "../agents/classifier";
 import { createContentCardSourcingAgent } from "../agents/contentCardSourcing";
 import { createRecommendationIngestionAgent } from "../agents/recommendationIngestion";
@@ -46,7 +47,9 @@ export async function classifyRecentScreenshots(
 ): Promise<ClassifyScreenshotsResult> {
   const resource = await createClassifierAgent();
   try {
-    return await classifyScreenshots(resource.agent, params);
+    const result = await classifyScreenshots(resource.agent, params);
+    for (const shot of result.screenshots) if (shot.status === "classified" && shot.classification.classification === "Rejected") await rejectCollectedPhoto(shot.uuid);
+    return result;
   } finally {
     await resource.close();
   }

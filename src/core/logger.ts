@@ -1,3 +1,4 @@
+import { privateSourceContext } from "./privateSourceContext";
 // The one way anything in this repo says something.
 //
 // Three destinations, one call. `log.info("swept 12 screenshots")` goes to:
@@ -115,6 +116,7 @@ function prettyByDefault(): boolean {
 }
 
 function emit(level: LogLevel, component: string | undefined, bound: LogAttributes | undefined, message: string, attrs?: LogAttributes): void {
+  if (privateSourceContext.getStore()) return;
   const current = ensure();
 
   // The span event goes out regardless of the console floor: a `debug` line

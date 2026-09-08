@@ -16,10 +16,11 @@
 import { DEFAULT_DB_PATH, initDb } from "../src/db";
 import { syncWorkflowCatalog } from "../src/workflows/sync";
 
-const path = process.argv[2] ?? DEFAULT_DB_PATH;
+const args = process.argv.slice(2);
+const path = args.find(arg => !arg.startsWith("--")) ?? DEFAULT_DB_PATH;
 const db = initDb(path);
 
-const { added, updated } = syncWorkflowCatalog(db);
+const { added, updated } = syncWorkflowCatalog(db, new Date(), { registerOnly: args.includes("--register-only") });
 console.log(
   `synced ${path} — ${added} added, ${updated} updated. ` +
     "Schedules already in the database were left alone.",

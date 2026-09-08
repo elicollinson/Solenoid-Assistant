@@ -6,11 +6,13 @@
 import { Database } from "bun:sqlite";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { storedContacts } from "../sources/readers";
 import { log } from "../core/logger";
 import type { Message } from "../imessage/reader";
 import { lastTenDigits, normalizeEmail, normalizePhone } from "./normalize";
 
 export interface TrustGate {
+  exportContacts?: () => Array<{handle:string;name:string|null;kind:"phone"|"email"}>;
   isTrusted(sender: string): boolean; // sender = normalized handle, or "me"
   resolveName(sender: string): string | null;
   size(): { phones: number; emails: number };
@@ -160,6 +162,7 @@ export function createTrustGate(options: TrustGateOptions = {}): TrustGate {
   };
 
   return {
+    exportContacts: () => [...[...phones].map(([handle,name]) => ({handle,name,kind:"phone" as const})), ...[...emails].map(([handle,name])=>({handle,name,kind:"email" as const}))],
     isTrusted: (sender) => sender === "me" || lookup(sender).found,
     resolveName: (sender) => {
       const { found, name } = lookup(sender);
@@ -178,6 +181,7 @@ export function createTrustGate(options: TrustGateOptions = {}): TrustGate {
 // per process and reuse.
 let cachedGate: TrustGate | null = null;
 export function getTrustGate(options?: TrustGateOptions): TrustGate {
+  if (!options) return storedContacts();
   cachedGate ??= createTrustGate(options);
   return cachedGate;
 }

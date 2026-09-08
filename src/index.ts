@@ -1,3 +1,4 @@
+import { createSourceRoutes } from "./http/routes/sources";
 import { Elysia, t } from "elysia";
 import { openapi } from "@elysiajs/openapi";
 import { agentRoutes } from "./http/routes/agents";
@@ -17,7 +18,7 @@ const webBuild = await findWebBuild(import.meta.dir.replace(/\/src$/, ""));
 
 export const app = new Elysia({
   // Long-running agent endpoints can exceed Elysia's default 30s timeout.
-  serve: { idleTimeout: 255 },
+  serve: { idleTimeout: 255, maxRequestBodySize: 24 * 1024 * 1024 },
 })
   // First, so every line logged under any route below carries the request id
   // this mints — and so the response carries it back to whoever asked.
@@ -36,6 +37,7 @@ export const app = new Elysia({
     detail: { summary: "Health check" },
     response: t.Object({ status: t.Literal("ok") }),
   })
+  .use(createSourceRoutes())
   .use(screenshotRoutes)
   .use(agentRoutes)
   .use(messageRoutes)

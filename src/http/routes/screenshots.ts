@@ -49,7 +49,7 @@ export const screenshotRoutes = new Elysia({ name: "routes.screenshots" })
     {
       detail: {
         summary:
-          "List screenshots from the local macOS Photos library (default: last 24 hours)",
+          "List screenshots from the collected screenshot store (default: last 24 hours)",
       },
       query: t.Object({
         hoursBack: t.Optional(

@@ -736,8 +736,8 @@ describe("what I run on", () => {
     db.insert(s.settings).values([
       { key: "port", value: 3000, source: "user", updatedAt: now, updatedBy: "user" },
       {
-        key: "promptGuard.threshold", value: 0.5, source: "default", updatedAt: now,
-        hint: "Below this I let a prompt through.",
+        key: "modelArmor.templateId", value: "base-detector", source: "default", updatedAt: now,
+        hint: "Model Armor template name.",
       },
       { key: "notion.ds.music", value: null, source: "default", updatedAt: now },
     ]).run();
@@ -746,7 +746,7 @@ describe("what I run on", () => {
     // Nothing here yet is a state, not an absence.
     expect(rows.get("notion.ds.music")?.value).toBeNull();
     expect(rows.get("port")?.source).toBe("user");
-    expect(rows.get("promptGuard.threshold")?.source).toBe("default");
+    expect(rows.get("modelArmor.templateId")?.source).toBe("default");
 
     expect(() =>
       db.$client.run(

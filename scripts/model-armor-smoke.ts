@@ -1,7 +1,7 @@
 import {
-  disposePromptGuard,
+  disposeModelArmor,
   inspectPromptInjection,
-} from "../src/safety/promptGuard";
+} from "../src/safety/modelArmor";
 
 const parts: [string, ...string[]] = process.argv.length > 2
   ? [process.argv[2]!, ...process.argv.slice(3)]
@@ -14,13 +14,19 @@ try {
   const result = await inspectPromptInjection(parts);
   const durationMs = performance.now() - startedAt;
   const rssAfter = process.memoryUsage.rss();
-  console.log(JSON.stringify({
-    parts,
-    result,
-    durationMs: Math.round(durationMs * 100) / 100,
-    rssBeforeMiB: Math.round(rssBefore / 1024 / 1024),
-    rssAfterMiB: Math.round(rssAfter / 1024 / 1024),
-  }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        parts,
+        result,
+        durationMs: Math.round(durationMs * 100) / 100,
+        rssBeforeMiB: Math.round(rssBefore / 1024 / 1024),
+        rssAfterMiB: Math.round(rssAfter / 1024 / 1024),
+      },
+      null,
+      2,
+    ),
+  );
 } finally {
-  await disposePromptGuard();
+  await disposeModelArmor();
 }

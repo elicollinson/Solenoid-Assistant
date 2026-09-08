@@ -84,7 +84,7 @@ In the order you will hit them:
    `/opt/homebrew/bin/bun` is 1.3.3. A `PATH`-resolved `bun` under launchd may
    not be the one you develop against. Absolute path, everywhere.
 4. **`WorkingDirectory`.** `.env`, `./data/solenoid.db`, `./drizzle`,
-   `models/prompt-guard-2-86m` and `okf/` are all relative. One key sets them
+   and `okf/` are all relative. One key sets them
    all; without it the job starts in `/` and fails in five different ways.
 5. **`HOME`.** `src/imessage/reader.ts:37` and `src/contacts/trustGate.ts:28`
    build their defaults from `process.env.HOME`. launchd normally sets it for

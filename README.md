@@ -73,13 +73,12 @@ The application reads and validates runtime settings through `src/core/config.ts
 | `OPENAI_API_KEY` | `lm-studio` fallback | OpenAI-compatible authentication |
 | `OPENROUTER_API_KEY` | unset | Authentication for `openrouter` routes |
 | `OPENROUTER_MODEL` | `google/gemma-4-31b-it` | Legacy automatic OpenRouter route model |
-| `STRUCTURED_OUTPUT_STRATEGY` | backend-dependent | Override `native` or `two-stage` schema completion |
-| `PROMPT_GUARD_MODEL_PATH` | `models/prompt-guard-2-86m` | Local Prompt Guard ONNX files |
-| `PROMPT_GUARD_DEVICE` | `cpu` | ONNX Runtime device: `cpu` or `webgpu` |
-| `PROMPT_GUARD_THRESHOLD` | `0.5` | Minimum malicious-class score to flag |
-| `PROMPT_GUARD_BATCH_SIZE` | `16` | Maximum chunks per inference batch |
-| `PROMPT_GUARD_CHUNK_OVERLAP` | `32` | Token overlap between 512-token windows |
-| `PHOENIX_TRACING_ENABLED` | `true` | Trace export |
+| `MODEL_ARMOR_ENABLED` | `true` | Enable prompt injection screening via Google Cloud Model Armor |
+| `MODEL_ARMOR_PROJECT_ID` | unset | Google Cloud Project ID hosting the Model Armor template |
+| `MODEL_ARMOR_LOCATION` | `us-central1` | Google Cloud region for Model Armor |
+| `MODEL_ARMOR_TEMPLATE_ID` | `base-detector` | Model Armor template name |
+| `MODEL_ARMOR_API_KEY` | unset | Google Cloud API key (optional; defaults to ADC / service account) |
+| `MODEL_ARMOR_API_ENDPOINT` | unset | Optional custom Model Armor endpoint override |
 | `PHOENIX_COLLECTOR_ENDPOINT` | `http://localhost:6006` | Phoenix collector |
 | `PHOENIX_PROJECT_NAME` | `solenoid-assistant` | Phoenix project |
 | `LOG_LEVEL` | `info` | Floor for the console and the log store |
@@ -151,33 +150,41 @@ set `structuredOutputStrategy` to `native` or `two-stage`; the global
 | GET | `/api/runs/:runId/logs` | Everything logged under one run id, from VictoriaLogs where there is one |
 | POST | `/api/logs` | Accept structured log records from the browser app into the same store |
 
-The original `/messageExtraction` and `/safetyClassifier` paths remain as deprecated compatibility aliases.
+## Google Cloud Model Armor
 
-## Local Prompt Guard
+Prompt injection screening is powered by [Google Cloud Model Armor](https://docs.cloud.google.com/model-armor/overview), which screens prompts and responses against configured security templates without local model downloads or GPU/CPU inference overhead.
 
-The Bun-only Prompt Guard module uses the full-precision ONNX conversion of
-`meta-llama/Llama-Prompt-Guard-2-86M`. Review the
-[Llama 4 Community License](https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M),
-then install the pinned, checksum-verified model files (about 1.14 GB total):
+### Configuration
 
-```bash
-bun run setup:prompt-guard --accept-license
-```
-
-Run a local inference and report cold-start time and process memory:
+Set up your Model Armor template in the Google Cloud Console (or CLI) and add to `.env`:
 
 ```bash
-bun run smoke:prompt-guard
-bun run smoke:prompt-guard "A normal reminder to buy groceries"
-PROMPT_GUARD_DEVICE=webgpu bun run smoke:prompt-guard
+MODEL_ARMOR_PROJECT_ID=your-gcp-project-id
+MODEL_ARMOR_LOCATION=us-central1
+MODEL_ARMOR_TEMPLATE_ID=base-detector
+# Option 1: API Key restricted to Model Armor API
+MODEL_ARMOR_API_KEY=AIzaSy...
+# Option 2: Application Default Credentials (ADC)
+# Leave API key unset and run: gcloud auth application-default login
 ```
 
-Application code can screen one or more pieces of text as a single input. The
-parts are joined with newlines, tokenized, split into overlapping model windows,
-and the result is `true` when any window reaches the malicious threshold:
+Verify your configuration and template connectivity:
+
+```bash
+bun run verify:model-armor
+```
+
+Run a smoke test against Model Armor:
+
+```bash
+bun run smoke:model-armor
+bun run smoke:model-armor "A normal reminder to buy groceries"
+```
+
+Application code can screen one or more pieces of text as a single input:
 
 ```ts
-import { containsPromptInjection } from "./src/safety/promptGuard";
+import { containsPromptInjection } from "./src/safety/modelArmor";
 
 const attacked = await containsPromptInjection([
   "Untrusted email body",
@@ -185,11 +192,7 @@ const attacked = await containsPromptInjection([
 ]);
 ```
 
-Model loading is lazy and shared within a process. Inference failures throw
-instead of being silently interpreted as benign. `Agent` screening is enabled
-by default at input, tool-output, model-output, and reviewer-output boundaries.
-The `/safety-classifier` agent opts out explicitly because its purpose is to
-process prompt-injection examples.
+`Agent` screening is enabled by default at input, tool-output, model-output, and reviewer-output boundaries, and reports findings directly into OpenTelemetry / Phoenix guardrail spans.
 
 ### Isolation-aware iteration
 

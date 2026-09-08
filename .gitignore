@@ -23,6 +23,13 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .env.production.local
 .env.local
 
+# GCP service account keys / credentials
+*credentials*.json
+*service-account*.json
+gcp-key*.json
+*-key.json
+eli-collinson*.json
+
 # caches
 .eslintcache
 .cache

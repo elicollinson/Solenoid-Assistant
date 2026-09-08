@@ -30,8 +30,11 @@ x-app-env: &app-env
   VICTORIALOGS_ENDPOINT: http://victorialogs:9428
   # Containers have no TTY, so `auto` would pick JSON anyway. Said out loud
   # because `docker compose logs` is the other reader of these lines.
-  LOG_FORMAT: json
-  PROMPT_GUARD_MODEL_PATH: /app/models/prompt-guard-2-86m
+  MODEL_ARMOR_ENABLED: ${MODEL_ARMOR_ENABLED:-true}
+  MODEL_ARMOR_PROJECT_ID: ${MODEL_ARMOR_PROJECT_ID:-}
+  MODEL_ARMOR_LOCATION: ${MODEL_ARMOR_LOCATION:-us-central1}
+  MODEL_ARMOR_TEMPLATE_ID: ${MODEL_ARMOR_TEMPLATE_ID:-base-detector}
+  MODEL_ARMOR_API_KEY: ${MODEL_ARMOR_API_KEY:-}
   # Only read when the host mirror in deploy/scripts/mirror-host-data.sh is in
   # use; harmless otherwise. Requires the small config change in deploy/README.
   IMESSAGE_DB_PATH: /hostmirror/Library/Messages/chat.db

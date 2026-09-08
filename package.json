@@ -31,7 +31,9 @@
     "release:preflight": "bun run scripts/release-preflight.ts",
     "make:icons": "bun run scripts/make-icons.ts",
     "serve:tailscale": "bun run scripts/serve-tailscale.ts",
-    "db:index-okf": "bun run scripts/db-index-okf.ts"
+    "db:index-okf": "bun run scripts/db-index-okf.ts",
+    "source:collect": "bun run scripts/collect-host-data.ts",
+    "source:catch-up": "bun run scripts/source-catch-up.ts"
   },
   "devDependencies": {
     "@arizeai/phoenix-cli": "^1.16.1",

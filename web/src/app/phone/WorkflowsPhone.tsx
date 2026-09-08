@@ -1,3 +1,4 @@
+import { SourceStatus } from "../SourceStatus";
 // Workflows at 390px.
 //
 // The desktop draws a table and filters it. The cadence, last-run and step
@@ -76,6 +77,7 @@ export function WorkflowsPhone({
   return (
     <>
       <PhoneTitle title="Workflows" lede={workflows.lede} />
+      <SourceStatus />
 
       <div style={{ display: "flex", gap: "var(--sp-2)", padding: "0 var(--gutter-phone) var(--sp-6)", overflowX: "auto", flexShrink: 0 }}>
         {FILTERS.map((label) => (

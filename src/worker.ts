@@ -1,3 +1,4 @@
+import { consumeScreenshot } from "./sources/consumer";
 // The cron worker: runs what the DATABASE says to run, when it says to.
 //
 // Runs as its own process (`bun run start:worker`), separate from the HTTP
@@ -161,8 +162,18 @@ const poll = setInterval(() => {
 
 installShutdownHandler(async () => {
   clearInterval(poll);
+  clearInterval(sourceTimer);
   for (const job of jobs) job.stop();
   await shutdownTracing();
   await flushLogs();
   await shutdownLogging();
 });
+
+// Source classification is independent of user workflow schedules.
+let sourceBusy = false;
+const sourceTimer = setInterval(async () => {
+  if (process.env.SOURCE_CONSUMER_ENABLED !== "true" || sourceBusy) return;
+  sourceBusy = true;
+  try { await consumeScreenshot(db); } catch { scheduler.warn("Source consumer unavailable; will retry"); } finally { sourceBusy = false; }
+}, 15_000);
+sourceTimer.unref();

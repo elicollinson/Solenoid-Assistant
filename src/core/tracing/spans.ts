@@ -1,7 +1,8 @@
 // Generic OpenInference span helpers. `withSpanKind` is the single primitive
 // every traced seam builds on — adding a new span kind (RETRIEVER, GUARDRAIL,
 // EVALUATOR, ...) needs no new plumbing, just a different `kind` argument.
-import { trace, SpanStatusCode } from "@opentelemetry/api";
+import { privateSourceContext } from "../privateSourceContext";
+import { trace, SpanStatusCode, INVALID_SPAN_CONTEXT } from "@opentelemetry/api";
 import type { Attributes, Span } from "@opentelemetry/api";
 import {
   OpenInferenceSpanKind,
@@ -49,6 +50,7 @@ export async function withSpanKind<T>(
   attributes: Attributes,
   fn: (span: Span) => Promise<T>,
 ): Promise<T> {
+  if (privateSourceContext.getStore()) return fn(trace.wrapSpanContext(INVALID_SPAN_CONTEXT));
   return tracer().startActiveSpan(
     name,
     {

@@ -1,6 +1,6 @@
 // The Contacts group, exercised the way an agent reaches it.
 //
-// `lookup_contact` is never executed here. It reads the real macOS address book
+// `lookup_contact` is never executed here. It reads the real collected Contacts snapshot
 // through a process-wide trust gate that throws when Full Disk Access is
 // missing, so executing it would make this suite depend on whose laptop it runs
 // on — the same line ./imessage.test.ts draws around the Messages database.
@@ -111,8 +111,8 @@ describe("the group", () => {
     expect(briefing).toContain("trustState");
     // The stored record and the address book, each said to be what it is.
     expect(briefing).toContain("Handles — one row per address they are reachable at");
-    expect(briefing).toContain("macOS address book");
-    expect(briefing).toContain("not a row in this database");
+    expect(briefing).toContain("collected Contacts snapshot");
+    expect(briefing).toContain("The lookup creates no records");
     for (const state of s.TRUST_STATE) expect(briefing).toContain(state);
     // Read-only group: the briefing must not offer a writing section.
     expect(briefing).not.toContain("Writing —");

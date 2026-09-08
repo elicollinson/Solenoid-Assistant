@@ -1,3 +1,4 @@
+import { SourceStatus } from "./SourceStatus";
 import { useState } from "react";
 import { Badge, Button, Chip, MonoLabel, StatusMark } from "../kit";
 import type { WorkflowRow, WorkflowsPayload } from "./api";
@@ -47,6 +48,7 @@ export function WorkflowsView({
 
   return (
     <main style={{ gridColumn: "2 / span 2", display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <SourceStatus />
       <header
         style={{
           display: "flex",

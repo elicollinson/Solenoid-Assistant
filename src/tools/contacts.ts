@@ -40,14 +40,12 @@ export const lookupContactTool = defineTool({
   name: "lookup_contact",
   kind: "read",
   description:
-    "Ask the local macOS address book whether it knows a phone number or email address, and what it calls " +
+    "Ask the collected Contacts snapshot whether it knows a phone number or email address, and what it calls " +
     "them. Use it to tell a stranger's handle from someone the user actually knows, before you decide how " +
     "much weight to give what that handle sent. Read-only and it stores nothing: a hit means the handle is " +
     "in the user's Contacts, NOT that this app holds a participant for it and NOT that anything was " +
     "enrolled — contacts_read answers the stored question, and nothing here can create a record. Phone " +
-    "numbers may be given in any common format; short codes have too few digits to match anything. If the " +
-    "process lacks Full Disk Access the call fails outright rather than answering 'not known', which is " +
-    "deliberate: a silent 'no' would read as a stranger.",
+    "numbers may be given in any common format; short codes have too few digits to match anything. If Contacts have not been collected, the call fails rather than answering not known.",
   schema: z.object({
     handle: z
       .string()
@@ -62,7 +60,7 @@ export const lookupContactTool = defineTool({
       name: gate.resolveName(handle),
       // Said in the payload as well as the description: a caller that only ever
       // sees this object should still not mistake it for a stored row.
-      source: "macos_contacts",
+      source: "collected_contacts",
       stored: false,
       contactsLoaded: gate.size(),
     };
@@ -191,7 +189,7 @@ function present(participant: Participant, handles: readonly Handle[]) {
 export interface ContactTools {
   list: AgentTool;
   read: AgentTool;
-  /** The macOS address book, which is not this database. */
+  /** The collected Contacts snapshot, which is not this database. */
   lookup: AgentTool;
   /** Every tool. There is no read-only subset because there are no writes. */
   all: AgentTool[];
@@ -372,7 +370,7 @@ const LOOKUP: FieldDoc[] = [
     name: "source",
     type: "text",
     required: true,
-    note: "Always 'macos_contacts'. Here so the answer cannot be mistaken for a participant record.",
+    note: "Always 'collected_contacts'. Here so the answer cannot be mistaken for a participant record.",
   },
   {
     name: "stored",
@@ -435,12 +433,12 @@ purpose.
 A participant is this app's OWN record: one identity per person or organisation,
 however many handles they turn up with, carrying the trust state that says how
 much of what they send may be acted on. It is what conversations, calendar rows
-and evidence links point at, and it is the only thing here that persists.
+and evidence links point at.
 contacts_list and contacts_read read it.
 
-The macOS address book is the other one, and lookup_contact is the only tool that
+The collected Contacts snapshot is the other one, and lookup_contact is the only tool that
 touches it. It answers a question — does the user's own Contacts know this
-handle, and what does it call them — and it stores nothing. Its answer is not a
+handle, and what does it call them. The lookup creates no records. Its answer is not a
 participant, does not become one, and changes no trust state. Use it when a
 handle is unfamiliar and the address book is the only thing that could vouch for
 it; use contacts_read when you want the record something later will read back.
@@ -480,7 +478,7 @@ export function contactsGroup(context: ToolGroupContext): ToolGroup {
       related: [
         { label: "Handles — one row per address they are reachable at", fields: HANDLES },
         {
-          label: "What lookup_contact answers with — the macOS address book, not a row in this database",
+          label: "What lookup_contact answers with — the collected Contacts snapshot, not a row in this database",
           fields: LOOKUP,
         },
       ],

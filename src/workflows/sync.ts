@@ -39,7 +39,7 @@ export interface SyncResult {
  * those are descriptions of the code. Their SCHEDULE is left exactly as it is,
  * because that is somebody's decision — see `upsertSchedule`.
  */
-export function syncWorkflowCatalog(db: Db, now: Date = new Date()): SyncResult {
+export function syncWorkflowCatalog(db: Db, now: Date = new Date(), options: { registerOnly?: boolean } = {}): SyncResult {
   return db.transaction((t) => {
     let added = 0;
     let updated = 0;
@@ -57,8 +57,8 @@ export function syncWorkflowCatalog(db: Db, now: Date = new Date()): SyncResult 
             .run();
           updated += 1;
         }
-        upsertSchedule(t, existing.id, entry.rrule, entry.cadence);
-        seedPermissions(t, existing.id, entry.permissions, now);
+        if (!options.registerOnly) upsertSchedule(t, existing.id, entry.rrule, entry.cadence);
+        if (!options.registerOnly) seedPermissions(t, existing.id, entry.permissions, now);
         continue;
       }
 
@@ -90,8 +90,8 @@ export function syncWorkflowCatalog(db: Db, now: Date = new Date()): SyncResult 
         .run();
       t.update(s.workflows).set({ currentVersionId: versionId }).where(eq(s.workflows.id, id)).run();
 
-      upsertSchedule(t, id, entry.rrule, entry.cadence);
-      seedPermissions(t, id, entry.permissions, now);
+      if (!options.registerOnly) upsertSchedule(t, id, entry.rrule, entry.cadence);
+      if (!options.registerOnly) seedPermissions(t, id, entry.permissions, now);
       added += 1;
     }
 

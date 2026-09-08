@@ -1,3 +1,4 @@
+import { assertCollected } from "../sources/store";
 // What happens when you press Run.
 //
 // The catalog says a workflow exists; this says what executing it means. Same
@@ -94,6 +95,8 @@ const WORKFLOWS: readonly RunnableWorkflow[] = [
       // window is on the trace, in the write-up and in the result. A pass that
       // reads nothing is otherwise indistinguishable from a quiet day — which
       // is exactly how a missing Full Disk Access grant reads on this screen.
+      assertCollected("messages");
+      assertCollected("contacts");
       const windowEnd = end ?? new Date();
       const windowStart = start ?? new Date(windowEnd.getTime() - 24 * 3600_000);
 

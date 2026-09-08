@@ -2,6 +2,7 @@
 // the contacts trust gate (spec contactsRead §3). This is the function LLM-facing
 // code should call — untrusted senders are dropped here, before any model sees
 // the messages.
+import { storedMessages } from "../sources/readers";
 import { log } from "../core/logger";
 import { getTrustGate, type TrustGate } from "../contacts/trustGate";
 import { fetchMessages, unixSecondsToAppleNs, type Message } from "./reader";
@@ -37,7 +38,9 @@ export function fetchTrustedMessages(options: TrustedFetchOptions = {}): Trusted
   // window concern — disable it so the range is exactly what was asked for.
   const since = unixSecondsToAppleNs(start.getTime() / 1000) - 1n;
   const until = unixSecondsToAppleNs(Math.ceil(end.getTime() / 1000));
-  const { messages: all } = fetchMessages(since, { dbPath, overlapSeconds: 0, untilAppleNs: until });
+  const all = dbPath
+    ? fetchMessages(since, { dbPath, overlapSeconds: 0, untilAppleNs: until }).messages
+    : storedMessages(start, end);
 
   const trusted = gate.filter(all);
   const droppedUntrusted = all.length - trusted.length;

@@ -101,7 +101,7 @@ const WORKFLOWS: readonly RunnableWorkflow[] = [
       const windowStart = start ?? new Date(windowEnd.getTime() - 24 * 3600_000);
 
       const result = await extractMessages({ start: windowStart, end: windowEnd });
-      const { processedConversations, quarantinedConversations, failedConversations } = result.screening;
+      const { processedConversations, quarantinedConversations, failedConversations, quarantinedMemoryUpdates = 0 } = result.screening;
       const kept = result.okfUpdate === "none" ? 0 : 1;
       const window = { start: windowStart.toISOString(), end: windowEnd.toISOString() };
       const said = `${when(windowStart)} to ${when(windowEnd)}`;
@@ -112,7 +112,8 @@ const WORKFLOWS: readonly RunnableWorkflow[] = [
           ? [
               `Read ${plural(processedConversations, "conversation")} from ${said} and pulled out ${plural(result.actionItems.length, "action item")}.`,
               `Wrote ${plural(result.conversationSummaries.length, "summary", "summaries")}.`,
-              kept ? "Offered what was worth keeping to memory." : "Nothing here was worth keeping in memory.",
+              kept ? "Offered what was worth keeping to memory." : quarantinedMemoryUpdates ? "Memory updates were stopped by injection screening." : "Nothing here was worth keeping in memory.",
+              ...(quarantinedMemoryUpdates ? [`Quarantined memory updates for ${plural(quarantinedMemoryUpdates, "conversation")}; continued processing the others. Earlier completed writes remain.`] : []),
               ...(quarantinedConversations
                 ? [`Quarantined ${plural(quarantinedConversations, "conversation")} for injected instructions.`]
                 : []),
@@ -125,6 +126,7 @@ const WORKFLOWS: readonly RunnableWorkflow[] = [
               result.actionItems.length
                 ? `There are ${plural(result.actionItems.length, "action item")} in there: ${result.actionItems.slice(0, 3).join("; ")}${result.actionItems.length > 3 ? "; and more below." : "."}`
                 : "Nothing in the window asked anything of you.",
+              ...(quarantinedMemoryUpdates ? [`Injection screening stopped memory updates for ${plural(quarantinedMemoryUpdates, "conversation")}. Other conversations continued; any writes completed before detection remain.`] : []),
               ...(quarantinedConversations
                 ? [
                     `${plural(quarantinedConversations, "conversation")} tried to give me instructions. I stopped reading those and did not act on anything in them.`,

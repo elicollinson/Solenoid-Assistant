@@ -16,7 +16,7 @@ class PromptProvider implements ChatProvider {
   async chat(messages: ChatMessage[]): Promise<ChatMessage> {
     const prompt = [...messages].reverse().find(({ role }) => role === "user")?.content ?? "";
     this.prompts.push(prompt);
-    const result = this.reply(prompt);
+    const result = await this.reply(prompt);
     if (result instanceof Error) throw result;
     return { role: "assistant", content: JSON.stringify(result), finishReason: "stop" };
   }
@@ -283,5 +283,121 @@ describe("message extraction isolation", () => {
     const secondCallToolMsg = calls[1]?.find((m) => m.role === "tool");
     expect(secondCallToolMsg?.content).toContain("Prompt injection detected in tool output; output blocked.");
     expect(secondCallToolMsg?.content).not.toContain("flagged snippet");
+  });
+});
+
+
+describe("message extraction chunks", () => {
+  test("covers more than 200 messages in whole-conversation batches and waits for each OKF write", async () => {
+    const messages = Array.from({ length: 205 }, (_, index) => message(
+      `conversation-${Math.floor(index / 50)}`, `message-${index}`, new Date(Date.UTC(2026, 7, 1, 0, index)).toISOString(),
+    ));
+    const window = { start: new Date("2026-08-01"), end: new Date("2026-08-31") };
+    let reads = 0;
+    const chunks: string[][] = [];
+    const intake = new PromptProvider((prompt) => {
+      const bodies = [...prompt.matchAll(/"body":\s*"(message-\d+)"/g)].map((match) => match[1]!);
+      chunks.push(bodies);
+      return { actionItems: bodies, conversationSummaries: [bodies[0]], memoryContext: [bodies[0]] };
+    });
+    let releaseWrite!: () => void;
+    let enteredWrite!: () => void;
+    const writeBlocked = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const writeEntered = new Promise<void>((resolve) => { enteredWrite = resolve; });
+    let writes = 0;
+    const okf = new PromptProvider(async () => {
+      const index = writes++;
+      if (index === 0) {
+        enteredWrite();
+        await writeBlocked;
+      }
+      return { actionsTaken: [`write-${index}`], resultSummary: `summary-${index}` };
+    });
+    const pending = extractMessages(window, {
+      retrieveMessages: (params: { start?: Date; end?: Date; limit?: number }) => {
+        reads++;
+        expect(params).toEqual(window);
+        return retrieval(params.limit ? messages.slice(-params.limit) : messages)();
+      },
+      intake: agent(intake),
+      grader: passGrader(),
+      okfManager: agent(okf),
+    });
+    try {
+      await writeEntered;
+      expect(chunks).toHaveLength(1);
+      expect(writes).toBe(1);
+    } finally {
+      releaseWrite();
+    }
+    const result = await pending;
+    expect(reads).toBe(1);
+    expect(chunks.map((chunk) => chunk.length)).toEqual([50, 50, 50, 50, 5]);
+    expect(chunks.flat()).toEqual(messages.map((m) => m.body));
+    expect(result.actionItems).toEqual(messages.map((m) => m.body));
+    expect(result.conversationSummaries).toEqual(["message-0", "message-50", "message-100", "message-150", "message-200"]);
+    expect(result.memoryContext).toEqual(result.conversationSummaries);
+    expect(result.okfUpdate).toEqual({
+      actionsTaken: ["write-0", "write-1", "write-2", "write-3", "write-4"],
+      resultSummary: "summary-0\nsummary-1\nsummary-2\nsummary-3\nsummary-4",
+    });
+    expect(result.screening).toEqual({ processedConversations: 5, quarantinedConversations: 0, failedConversations: 0 });
+  });
+
+  test("groups interleaved conversations once and packs whole conversations, including an oversized one", async () => {
+    const sizes = [20, 30, 205, 25, 26];
+    // Interleave messages so each conversation crosses raw 50-message boundaries.
+    const messages = Array.from({ length: 205 }, (_, index) => sizes.flatMap((size, conversation) =>
+      index < size ? [message(`chat-${conversation}`, `message-${conversation}-${index}`,
+        new Date(Date.UTC(2026, 7, 1, 0, index)).toISOString())] : []
+    )).flat();
+    const seen: string[][] = [];
+    const writes: string[][] = [];
+    let batch: string[] = [];
+    const intake = new PromptProvider((prompt) => {
+      const bodies = [...prompt.matchAll(/"body":\s*"(message-\d+-\d+)"/g)].map((match) => match[1]!);
+      seen.push(bodies);
+      batch.push(bodies[0]!);
+      return { actionItems: bodies, conversationSummaries: [bodies[0]], memoryContext: [bodies[0]] };
+    });
+    const result = await extractMessages({}, {
+      retrieveMessages: retrieval(messages), intake: agent(intake), grader: passGrader(),
+      okfManager: agent(new PromptProvider(() => {
+        writes.push(batch);
+        batch = [];
+        return { actionsTaken: ["updated"], resultSummary: "updated" };
+      })),
+    });
+    expect(writes).toEqual([
+      ["message-0-0", "message-1-0"], ["message-2-0"], ["message-3-0"], ["message-4-0"],
+    ]);
+    expect(seen).toEqual(sizes.map((size, conversation) =>
+      Array.from({ length: size }, (_, index) => `message-${conversation}-${index}`)
+    ));
+    expect(result.actionItems.slice().sort()).toEqual(messages.map((m) => m.body).sort());
+    expect(result.conversationSummaries).toEqual(sizes.map((_, conversation) => `message-${conversation}-0`));
+    expect(result.screening).toEqual({ processedConversations: 5, quarantinedConversations: 0, failedConversations: 0 });
+  });
+
+  test("an OKF write failure stops the run before later chunks", async () => {
+    const intake = new PromptProvider(() => ({ actionItems: [], conversationSummaries: [], memoryContext: ["memory"] }));
+    const messages = Array.from({ length: 51 }, (_, index) => message(`chat-${Math.floor(index / 50)}`, `message-${index}`, "2026-08-01T00:00:00.000Z"));
+    await expect(extractMessages({}, {
+      retrieveMessages: retrieval(messages),
+      intake: agent(intake),
+      grader: passGrader(),
+      okfManager: agent(new PromptProvider(() => new Error("write failed"))),
+    })).rejects.toThrow("write failed");
+    expect(intake.prompts).toHaveLength(1);
+  });
+
+  test("an empty window invokes no extraction or writes", async () => {
+    const provider = new PromptProvider(() => new Error("must not run"));
+    const result = await extractMessages({}, {
+      retrieveMessages: retrieval([]), intake: agent(provider), grader: agent(provider), okfManager: agent(provider),
+    });
+    expect(provider.prompts).toHaveLength(0);
+    expect(result).toEqual({ actionItems: [], conversationSummaries: [], memoryContext: [], okfUpdate: "none",
+      screening: { processedConversations: 0, quarantinedConversations: 0, failedConversations: 0 } });
   });
 });

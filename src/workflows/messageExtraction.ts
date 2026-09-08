@@ -16,7 +16,7 @@ import {
 } from "../prompts";
 import { runIsolated } from "../utils/fanout";
 import {
-  readTrustedMessageWindow,
+  readAllTrustedMessageWindow,
   type TrustedMessageView,
   type TrustedMessageWindowResult,
 } from "../tools/imessage";
@@ -50,7 +50,7 @@ export interface MessageExtractionDependencies {
   grader?: Agent;
   okfManager?: Agent;
   retrieveMessages?: (
-    params: MessageExtractionParams & { limit?: number },
+    params: MessageExtractionParams,
   ) => TrustedMessageWindowResult;
 }
 
@@ -72,16 +72,64 @@ function groupConversations(messages: TrustedMessageView[]): Conversation[] {
   }));
 }
 
+// Preserve conversation context even when a single conversation exceeds the target.
+function* conversationBatches(conversations: Conversation[]): Generator<Conversation[]> {
+  let batch: Conversation[] = [];
+  let messageCount = 0;
+  for (const conversation of conversations) {
+    if (batch.length > 0 && messageCount + conversation.messages.length > 50) {
+      yield batch;
+      batch = [];
+      messageCount = 0;
+    }
+    batch.push(conversation);
+    messageCount += conversation.messages.length;
+  }
+  if (batch.length > 0) yield batch;
+}
+
 export async function extractMessages(
   params: MessageExtractionParams = {},
   dependencies: MessageExtractionDependencies = {},
 ): Promise<MessageExtractionResult> {
-  const retrieved = (dependencies.retrieveMessages ?? readTrustedMessageWindow)({
-    start: params.start,
-    end: params.end,
-    limit: 200,
-  });
-  const conversations = groupConversations(retrieved.messages);
+  // Take one chronological snapshot so a long run cannot shift its own window.
+  const retrieved = (dependencies.retrieveMessages ?? readAllTrustedMessageWindow)(params);
+  const result: MessageExtractionResult = {
+    actionItems: [],
+    conversationSummaries: [],
+    memoryContext: [],
+    okfUpdate: "none",
+    screening: {
+      processedConversations: 0,
+      quarantinedConversations: 0,
+      failedConversations: 0,
+    },
+  };
+  for (const conversations of conversationBatches(groupConversations(retrieved.messages))) {
+    // Finish extraction, grading, and the OKF write before starting the next
+    // chunk. Only the existing conversation/grading fanout within a chunk remains.
+    const chunk = await extractMessageChunk(conversations, dependencies);
+    result.actionItems.push(...chunk.actionItems);
+    result.conversationSummaries.push(...chunk.conversationSummaries);
+    result.memoryContext.push(...chunk.memoryContext);
+    for (const key of ["processedConversations", "quarantinedConversations", "failedConversations"] as const) {
+      result.screening[key] += chunk.screening[key];
+    }
+    if (chunk.okfUpdate !== "none") {
+      if (result.okfUpdate === "none") result.okfUpdate = chunk.okfUpdate;
+      else {
+        result.okfUpdate.actionsTaken.push(...chunk.okfUpdate.actionsTaken);
+        result.okfUpdate.resultSummary += "\n" + chunk.okfUpdate.resultSummary;
+      }
+    }
+  }
+  return result;
+}
+
+async function extractMessageChunk(
+  conversations: Conversation[],
+  dependencies: MessageExtractionDependencies,
+): Promise<MessageExtractionResult> {
   const intakeAgent = dependencies.intake ?? createImessageConversationAgent(runtimeConfig);
   const extraction = await runIsolated({
     items: conversations,

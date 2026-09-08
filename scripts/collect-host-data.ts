@@ -114,12 +114,19 @@ try {
     libraryPath: process.env.PHOTOS_LIBRARY_PATH,
     binary: process.env.OSXPHOTOS_BINARY,
   });
+  // Load the Photos database once for all missing originals, rather than once
+  // per screenshot. Exported bytes live only in this run's temporary directory.
+  console.log(JSON.stringify({
+    event: "photos-export-start", screenshots: photos.length,
+  }));
+  const paths = await materialize(photos, work, {
+    libraryPath: process.env.PHOTOS_LIBRARY_PATH,
+    binary: process.env.OSXPHOTOS_BINARY,
+  });
+  console.log(JSON.stringify({
+    event: "photos-export-complete", materialized: paths.size,
+  }));
   for (const photo of photos) {
-    // Missing originals are exported only into this run's temporary directory.
-    const paths = await materialize([photo], work, {
-      libraryPath: process.env.PHOTOS_LIBRARY_PATH,
-      binary: process.env.OSXPHOTOS_BINARY,
-    });
     const file = paths.get(photo.uuid);
     if (!file)
       throw new Error(
@@ -145,6 +152,9 @@ try {
       form.set("image", new Blob([bytes]), "screenshot");
       await sourceRequest("/api/sources/photos", token, form);
     }
+    // Remove uploaded/previously classified temporary exports immediately.
+    // Never remove an original from the user's Photos library.
+    if (path.dirname(path.resolve(file)) === path.resolve(work)) await rm(file);
   }
   await post("/api/sources/inventory", {
     kind: "photos",

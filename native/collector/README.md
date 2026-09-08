@@ -18,3 +18,8 @@ approval; it does not grant Photos access or Full Disk Access automatically.
 The user grants the app Full Disk Access and approves its request to control
 Photos. The LaunchAgent starts the app binary; the app keeps its run loop alive
 while the existing Bun → osxphotos process tree does the collection.
+
+Missing originals use osxphotos’ supported PhotoKit backend because Photos can
+time out resolving media items through AppleScript even after authorization.
+The app declares the Photos Library entitlement and NSPhotoLibraryUsageDescription
+so macOS can request normal Photos access for the collector.

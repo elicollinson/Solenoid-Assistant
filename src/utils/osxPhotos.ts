@@ -295,7 +295,8 @@ export async function getImportSources(
  *
  * Photos whose originals are already local are used in place — no copying.
  * Anything iCloud-only (`ismissing`) is exported into `destDir` with
- * `--download-missing`, which pulls it down from iCloud first.
+ * `--download-missing --use-photokit`, which downloads through Photos.framework.
+ * The AppleScript backend can time out resolving iCloud-only media items.
  *
  * The export uses `--filename "{uuid}"` so the output name is deterministic
  * and we can find it again; the export report keys on filename rather than
@@ -331,6 +332,7 @@ export async function materialize(
       "--uuid-from-file",
       uuidFile,
       "--download-missing",
+      "--use-photokit",
       "--filename",
       "{uuid}",
       "--skip-original-if-edited",

@@ -335,6 +335,10 @@ export async function materialize(
       "--use-photokit",
       "--filename",
       "{uuid}",
+      // Edited exports otherwise default to UUID_edited, which cannot be
+      // matched back to the UUID below. Only one version is exported.
+      "--edited-suffix",
+      "",
       "--skip-original-if-edited",
       "--update",
     ];

@@ -1055,7 +1055,7 @@ export class Agent {
             span.recordException(err);
             span.setStatus({
               code: SpanStatusCode.ERROR,
-              description: err.message,
+              message: err.message,
             });
             span.setAttributes({
               "tool.quarantined": true,

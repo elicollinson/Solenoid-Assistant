@@ -73,12 +73,22 @@ export interface WorkflowStat {
   value: string;
 }
 
+export interface WorkflowPermissionItem {
+  capability: string;
+  label: string;
+  description: string;
+  tools: readonly string[];
+  mode: "allow" | "ask" | "deny";
+  scope: "workflow" | "global" | "default";
+}
+
 /** An open decision the run is sitting on, with the buttons that close it. */
 export interface WorkflowGate {
   id: string;
   title: string;
   body: string | null;
   actions: HomeAction[];
+  pendingCount?: number;
 }
 
 export interface WorkflowToolCall {
@@ -196,6 +206,8 @@ export interface WorkflowDetailPayload {
   /** Standing instructions, in your words. Null when there are none. */
   instructions: string | null;
   gate: WorkflowGate | null;
+  /** Permissions configured for this workflow and their current status. */
+  permissions: WorkflowPermissionItem[];
   /** Whether POST /api/workflows/:slug/run will do anything. */
   runnable: boolean;
   /** The arguments it takes, in the order the form draws them. Empty for a

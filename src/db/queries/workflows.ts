@@ -17,6 +17,7 @@ import type {
   WorkflowGate,
   WorkflowLogLevel,
   WorkflowLogLine,
+  WorkflowPermissionItem,
   WorkflowRow,
   WorkflowRunDetail,
   WorkflowStat,
@@ -27,7 +28,8 @@ import type {
 } from "../../shared/workflows";
 import type { HomeState } from "../../shared/home";
 import type { Surface } from "../../shared/surface";
-import { catalogEntry } from "../../workflows/catalog";
+import { catalogEntry, writeCapabilityInfo } from "../../workflows/catalog";
+import { resolvePermission } from "../../workflows/permissions";
 import { capitalise, clock, duration, logStamp, minutesAgo, shortDay, spell, stamp, stampLong } from "./_format";
 import { narrativeBySubject, narrativeFor } from "./_narrative";
 import { surfaceNote } from "./_surface";
@@ -123,15 +125,23 @@ function latestRuns(db: Db): Map<string, Run> {
  * that is the row the buttons were authored against. So the join goes through
  * the activity item rather than inventing a second link.
  */
-function openGates(db: Db): Map<string, typeof s.decisions.$inferSelect> {
-  const byRun = new Map<string, typeof s.decisions.$inferSelect>();
+/** The oldest open decision per run, and how many are waiting behind it. */
+function openGates(db: Db): Map<string, { decision: typeof s.decisions.$inferSelect; total: number }> {
+  const byRun = new Map<string, { decision: typeof s.decisions.$inferSelect; total: number }>();
   for (const row of db
     .select({ runId: s.activityItems.runId, decision: s.decisions })
     .from(s.decisions)
     .innerJoin(s.activityItems, eq(s.activityItems.decisionId, s.decisions.id))
     .where(eq(s.decisions.state, "open"))
+    .orderBy(asc(s.decisions.openedAt))
     .all()) {
-    if (row.runId) byRun.set(row.runId, row.decision);
+    if (!row.runId) continue;
+    const existing = byRun.get(row.runId);
+    if (existing) {
+      existing.total += 1;
+    } else {
+      byRun.set(row.runId, { decision: row.decision, total: 1 });
+    }
   }
   return byRun;
 }
@@ -168,7 +178,7 @@ export function loadWorkflows(db: Db, now: Date = new Date(), surface: Surface =
   const rows: WorkflowRow[] = workflows
     .map((w) => {
     const run = runs.get(w.id);
-    const gate = run ? gates.get(run.id) : undefined;
+    const gate = run ? gates.get(run.id)?.decision : undefined;
     return {
       slug: w.slug,
       name: w.name,
@@ -223,20 +233,22 @@ export function loadWorkflow(
     .orderBy(desc(s.workflowRuns.ordinal))
     .all();
   const latest = runs[0];
-  const gateRow = latest ? openGates(db).get(latest.id) : undefined;
+  const gateEntry = latest ? openGates(db).get(latest.id) : undefined;
+  const gateRow = gateEntry?.decision;
 
   const gate: WorkflowGate | null = gateRow
     ? {
         id: gateRow.id,
         title: gateRow.title,
         body: gateRow.body,
+        pendingCount: gateEntry?.total,
         actions: db
           .select()
           .from(s.actions)
           .where(eq(s.actions.decisionId, gateRow.id))
           .orderBy(asc(s.actions.ordinal))
           .all()
-          .map((a) => ({ id: a.id, label: a.label, stance: a.stance, effectKind: a.effectKind, effect: a.effect })),
+          .map((a) => ({ id: a.id, label: a.label, stance: a.stance, effectKind: a.effectKind, effect: a.effect, decisionId: a.decisionId })),
       }
     : null;
 
@@ -275,6 +287,32 @@ export function loadWorkflow(
   // absent from the catalog rather than by carrying empty columns.
   const catalogued = catalogEntry(workflow.slug);
 
+  // What the code ships with, plus anything a rule has ever been written for.
+  // The second is what makes a capability the agent granted itself show up here
+  // rather than only the ones the catalog happened to predict.
+  const capabilities = new Set([
+    ...(catalogued?.permissions?.map((p) => p.capability) ?? []),
+    ...db
+      .select({ capability: s.workflowPermissions.capability })
+      .from(s.workflowPermissions)
+      .where(eq(s.workflowPermissions.workflowId, workflow.id))
+      .all()
+      .map((r) => r.capability),
+  ]);
+
+  const permissions: WorkflowPermissionItem[] = [...capabilities].map((cap) => {
+    const info = writeCapabilityInfo(cap);
+    const resolved = resolvePermission(db, workflow.id, cap);
+    return {
+      capability: cap,
+      label: info.label,
+      description: info.description,
+      tools: info.tools,
+      mode: resolved.mode,
+      scope: resolved.scope,
+    };
+  });
+
   return {
     slug: workflow.slug,
     name: workflow.name,
@@ -290,6 +328,7 @@ export function loadWorkflow(
     stats: statsFor(db, workflow, latest, gateRow?.openedAt ?? null),
     instructions: instruction?.text ?? null,
     gate,
+    permissions,
     runnable: catalogued != null,
     inputs: catalogued ? [...catalogued.inputs] : [],
     progress:

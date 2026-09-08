@@ -10,12 +10,13 @@ import { loadWorkflow, loadWorkflows } from "../../db/queries/workflows";
 import {
   NoSuchWorkflowDecisionError,
   NoSuchWorkflowError,
+  grantWorkflowPermission,
   readDeferredWrite,
   settleDeferredWrite,
   setWorkflowInstructions,
   setWorkflowPaused,
 } from "../../db/mutations/workflows";
-import { runDeferredWrite } from "../../workflows/deferred";
+import { autoSettleWorkflowWrites, runDeferredWrite } from "../../workflows/deferred";
 import {
   NoSuchRecommendationError,
   RecommendationSettledError,
@@ -223,6 +224,43 @@ export function createUiRoutes(resolveDb: () => Db = getDb) {
         },
       },
     )
+    .put(
+      "/api/workflows/:slug/permissions",
+      async ({ params, body, set }) => {
+        try {
+          const db = resolveDb();
+          grantWorkflowPermission(db, params.slug, {
+            capability: body.capability,
+            mode: body.mode,
+            by: "user",
+          });
+          if (body.mode === "allow") {
+            await autoSettleWorkflowWrites(db, params.slug, body.capability);
+          }
+          return { ok: true };
+        } catch (error) {
+          if (error instanceof NoSuchWorkflowError) {
+            set.status = 404;
+            return { error: error.message };
+          }
+          set.status = 500;
+          return { error: error instanceof Error ? error.message : "Could not save permission" };
+        }
+      },
+      {
+        params: t.Object({ slug: t.String() }),
+        body: t.Object({
+          capability: t.String({ minLength: 1 }),
+          mode: t.Union([t.Literal("allow"), t.Literal("ask"), t.Literal("deny")]),
+        }),
+        detail: { summary: "Set or update the permission mode for a workflow capability" },
+        response: {
+          200: t.Object({ ok: t.Boolean() }),
+          404: t.Object({ error: t.String() }),
+          500: t.Object({ error: t.String() }),
+        },
+      },
+    )
     .get("/api/reminders", () => loadReminders(resolveDb()), {
       detail: { summary: "Everything I'm holding for you, bucketed by when it is due" },
     })
@@ -318,6 +356,10 @@ export function createUiRoutes(resolveDb: () => Db = getDb) {
             actionId: body.actionId,
             ran: result.ran,
             outcome: result.summary,
+            detail: result.detail ?? null,
+            tool: call.tool,
+            args: call.args,
+            durationMs: result.durationMs,
             failed: !result.ran,
           });
           return { ran: result.ran, outcome: result.summary };

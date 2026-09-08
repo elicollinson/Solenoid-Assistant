@@ -87,6 +87,17 @@ describe("the feed", () => {
     ]);
   });
 
+  test("a resolved approval ceases to be a gate and drops its buttons", () => {
+    const item = home.sections[0]?.items[0];
+    if (!item?.decisionId) throw new Error("expected an open decision on item 0");
+    db.$client.exec(`UPDATE decisions SET state = 'resolved' WHERE id = '${item.decisionId}'`);
+    const after = loadHome(db, MORNING);
+    const resolvedItem = after.sections[0]?.items[0];
+    expect(resolvedItem?.decisionId).toBeNull();
+    expect(resolvedItem?.actions).toEqual([]);
+    db.$client.exec(`UPDATE decisions SET state = 'open' WHERE id = '${item.decisionId}'`);
+  });
+
   test("a running entry is dated from when it started and carries its meter", () => {
     const item = home.sections[0]?.items[1];
     expect(item?.state).toBe("running");

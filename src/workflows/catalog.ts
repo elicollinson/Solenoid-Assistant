@@ -18,6 +18,101 @@ import type { WorkflowInputField } from "../shared/workflows";
 
 export type { WorkflowInputField, WorkflowInputKind } from "../shared/workflows";
 
+export interface WriteCapabilityInfo {
+  capability: string;
+  label: string;
+  description: string;
+  tools: readonly string[];
+}
+
+export const KNOWN_WRITE_CAPABILITIES: readonly WriteCapabilityInfo[] = [
+  {
+    capability: "okf.write",
+    label: "OKF Memory",
+    description: "Write facts, summaries, and memories to the local OKF store",
+    tools: ["okf_create", "okf_patch", "okf_move", "okf_deprecate"],
+  },
+  {
+    capability: "calendar.write",
+    label: "Calendar Events",
+    description: "Create, modify, move, and cancel calendar events",
+    tools: [
+      "calendar_create_event",
+      "calendar_update_event",
+      "calendar_delete_event",
+      "calendar_move_event",
+      "calendar_cancel_event",
+    ],
+  },
+  {
+    capability: "reminders.write",
+    label: "Reminders",
+    description: "Create, update, delete, and complete reminders",
+    tools: [
+      "reminders_create",
+      "reminders_update",
+      "reminders_delete",
+      "reminders_mark_complete",
+    ],
+  },
+  {
+    capability: "recommendations.write",
+    label: "Recommendations",
+    description: "Propose, archive, and update recommendations",
+    tools: [
+      "recommendations_create",
+      "recommendations_archive",
+      "recommendations_update_confidence",
+      "recommendations_annotate",
+      "recommendations_snooze",
+    ],
+  },
+  {
+    capability: "activity.write",
+    label: "Activity Notes",
+    description: "Annotate and log notes to activity items",
+    tools: ["activity_annotate"],
+  },
+  {
+    capability: "workflows.write",
+    label: "Workflow Control",
+    description: "Pause workflows, adjust schedules, or set instructions",
+    tools: [
+      "workflows_pause",
+      "workflows_set_instructions",
+      "workflows_set_summary",
+      "workflows_set_schedule",
+      "workflows_set_permissions",
+    ],
+  },
+  {
+    capability: "notion.write",
+    label: "Notion Workspace",
+    description: "Create and update pages in Notion workspace",
+    tools: ["notion-create-pages", "notion-update-page"],
+  },
+  {
+    capability: "tavily.write",
+    label: "Tavily Search",
+    description: "Execute web search queries",
+    tools: ["tavily-search"],
+  },
+];
+
+const CAPABILITIES_BY_NAME = new Map(KNOWN_WRITE_CAPABILITIES.map((c) => [c.capability, c]));
+
+export function writeCapabilityInfo(capability: string): WriteCapabilityInfo {
+  const existing = CAPABILITIES_BY_NAME.get(capability);
+  if (existing) return existing;
+  const family = capability.replace(/\.write$/, "");
+  return {
+    capability,
+    label: `${family.charAt(0).toUpperCase()}${family.slice(1)} Write`,
+    description: `Write tools in the ${family} family`,
+    tools: [],
+  };
+}
+
 export interface WorkflowCatalogEntry {
   /** Stable, URL-safe, and the primary key the UI routes on. */
   slug: string;

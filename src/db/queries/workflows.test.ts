@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { createDb, runMigrations, type Db } from "../index";
 import * as s from "../schema";
 import { createUiRoutes } from "../../http/routes/ui";
-import { loadWorkflow, loadWorkflows, type WorkflowsPayload } from "./workflows";
+import { loadWorkflow, loadWorkflows, type WorkflowDetailPayload, type WorkflowsPayload } from "./workflows";
 import { seedDesignFixtures } from "../seed/design";
 import { zonedTime } from "../seed/time";
 
@@ -271,7 +271,26 @@ describe("over HTTP", () => {
   test("writing to a slug this database has never heard of is a 404", async () => {
     expect((await write("nope/pause", "POST", { paused: true })).status).toBe(404);
     expect((await write("nope/instructions", "PUT", { text: "x" })).status).toBe(404);
+    expect((await write("nope/permissions", "PUT", { capability: "spend", mode: "allow" })).status).toBe(404);
     expect((await write("nope/stop", "POST")).status).toBe(404);
+  });
+
+  test("workflow permissions can be updated and read back", async () => {
+    const res = await write("calendar-tidy/permissions", "PUT", { capability: "calendar.write", mode: "allow" });
+    expect(res.status).toBe(200);
+
+    const app = new Elysia().use(createUiRoutes(() => db));
+    const one = await app.handle(new Request("http://localhost/api/workflows/calendar-tidy"));
+    const data = (await one.json()) as WorkflowDetailPayload;
+    const perm = data.permissions.find((p) => p.capability === "calendar.write");
+    expect(perm?.mode).toBe("allow");
+
+    await write("calendar-tidy/permissions", "PUT", { capability: "calendar.write", mode: "ask" });
+    const updated = await new Elysia()
+      .use(createUiRoutes(() => db))
+      .handle(new Request("http://localhost/api/workflows/calendar-tidy"));
+    const updatedData = (await updated.json()) as WorkflowDetailPayload;
+    expect(updatedData.permissions.find((p) => p.capability === "calendar.write")?.mode).toBe("ask");
   });
 
   test("a refused trigger writes no run", async () => {

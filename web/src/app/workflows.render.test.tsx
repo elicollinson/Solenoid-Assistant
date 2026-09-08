@@ -30,7 +30,7 @@ const detail = (slug: string): WorkflowDetailPayload => {
 
 /** Nothing started, nothing refused — the state every one of these renders in. */
 const IDLE: WorkflowTrigger = { pending: false, error: null, started: null, onRun: noop, onClear: noop };
-const SETTLED: WorkflowEdits = { busy: false, error: null, onStop: noop, onInstructions: noop };
+const SETTLED: WorkflowEdits = { busy: false, error: null, onStop: noop, onInstructions: noop, onPermission: noop };
 
 const drawn = (workflow: WorkflowDetailPayload, tab: string, trigger: WorkflowTrigger = IDLE, askOnOpen = false) =>
   renderToStaticMarkup(
@@ -140,6 +140,51 @@ describe("one workflow", () => {
     expect(drawn(detail("vendor-reconciliation"), "Summary")).not.toContain("Approve the Ferris contract reply");
   });
 
+  test("the open gate displays the waiting count badge when more than one decision is open", () => {
+    const d = detail("contract-review");
+    const withMultiple: WorkflowDetailPayload = {
+      ...d,
+      gate: d.gate ? { ...d.gate, pendingCount: 4 } : null,
+    };
+    const markup = drawn(withMultiple, "Summary");
+    expect(markup).toContain("4 waiting");
+  });
+
+  test("the summary tab renders write tool permissions when configured", () => {
+    const d = detail("contract-review");
+    const withPermissions: WorkflowDetailPayload = {
+      ...d,
+      permissions: [
+        {
+          capability: "okf.write",
+          label: "Knowledge base writes",
+          description: "Write memories and facts into the knowledge base",
+          tools: ["okf_create", "okf_update", "okf_delete"],
+          mode: "allow",
+          scope: "workflow",
+        },
+      ],
+    };
+    const markup = renderToStaticMarkup(
+      <WorkflowDetail
+        workflow={withPermissions}
+        tab="Summary"
+        onTab={noop}
+        paused={false}
+        onTogglePause={noop}
+        onBack={noop}
+        onInvoke={noop}
+        trigger={IDLE}
+        edits={SETTLED}
+      />,
+    );
+    expect(markup).toContain("Default tool permissions");
+    expect(markup).toContain("Knowledge base writes");
+    expect(markup).toContain("Pre-approved");
+    expect(markup).toContain("okf_create, okf_update, okf_delete");
+    expect(markup).toContain("Edit permission");
+  });
+
   test("a workflow with no rule of its own says so rather than showing a blank", () => {
     const markup = drawn(detail("calendar-tidy"), "Summary");
     expect(markup).toContain("You haven&#x27;t given me a rule for this one");
@@ -194,7 +239,7 @@ describe("one workflow", () => {
         onBack={noop}
         onInvoke={noop}
         trigger={IDLE}
-        edits={{ busy: true, error: null, onStop: noop, onInstructions: noop }}
+        edits={{ ...SETTLED, busy: true }}
       />,
     );
     expect(busy).toMatch(/<button[^>]*disabled[^>]*>Stopping…<\/button>/);
@@ -212,7 +257,7 @@ describe("one workflow", () => {
         onBack={noop}
         onInvoke={noop}
         trigger={IDLE}
-        edits={{ busy: false, error: "Nothing to stop — it isn't running.", onStop: noop, onInstructions: noop }}
+        edits={{ ...SETTLED, error: "Nothing to stop — it isn't running." }}
       />,
     );
     expect(markup).toContain("That didn&#x27;t take.");

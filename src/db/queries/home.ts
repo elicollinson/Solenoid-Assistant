@@ -48,13 +48,29 @@ export function loadHome(db: Db, now: Date = new Date(), surface: Surface = "des
   const actionsBySubject = new Map<string, HomeAction[]>();
   const callsByRun = new Map<string, HomeToolCall[]>();
 
+  const openDecisionIds = new Set(
+    db
+      .select({ id: s.decisions.id })
+      .from(s.decisions)
+      .where(eq(s.decisions.state, "open"))
+      .all()
+      .map((d) => d.id),
+  );
+
   // Buttons are read whether or not the feed has anything in it: the aside's
   // "worth a look" card is a recommendation, and its two words hang off the
   // recommendation rather than off a feed row. Reading these inside the guard
   // below meant a morning with no activity drew that card with nothing to press.
-  for (const a of db.select().from(s.actions).orderBy(asc(s.actions.ordinal)).all()) {
+  // Actions that have already been invoked or belong to a settled decision are omitted.
+  for (const a of db
+    .select()
+    .from(s.actions)
+    .where(isNull(s.actions.invokedAt))
+    .orderBy(asc(s.actions.ordinal))
+    .all()) {
+    if (a.decisionId && !openDecisionIds.has(a.decisionId)) continue;
     const list = actionsBySubject.get(a.subjectId) ?? [];
-    list.push({ id: a.id, label: a.label, stance: a.stance, effectKind: a.effectKind, effect: a.effect });
+    list.push({ id: a.id, label: a.label, stance: a.stance, effectKind: a.effectKind, effect: a.effect, decisionId: a.decisionId });
     actionsBySubject.set(a.subjectId, list);
   }
 
@@ -77,6 +93,7 @@ export function loadHome(db: Db, now: Date = new Date(), surface: Surface = "des
 
   const sections: HomeSection[] = [];
   for (const item of items) {
+    const isGate = item.decisionId != null && openDecisionIds.has(item.decisionId);
     const entry: HomeFeedItem = {
       id: item.id,
       state: item.state,
@@ -93,8 +110,8 @@ export function loadHome(db: Db, now: Date = new Date(), surface: Surface = "des
         item.progressValue != null && item.progressTotal != null
           ? { value: item.progressValue, total: item.progressTotal }
           : null,
-      decisionId: item.decisionId,
-      actions: actionsBySubject.get(item.id) ?? [],
+      decisionId: isGate ? item.decisionId : null,
+      actions: isGate || !item.decisionId ? (actionsBySubject.get(item.id) ?? []) : [],
     };
     const label = sectionLabel(item.occurredAt, now);
     const last = sections.at(-1);

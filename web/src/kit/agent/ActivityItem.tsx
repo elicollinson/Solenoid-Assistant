@@ -5,7 +5,15 @@ import type { State } from "../types";
 
 /* One entry in the desktop feed: a 26px mark gutter plus content. An item that
    needs you is framed in the alert plane; everything else is either a plain
-   raised card or (framed={false}) a bare row in the flow. */
+   raised card or (framed={false}) a bare row in the flow.
+
+   The `minWidth: 0` on the content column and on the title is not cosmetic. A
+   grid and a flex item both default to a min-content floor, so one entry whose
+   title has nothing to break on — a serialised tool result, say — sets the
+   floor for the whole feed, and the frame's `1fr` middle column cannot shrink
+   under it. What that looks like is not a wide title: it is the aside and the
+   filter chips silently clipped out of a frame that is `overflow: hidden`. A
+   title is prose either way, so it wraps rather than pushing. */
 export function ActivityItem({
   state = "done",
   title,
@@ -47,11 +55,13 @@ export function ActivityItem({
       }}
     >
       <StatusMark state={state} size={state === "attention" || state === "running" ? 14 : 13} style={{ marginTop: 3 }} />
-      <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2)" }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: "var(--sp-4)" }}>
-          <span style={{ font: "var(--text-title)", color: "var(--text-1)" }}>{title}</span>
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2)", minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: "var(--sp-4)", minWidth: 0 }}>
+          <span style={{ font: "var(--text-title)", color: "var(--text-1)", minWidth: 0, overflowWrap: "anywhere" }}>{title}</span>
           {badge ? <Badge tone={state === "running" ? "running" : "neutral"}>{badge}</Badge> : null}
-          {time ? <span style={{ marginLeft: "auto", font: "var(--text-mono-meta)", color: "var(--text-4)" }}>{time}</span> : null}
+          {time ? (
+            <span style={{ marginLeft: "auto", flexShrink: 0, font: "var(--text-mono-meta)", color: "var(--text-4)" }}>{time}</span>
+          ) : null}
         </div>
         {typeof children === "string" ? (
           <p style={{ margin: 0, font: "var(--text-body)", color: "var(--text-2)", textWrap: "pretty", maxWidth: "var(--measure)" }}>

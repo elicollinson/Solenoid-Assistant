@@ -35,8 +35,8 @@ async function getJson<T>(path: string, signal: AbortSignal): Promise<T> {
  * only redraw the same rows. When actions start firing this is where the
  * invalidation goes.
  */
-export function useHome(surface: Surface = "desktop"): Load<HomePayload> {
-  return useJson<HomePayload>(on("/api/home", surface));
+export function useHome(surface: Surface = "desktop", nonce = 0): Load<HomePayload> {
+  return useJson<HomePayload>(on("/api/home", surface), nonce);
 }
 
 /**
@@ -259,4 +259,13 @@ export function saveInstructions(slug: string, text: string): Promise<{ text: st
  */
 export function answerDeferredWrite(actionId: string): Promise<{ ran: boolean; outcome: string }> {
   return send("/api/workflows/decisions", "POST", { actionId });
+}
+
+/** Set or update the permission mode for a workflow capability. */
+export function saveWorkflowPermission(
+  slug: string,
+  capability: string,
+  mode: "allow" | "ask" | "deny",
+): Promise<{ ok: boolean }> {
+  return send(`/api/workflows/${encodeURIComponent(slug)}/permissions`, "PUT", { capability, mode });
 }

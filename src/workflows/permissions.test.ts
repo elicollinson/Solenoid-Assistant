@@ -17,7 +17,7 @@ import * as s from "../db/schema";
 import { Agent } from "../core/rawAgent";
 import { defineTool } from "../core/tools";
 import type { ChatMessage, ChatProvider } from "../core/providers";
-import { grantWorkflowPermission, readDeferredWrite } from "../db/mutations/workflows";
+import { grantWorkflowPermission, readDeferredWrite, settleDeferredWrite } from "../db/mutations/workflows";
 import { loadHome } from "../db/queries/home";
 import { loadWorkflow } from "../db/queries/workflows";
 import { runDeferredWrite } from "./deferred";
@@ -367,6 +367,74 @@ describe("answering one", () => {
     );
     expect(result).toMatchObject({ ran: false, reason: "unknown_tool" });
     expect(ran).toEqual([]);
+  });
+});
+
+describe("what the feed reads back once it is answered", () => {
+  // The regression this pins: the settled entry's TITLE once held the tool's
+  // serialised result. A feed title is one prose line beside a badge and a
+  // time, and a payload there has nothing to break on — so it set the feed's
+  // min-content width and pushed the aside and the filter chips out of a frame
+  // that clips rather than scrolls. The result belongs on the run, as a step.
+  const settle = async () => {
+    await turnUnderPermissions("Ferris pays on the 30th.");
+    const [decision] = openDecisions();
+    const action = db
+      .select()
+      .from(s.actions)
+      .where(eq(s.actions.decisionId, decision!.id))
+      .all()
+      .find((a) => a.stance === "affirm")!;
+    const call = readDeferredWrite(db, action.id)!;
+    const result = await runDeferredWrite(
+      db,
+      { runId: call.runId, tool: call.tool, args: call.args },
+      { db },
+      async () => remember,
+    );
+    settleDeferredWrite(db, {
+      decisionId: call.decisionId,
+      actionId: action.id,
+      ran: result.ran,
+      outcome: result.summary,
+      detail: result.detail ?? null,
+      tool: call.tool,
+      args: call.args,
+      durationMs: result.durationMs,
+      failed: !result.ran,
+    });
+    return db.select().from(s.activityItems).where(eq(s.activityItems.decisionId, call.decisionId)).all()[0]!;
+  };
+
+  test("the title is a sentence and holds no payload", async () => {
+    const entry = await settle();
+    expect(entry.title).toBe("memory_write ran and finished.");
+    expect(entry.title).not.toContain("{");
+    // Short enough to sit on one line beside a badge and a time.
+    expect(entry.title.length).toBeLessThan(80);
+  });
+
+  test("the payload is on the run as a tool step, which is what reads it", async () => {
+    const entry = await settle();
+    const step = db.select().from(s.runSteps).where(eq(s.runSteps.runId, entry.runId!)).all().at(-1)!;
+
+    expect(step.toolName).toBe("memory_write");
+    expect(step.isTool).toBe(true);
+    expect(step.toolResult).toContain("Ferris pays on the 30th.");
+    // The strip's one-line aside is the ARGUMENTS, capped — never the result.
+    expect(step.detail).toBe("line=Ferris pays on the 30th.");
+  });
+
+  test("the feed draws the strip, with no prose account under the title", async () => {
+    const entry = await settle();
+    const item = loadHome(db).sections.flatMap((section) => section.items).find((i) => i.id === entry.id)!;
+
+    expect(item.title).toBe("memory_write ran and finished.");
+    // Nothing lands in the prose slot: a serialised result is not prose, and
+    // the two families are the one rule this kit does not bend.
+    expect(item.account).toBeNull();
+    expect(item.toolSummary).toContain("memory_write");
+    expect(item.toolCalls.some((c) => c.name === "memory_write")).toBe(true);
   });
 });
 

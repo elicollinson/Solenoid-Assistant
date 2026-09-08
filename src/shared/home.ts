@@ -17,6 +17,7 @@ export interface HomeAction {
   stance: HomeStance;
   effectKind: string;
   effect: unknown;
+  decisionId?: string | null;
 }
 
 export interface HomeToolCall {

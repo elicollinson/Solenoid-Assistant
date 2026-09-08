@@ -32,8 +32,9 @@
 // stale bubble a way around a standing refusal.
 import type { Db } from "../db";
 import * as s from "../db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { AgentTool } from "../core/tools";
+import { readDeferredWrite, settleDeferredWrite } from "../db/mutations/workflows";
 import { TOOL_GROUP_CATALOG, type ToolGroupContext } from "../tools/groups";
 import { getNotionMcpClient } from "../mcp/notionCache";
 import { loadMcpTools } from "../mcp/adapter";
@@ -43,9 +44,15 @@ import { capabilityFor, resolvePermission } from "./permissions";
  *  person, which is why they are not one boolean. */
 export type RefusalReason = "denied" | "unknown_tool" | "disconnected";
 
+/** `summary` is the feed entry's TITLE, so it is one short sentence and never
+ *  the payload: the title is Space Grotesk prose in a single row beside a badge
+ *  and a time, and a 200-character blob of JSON in it does not merely look
+ *  wrong — it has no space to break on, so it sets the feed's min-content width
+ *  and pushes the aside and the filter chips out of the frame. What the call
+ *  actually returned goes in `detail`, which is drawn as the entry's body. */
 export type DeferredOutcome =
-  | { ran: true; summary: string }
-  | { ran: false; reason: RefusalReason; summary: string };
+  | { ran: true; summary: string; detail?: string | null; durationMs?: number }
+  | { ran: false; reason: RefusalReason; summary: string; detail?: string | null; durationMs?: number };
 
 /**
  * Find the tool a deferred call names.
@@ -133,21 +140,77 @@ export async function runDeferredWrite(
     // row since the run, and the tool's schema is the only thing that says they
     // are still a legal call.
     const args = tool.schema.parse(call.args);
+    // Timed, because the step this becomes claims a duration and "0ms" is a
+    // claim about the call rather than an absence of one.
+    const startedAt = Date.now();
     const result = await tool.execute(args);
     const rendered = typeof result === "string" ? result : JSON.stringify(result);
     return {
       ran: true,
-      summary: `${call.tool} ran and finished: ${cap(rendered, 200)}`,
+      summary: `${call.tool} ran and finished.`,
+      detail: cap(rendered, 400),
+      durationMs: Date.now() - startedAt,
     };
   } catch (error) {
     return {
       ran: false,
       reason: "unknown_tool",
-      summary: `${call.tool} was allowed and failed: ${
-        cap(error instanceof Error ? error.message : String(error), 200)
-      }`,
+      summary: `${call.tool} was allowed and failed.`,
+      detail: cap(error instanceof Error ? error.message : String(error), 400),
     };
   }
 }
 
 const cap = (text: string, at: number) => (text.length > at ? `${text.slice(0, at - 1)}…` : text);
+
+/**
+ * Auto-settle any open deferred writes for a workflow that match a newly pre-approved capability.
+ */
+export async function autoSettleWorkflowWrites(
+  db: Db,
+  slug: string,
+  capability: string,
+  context: ToolGroupContext = { db },
+): Promise<number> {
+  const [wf] = db.select().from(s.workflows).where(eq(s.workflows.slug, slug)).limit(1).all();
+  if (!wf) return 0;
+
+  const openDecisions = db
+    .select({ decisionId: s.decisions.id })
+    .from(s.decisions)
+    .innerJoin(s.activityItems, eq(s.activityItems.decisionId, s.decisions.id))
+    .where(and(eq(s.decisions.state, "open"), eq(s.activityItems.workflowId, wf.id)))
+    .all();
+
+  let settledCount = 0;
+  for (const item of openDecisions) {
+    const [action] = db
+      .select()
+      .from(s.actions)
+      .where(and(eq(s.actions.decisionId, item.decisionId), eq(s.actions.effectKind, "tool_call")))
+      .all();
+    if (!action) continue;
+
+    const call = readDeferredWrite(db, action.id);
+    if (!call || !call.open || !call.approves) continue;
+
+    const toolCap = capabilityFor(call.tool);
+    if (toolCap !== capability) continue;
+
+    const result = await runDeferredWrite(db, { runId: call.runId, tool: call.tool, args: call.args }, context);
+    settleDeferredWrite(db, {
+      decisionId: call.decisionId,
+      actionId: action.id,
+      ran: result.ran,
+      outcome: result.summary,
+      detail: result.detail ?? null,
+      tool: call.tool,
+      args: call.args,
+      durationMs: result.durationMs,
+      failed: !result.ran,
+    });
+    settledCount++;
+  }
+
+  return settledCount;
+}

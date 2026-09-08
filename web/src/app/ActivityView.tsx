@@ -25,6 +25,11 @@ const PROSE = {
   color: "var(--text-2)",
   textWrap: "pretty",
   maxWidth: "var(--measure)",
+  // Prose breaks on spaces and needs nothing else. An account that turns out to
+  // hold a long id or url has no space to break on, and without this it draws
+  // straight through the measure and out of a frame that clips rather than
+  // scrolls. Invisible for anything actually written as prose.
+  overflowWrap: "anywhere",
 } as const;
 
 /* An action that resolves a decision reads as a button; one that is a plain

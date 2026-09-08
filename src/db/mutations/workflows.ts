@@ -513,6 +513,17 @@ export function settleDeferredWrite(
     ran: boolean;
     /** What happened, in one sentence. Null when they simply declined. */
     outcome: string | null;
+    /** What the call returned, or why it failed. It is NOT the title: a feed
+     *  title is one prose line beside a badge and a time, and a payload put
+     *  there has nowhere to wrap. It goes on the record as a run step, which is
+     *  where every other tool call in this product already lives. */
+    detail?: string | null;
+    /** The call that was made, so the step can name it. */
+    tool?: string | null;
+    args?: unknown;
+    /** How long it took. Absent when it never ran, which the step says in its
+     *  state rather than by claiming a duration of zero. */
+    durationMs?: number;
     failed?: boolean;
   },
   now: Date = new Date(),
@@ -555,6 +566,13 @@ export function settleDeferredWrite(
     // The feed entry stops asking. It stays in the feed rather than being
     // dismissed, because what the agent wanted and what you said about it is
     // the record, and a feed that deletes its own history answers nothing.
+    const [entry] = t
+      .select({ id: s.activityItems.id, runId: s.activityItems.runId })
+      .from(s.activityItems)
+      .where(eq(s.activityItems.decisionId, settlement.decisionId))
+      .limit(1)
+      .all();
+
     t.update(s.activityItems)
       .set({
         state: settlement.failed ? "failed" : settlement.ran ? "done" : "idle",
@@ -564,6 +582,61 @@ export function settleDeferredWrite(
       })
       .where(eq(s.activityItems.decisionId, settlement.decisionId))
       .run();
+
+    // The call goes on the record as a run step, which is what a tool call is
+    // in this product: the feed draws it in its mono strip, and the workflow's
+    // Trace and Executions read the same row. `detail` is the ONE-LINE mono
+    // aside the strip shows — the payload itself stays in `toolResult`, which
+    // is read where there is room for it. Nothing about a serialised result
+    // belongs in prose, and this is the seam that keeps it out.
+    if (entry?.runId && settlement.tool) {
+      const stepId = ulid(now.getTime());
+      const [last] = t
+        .select({ ordinal: s.runSteps.ordinal })
+        .from(s.runSteps)
+        .where(eq(s.runSteps.runId, entry.runId))
+        .orderBy(desc(s.runSteps.ordinal))
+        .limit(1)
+        .all();
+
+      t.insert(s.entities).values({ id: stepId, kind: "run_step", createdAt: now, updatedAt: now }).run();
+      t.insert(s.runSteps)
+        .values({
+          id: stepId,
+          runId: entry.runId,
+          parentId: null,
+          ordinal: (last?.ordinal ?? -1) + 1,
+          depth: 0,
+          name: settlement.tool,
+          detail: argumentLine(settlement.args),
+          // The step is the record of a write you authorised after the run had
+          // already finished, so it says so rather than looking like something
+          // the run did on its own.
+          note: "deferred, then answered by you",
+          state: settlement.failed ? "failed" : settlement.ran ? "ok" : "skipped",
+          isTool: true,
+          toolName: settlement.tool,
+          toolArgs: (settlement.args ?? {}) as Record<string, unknown>,
+          toolResult: settlement.detail ?? null,
+          startedAt: new Date(now.getTime() - (settlement.durationMs ?? 0)),
+          endedAt: now,
+          durationMs: settlement.durationMs ?? null,
+        })
+        .run();
+
+      // The strip is drawn only when the agent wrote a line for it — see
+      // ../queries/home.ts — so a run whose calls are worth seeing has to say
+      // how many there are.
+      const total = t
+        .select({ id: s.runSteps.id })
+        .from(s.runSteps)
+        .where(and(eq(s.runSteps.runId, entry.runId), eq(s.runSteps.isTool, true)))
+        .all().length;
+      t.update(s.activityItems)
+        .set({ toolSummary: `${total} tool call${total === 1 ? "" : "s"} · ${settlement.tool}` })
+        .where(eq(s.activityItems.id, entry.id))
+        .run();
+    }
 
     touch(t, settlement.decisionId, now);
   });
@@ -631,6 +704,18 @@ export function readDeferredWrite(
   const effect = row.effect as { tool?: unknown; args?: unknown };
   if (typeof effect.tool !== "string") return undefined;
   return { decisionId: row.decisionId, runId: row.runId, tool: effect.tool, args: effect.args, approves: true, open };
+}
+
+/** The trace's one-line aside — `id=memories/dominique, type=Person` — and
+ *  never a wall of text. The same rule as ../../workflows/runner.ts's
+ *  `summarise`: this line sits in a mono strip beside a title, so it is capped
+ *  per value and again as a whole. */
+function argumentLine(args: unknown): string | null {
+  const line = argumentPairs(args)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(", ");
+  if (!line) return null;
+  return line.length > 120 ? `${line.slice(0, 119)}…` : line;
 }
 
 /** The arguments as `[label, value]` lines, capped the way an approval's are —

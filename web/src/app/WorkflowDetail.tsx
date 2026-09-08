@@ -15,6 +15,7 @@ import {
   type TraceNode,
 } from "../kit";
 import { WorkflowRunForm } from "./WorkflowRunForm";
+import { WorkflowPermissions } from "./WorkflowPermissions";
 import { useRunLogs } from "./api";
 import type { HomeAction, WorkflowDetailPayload, WorkflowExecution, WorkflowLogLine, WorkflowTraceNode } from "./api";
 
@@ -53,6 +54,8 @@ export interface WorkflowEdits {
   onStop: () => void;
   /** Replace the standing rule. Empty text retires it without a successor. */
   onInstructions: (text: string) => void;
+  /** Set permission mode for a write capability. */
+  onPermission: (capability: string, mode: "allow" | "ask" | "deny") => void;
 }
 
 const TABS = ["Summary", "Executions", "Trace", "Logs"] as const;
@@ -342,7 +345,12 @@ function SummaryPane({
 
         {workflow.gate ? (
           <Panel tone="alert" style={{ maxWidth: 560 }}>
-            <span style={{ font: "var(--text-title)", color: "var(--text-1)" }}>{workflow.gate.title}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ font: "var(--text-title)", color: "var(--text-1)" }}>{workflow.gate.title}</span>
+              {workflow.gate.pendingCount && workflow.gate.pendingCount > 1 ? (
+                <Badge tone="attention">{`${workflow.gate.pendingCount} waiting`}</Badge>
+              ) : null}
+            </div>
             {workflow.gate.body ? <span style={{ font: "var(--text-body)", color: "var(--text-2)" }}>{workflow.gate.body}</span> : null}
             <div style={{ display: "flex", gap: "var(--sp-3)", paddingTop: "var(--sp-2)" }}>
               {workflow.gate.actions.map((action) => (
@@ -367,6 +375,7 @@ function SummaryPane({
             ))}
           </div>
         </div>
+        <WorkflowPermissions permissions={workflow.permissions} busy={edits.busy} onChange={edits.onPermission} />
         <Instructions
           key={workflow.instructions ?? ""}
           text={workflow.instructions}

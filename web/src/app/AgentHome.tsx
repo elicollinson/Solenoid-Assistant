@@ -33,6 +33,7 @@ import {
   pauseWorkflow,
   runWorkflow,
   saveInstructions,
+  saveWorkflowPermission,
   stopWorkflow,
   useWorkflow,
   useWorkflows,
@@ -122,8 +123,9 @@ function DesktopHome() {
   const [writeError, setWriteError] = useState<string | null>(null);
   const [remindersCleared, setRemindersCleared] = useState(0);
   const [recommendationsCleared, setRecommendationsCleared] = useState(0);
+  const [homeNonce, setHomeNonce] = useState(0);
 
-  const home = useHome();
+  const home = useHome("desktop", homeNonce);
 
   const invoke = (action: HomeAction) => {
     const effect = action.effect as { view?: string; id?: string; tab?: string } | null;
@@ -131,14 +133,14 @@ function DesktopHome() {
       setRoute({ view: effect.view, slug: effect.id, tab: effect.tab });
       return;
     }
-    const decisionId = home.status === "ready" ? pendingDecisionFor(home.data, action.id) : null;
+    const decisionId = action.decisionId ?? (home.status === "ready" ? pendingDecisionFor(home.data, action.id) : null);
 
     // A `tool_call` is the one button on this page that DOES something rather
     // than closing a question: a workflow deferred a write because its
     // permission said a person decides, and this is that write being made. It
     // goes to the server and waits, where everything else settles locally.
     if (action.effectKind === "tool_call" || action.effectKind === "resolve") {
-      if (decisionId && home.status === "ready" && isDeferredWrite(home.data, action.id)) {
+      if (decisionId && (action.effectKind === "tool_call" || (home.status === "ready" && isDeferredWrite(home.data, action.id)))) {
         answerDeferred(action.id, decisionId);
         return;
       }
@@ -193,7 +195,10 @@ function DesktopHome() {
     setWriteError(null);
     setPendingWrite(actionId);
     writeDeferred(actionId)
-      .then(() => setResolved((current) => new Set(current).add(decisionId)))
+      .then(() => {
+        setResolved((current) => new Set(current).add(decisionId));
+        setHomeNonce((n) => n + 1);
+      })
       .catch((error: unknown) => {
         setWriteError(error instanceof Error ? error.message : String(error));
       })
@@ -581,6 +586,9 @@ function One({
     error: writes.error,
     onStop: () => writes.run(() => stopWorkflow(slug)),
     onInstructions: (text) => writes.run(() => saveInstructions(slug, text)),
+    onPermission: (capability, mode) => {
+      writes.run(() => saveWorkflowPermission(slug, capability, mode));
+    },
   };
 
   return (
@@ -594,7 +602,10 @@ function One({
       paused={workflow.data.paused}
       onTogglePause={() => writes.run(() => pauseWorkflow(slug, !workflow.data.paused))}
       onBack={() => setRoute({ view: "Workflows" })}
-      onInvoke={onInvoke}
+      onInvoke={(action) => {
+        onInvoke(action);
+        writes.reread();
+      }}
       trigger={trigger}
       edits={edits}
       askOnOpen={route.ask === true}

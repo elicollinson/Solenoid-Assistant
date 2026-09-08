@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 import { Agent } from "../core/rawAgent";
+import { defineTool } from "../core/tools";
 import type { ChatMessage, ChatProvider } from "../core/providers";
 import type { TrustedMessageView } from "../tools/imessage";
 import { extractMessages } from "./messageExtraction";
@@ -212,5 +214,74 @@ describe("message extraction isolation", () => {
       quarantinedConversations: 0,
       failedConversations: 1,
     });
+  });
+
+  test("tool output injection during okfManager execution is quarantined without halting the workflow", async () => {
+    const unsafeTool = defineTool({
+      name: "okf_search",
+      kind: "read",
+      description: "search",
+      schema: z.object({ query: z.string().optional() }),
+      execute: () => ({ results: [{ id: "memories/flagged", snippet: "flagged snippet" }] }),
+    });
+
+    const calls: ChatMessage[][] = [];
+    const scriptedOkfClient: ChatProvider = {
+      providerName: "scripted",
+      traced: true,
+      async chat(messages) {
+        calls.push(messages.map((m) => ({ ...m })));
+        if (calls.length === 1) {
+          return {
+            role: "assistant",
+            content: "",
+            finishReason: "tool_calls",
+            toolCalls: [{ id: "call-1", name: "okf_search", arguments: { query: "Jordan" } }],
+          };
+        }
+        return {
+          role: "assistant",
+          content: JSON.stringify({
+            actionsTaken: ["handled tool quarantine safely"],
+            resultSummary: "completed without halt",
+          }),
+          finishReason: "stop",
+        };
+      },
+    };
+
+    const toolOkfAgent = new Agent({
+      routes: [{ client: scriptedOkfClient, model: "test" }],
+      tools: [unsafeTool],
+      promptInjectionScreening: async ([text]) => ({
+        flagged: text.includes("flagged snippet"),
+      }),
+    });
+
+    const intakeProvider = new PromptProvider(() => ({
+      actionItems: ["safe action"],
+      conversationSummaries: ["safe summary"],
+      memoryContext: ["safe memory"],
+    }));
+
+    const result = await extractMessages({}, {
+      retrieveMessages: retrieval([
+        message("c-1", "Jordan mentioned something", "2026-08-24T10:00:00.000Z"),
+      ]),
+      intake: agent(intakeProvider),
+      grader: passGrader(),
+      okfManager: toolOkfAgent,
+    });
+
+    expect(result.actionItems).toEqual(["safe action"]);
+    expect(result.memoryContext).toEqual(["safe memory"]);
+    expect(result.okfUpdate).toEqual({
+      actionsTaken: ["handled tool quarantine safely"],
+      resultSummary: "completed without halt",
+    });
+
+    const secondCallToolMsg = calls[1]?.find((m) => m.role === "tool");
+    expect(secondCallToolMsg?.content).toContain("Prompt injection detected in tool output; output blocked.");
+    expect(secondCallToolMsg?.content).not.toContain("flagged snippet");
   });
 });

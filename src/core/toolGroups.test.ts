@@ -355,8 +355,27 @@ describe("Agent with tool groups", () => {
     const briefing = await invoke("get_widgets_tools", {}, undefined, session);
     expect(briefing.ok).toBe(true);
     expect(briefing.output).toContain("# Widgets");
-    // An ordinary result has no such licence, whatever tool produced it.
-    await expect(invoke("widgets_list", {}, undefined, session)).rejects.toBeInstanceOf(
+    // An ordinary result has no such licence, whatever tool produced it — it is screened and quarantined.
+    const listResult = await invoke("widgets_list", {}, undefined, session);
+    expect(listResult.ok).toBe(false);
+    expect(listResult.output).toContain("Prompt injection detected in tool output; output blocked.");
+
+    // When explicitly configured to abort, it rejects with PromptInjectionDetectedError.
+    const abortingAgent = new Agent({
+      routes: routes(new ScriptedProvider([])),
+      toolGroups: [widgets()],
+      promptInjectionScreening: flagEverything,
+      onToolOutputInjection: "abort",
+    });
+    const abortInvoke = (abortingAgent as unknown as {
+      invokeTool: (
+        n: string,
+        a: unknown,
+        s?: AbortSignal,
+        sess?: unknown,
+      ) => Promise<{ ok: boolean; output: string }>;
+    }).invokeTool.bind(abortingAgent);
+    await expect(abortInvoke("widgets_list", {}, undefined, session)).rejects.toBeInstanceOf(
       PromptInjectionDetectedError,
     );
   });

@@ -239,6 +239,14 @@ export interface AgentOptions {
    * is to classify prompt-injection examples.
    */
   promptInjectionScreening?: boolean | PromptInjectionScreener;
+  /**
+   * Action to take when prompt injection is detected in a tool's output.
+   * - "quarantine" (default): Withhold the output, record the quarantine on the span,
+   *   and return a failed ToolOutcome to the model so the agent can self-correct
+   *   or skip without halting the run.
+   * - "abort": Throw PromptInjectionDetectedError, aborting the agent run.
+   */
+  onToolOutputInjection?: "quarantine" | "abort";
 }
 
 export class Agent {
@@ -255,6 +263,7 @@ export class Agent {
   protected readonly timeoutMs: number;
   protected readonly name: string;
   private readonly promptInjectionScreener?: PromptInjectionScreener;
+  private readonly onToolOutputInjection: "quarantine" | "abort";
 
   constructor(opts: AgentOptions) {
     if (!opts.routes.length) {
@@ -283,6 +292,7 @@ export class Agent {
       : typeof opts.promptInjectionScreening === "function"
         ? opts.promptInjectionScreening
         : inspectPromptInjection;
+    this.onToolOutputInjection = opts.onToolOutputInjection ?? "quarantine";
     if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0) {
       throw new Error("timeoutMs must be a positive finite number");
     }
@@ -1035,11 +1045,27 @@ export class Agent {
           });
           return { ok: true, output };
         } catch (err) {
-          if (
-            isPromptInjectionDetectedError(err) ||
-            isPromptInjectionScreeningError(err)
-          ) {
+          if (isPromptInjectionScreeningError(err)) {
             throw err;
+          }
+          if (isPromptInjectionDetectedError(err)) {
+            if (this.onToolOutputInjection === "abort") {
+              throw err;
+            }
+            span.recordException(err);
+            span.setStatus({
+              code: SpanStatusCode.ERROR,
+              description: err.message,
+            });
+            span.setAttributes({
+              "tool.quarantined": true,
+              "tool.quarantine_boundary": err.boundary,
+            });
+            log.warn("[tool] output quarantined due to prompt injection", {
+              tool: name,
+              boundary: err.boundary,
+            });
+            return failed("Prompt injection detected in tool output; output blocked.");
           }
           span.recordException(err instanceof Error ? err : new Error(String(err)));
           span.setStatus({ code: SpanStatusCode.ERROR });

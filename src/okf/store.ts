@@ -568,6 +568,12 @@ function assertUnguarded(extra: Record<string, unknown> | undefined): Record<str
 function makeSnippet(body: string, index: number, length: number): string {
   const start = Math.max(0, index - 60);
   const end = Math.min(body.length, index + length + 60);
-  const slice = body.slice(start, end).replace(/\s+/g, " ").trim();
+  const slice = body
+    .slice(start, end)
+    .replace(/^#+\s*/gm, "")
+    .replace(/#+\s*$/g, "")
+    .replace(/\*{1,3}|_{1,3}|`{1,3}/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
   return `${start > 0 ? "…" : ""}${slice}${end < body.length ? "…" : ""}`;
 }

@@ -302,6 +302,7 @@ describe("prompt-injection screening", () => {
     const toolAgent = new Agent({
       routes: routes(toolClient),
       tools: [tool],
+      onToolOutputInjection: "abort",
       promptInjectionScreening: async ([text]) => ({
         flagged: text === "unsafe tool result",
       }),
@@ -322,6 +323,39 @@ describe("prompt-injection screening", () => {
     });
     const reviewError = await reviewAgent.run("benign").catch((caught) => caught);
     expect((reviewError as PromptInjectionDetectedError).boundary).toBe("reviewer_output");
+  });
+
+  test("tool output prompt injection is quarantined by default, feeding error to model without halting", async () => {
+    const tool = defineTool({
+      name: "external",
+      kind: "read",
+      description: "external data",
+      schema: z.object({}),
+      execute: () => "unsafe tool result",
+    });
+    const toolClient = new ScriptedProvider([
+      {
+        finishReason: "tool_calls",
+        toolCalls: [{ id: "tool-1", name: "external", arguments: {} }],
+      },
+      {
+        content: "Tool was blocked safely.",
+      },
+    ]);
+    const toolAgent = new Agent({
+      routes: routes(toolClient),
+      tools: [tool],
+      promptInjectionScreening: async ([text]) => ({
+        flagged: text === "unsafe tool result",
+      }),
+    });
+    const result = await toolAgent.run("benign");
+    expect(result).toBe("Tool was blocked safely.");
+
+    const secondTurnMessages = toolClient.calls[1]!;
+    const toolMessage = secondTurnMessages.find((m) => m.role === "tool");
+    expect(toolMessage?.content).toContain("Prompt injection detected in tool output; output blocked.");
+    expect(toolMessage?.content).not.toContain("unsafe tool result");
   });
 
   test("scanner failure is typed, safe, and terminal", async () => {

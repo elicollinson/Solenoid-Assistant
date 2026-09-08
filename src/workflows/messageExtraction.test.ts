@@ -369,7 +369,7 @@ describe("message extraction chunks", () => {
       })),
     });
     expect(writes).toEqual([
-      ["message-0-0", "message-1-0"], ["message-2-0"], ["message-3-0"], ["message-4-0"],
+      ["message-0-0", "message-1-0"], [], ["message-2-0"], ["message-3-0"], ["message-4-0"],
     ]);
     expect(seen).toEqual(sizes.map((size, conversation) =>
       Array.from({ length: size }, (_, index) => `message-${conversation}-${index}`)
@@ -399,5 +399,89 @@ describe("message extraction chunks", () => {
     expect(provider.prompts).toHaveLength(0);
     expect(result).toEqual({ actionItems: [], conversationSummaries: [], memoryContext: [], okfUpdate: "none",
       screening: { processedConversations: 0, quarantinedConversations: 0, failedConversations: 0 } });
+  });
+});
+
+
+describe("message memory write isolation", () => {
+  test("a model-output detection stops only its conversation and later writes and batches remain sequential", async () => {
+    const messages = [25, 25, 50].flatMap((size, conversation) =>
+      Array.from({ length: size }, (_, index) => message(`chat-${conversation}`, `source-${conversation}-${index}`, "2026-08-01T00:00:00.000Z"))
+    );
+    const intake = new PromptProvider((prompt) => {
+      const source = prompt.match(/source-(\d+)-/)![1];
+      return { actionItems: [], conversationSummaries: [`summary-${source}`], memoryContext: [`memory-${source}`] };
+    });
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const writes = new PromptProvider(async (prompt) => {
+      if (prompt.includes("memory-0")) return { actionsTaken: ["blocked-output"], resultSummary: "blocked-output" };
+      if (prompt.includes("memory-1")) { entered(); await blocked; }
+      return { actionsTaken: [prompt.includes("memory-1") ? "write-1" : "write-2"], resultSummary: "safe" };
+    });
+    const pending = extractMessages({}, {
+      retrieveMessages: retrieval(messages), intake: agent(intake), grader: passGrader(),
+      okfManager: agent(writes, async (parts) => ({ flagged: parts.some((part) => part.includes("blocked-output")) })),
+    });
+    try {
+      await started;
+      expect(intake.prompts).toHaveLength(2);
+      expect(writes.prompts).toHaveLength(2);
+    } finally { release(); }
+    const result = await pending;
+    expect(writes.prompts).toHaveLength(3);
+    for (const [index, prompt] of writes.prompts.entries()) {
+      expect(prompt).toContain(`memory-${index}`);
+      for (let other = 0; other < 3; other++) if (other !== index) expect(prompt).not.toContain(`memory-${other}`);
+    }
+    expect(result.okfUpdate).toEqual({ actionsTaken: ["write-1", "write-2"], resultSummary: "safe\nsafe" });
+    expect(result.screening.quarantinedMemoryUpdates).toBe(1);
+    expect(result.memoryContext).toEqual(["memory-1", "memory-2"]);
+    expect(result.conversationSummaries).toEqual(["summary-0", "summary-1", "summary-2"]);
+  });
+
+  test("a late model-output detection does not retry an already completed tool write", async () => {
+    let toolWrites = 0;
+    const writeTool = defineTool({
+      name: "record_memory", kind: "write", description: "record memory",
+      schema: z.object({}), execute: () => { toolWrites++; return { ok: true }; },
+    });
+    const provider: ChatProvider = {
+      providerName: "late-detection", traced: true,
+      async chat(messages) {
+        const input = messages.find((m) => m.role === "user")?.content ?? "";
+        if (input.includes("late-memory")) {
+          if (!messages.some((m) => m.role === "tool")) return {
+            role: "assistant", content: "", finishReason: "tool_calls",
+            toolCalls: [{ id: "write-once", name: "record_memory", arguments: {} }],
+          };
+          return { role: "assistant", content: JSON.stringify({ actionsTaken: ["blocked-output"], resultSummary: "blocked-output" }), finishReason: "stop" };
+        }
+        return { role: "assistant", content: JSON.stringify({ actionsTaken: ["safe update"], resultSummary: "safe" }), finishReason: "stop" };
+      },
+    };
+    const result = await extractMessages({}, {
+      retrieveMessages: retrieval([message("late", "late-source", "2026-08-01T00:00:00.000Z"), message("safe", "safe-source", "2026-08-01T00:01:00.000Z")]),
+      intake: agent(new PromptProvider((prompt) => ({ actionItems: [], conversationSummaries: [], memoryContext: [prompt.includes("late-source") ? "late-memory" : "safe-memory"] }))),
+      grader: passGrader(),
+      okfManager: new Agent({ routes: [{ client: provider, model: "test" }], tools: [writeTool],
+        promptInjectionScreening: async (parts) => ({ flagged: parts.some((part) => part.includes("blocked-output")) }),
+      }),
+    });
+    expect(toolWrites).toBe(1);
+    expect(result.screening.quarantinedMemoryUpdates).toBe(1);
+    expect(result.okfUpdate).toEqual({ actionsTaken: ["safe update"], resultSummary: "safe" });
+  });
+
+  test("a writer scanner outage still halts instead of being treated as a detection", async () => {
+    const intake = new PromptProvider(() => ({ actionItems: [], conversationSummaries: [], memoryContext: ["memory"] }));
+    const messages = Array.from({ length: 100 }, (_, index) => message(`chat-${Math.floor(index / 50)}`, "body", "2026-08-01T00:00:00.000Z"));
+    await expect(extractMessages({}, {
+      retrieveMessages: retrieval(messages), intake: agent(intake), grader: passGrader(),
+      okfManager: agent(new PromptProvider(() => ({ actionsTaken: [], resultSummary: "unused" })), async () => { throw new Error("scanner unavailable"); }),
+    })).rejects.toThrow("Prompt injection screening failed");
+    expect(intake.prompts).toHaveLength(1);
   });
 });

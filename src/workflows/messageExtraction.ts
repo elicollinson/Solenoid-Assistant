@@ -1,4 +1,4 @@
-import { Agent } from "../core/rawAgent";
+import { Agent, isPromptInjectionDetectedError } from "../core/rawAgent";
 import { createModelRoutes } from "../core/providerFactory";
 import { loadRuntimeConfig } from "../core/config";
 import { log } from "../core/logger";
@@ -42,6 +42,7 @@ export interface MessageExtractionResult extends Omit<ImessageIntakeResult, "mem
     processedConversations: number;
     quarantinedConversations: number;
     failedConversations: number;
+    quarantinedMemoryUpdates?: number;
   };
 }
 
@@ -115,6 +116,9 @@ export async function extractMessages(
     for (const key of ["processedConversations", "quarantinedConversations", "failedConversations"] as const) {
       result.screening[key] += chunk.screening[key];
     }
+    if (chunk.screening.quarantinedMemoryUpdates) {
+      result.screening.quarantinedMemoryUpdates = (result.screening.quarantinedMemoryUpdates ?? 0) + chunk.screening.quarantinedMemoryUpdates;
+    }
     if (chunk.okfUpdate !== "none") {
       if (result.okfUpdate === "none") result.okfUpdate = chunk.okfUpdate;
       else {
@@ -185,22 +189,41 @@ async function extractMessageChunk(
     });
   }
 
-  const memoryContext = extracted.memoryContext.filter((_, index) => {
-    const result = graded.results[index];
-    if (result?.status !== "fulfilled") return false;
-    const { memoryRelevance, memoryActionability } = result.value;
-    return (memoryRelevance + memoryActionability) / 2 > MEMORY_PASS_THRESHOLD;
-  });
+  const memoryContext: string[] = [];
 
-  const okfUpdate =
-    memoryContext.length === 0
-      ? "none"
-      : await (dependencies.okfManager ?? okfManagerAgent).run(
-          `Update the okf with these memories:\n${memoryContext
-            .map((memory) => `- ${memory}`)
-            .join("\n")}`,
-          okfManagerResultSchema,
-        );
+  // Keep source provenance through the write stage. Never combine conversations
+  // in a writer invocation, or a detection cannot be contained to its source.
+  let okfUpdate: OkfManagerResult | "none" = "none";
+  let quarantinedMemoryUpdates = 0;
+  let memoryOffset = 0;
+  for (const conversation of successful) {
+    const memories = conversation.memoryContext.filter((_, index) => {
+      const grade = graded.results[memoryOffset + index];
+      if (grade?.status !== "fulfilled") return false;
+      return (grade.value.memoryRelevance + grade.value.memoryActionability) / 2 > MEMORY_PASS_THRESHOLD;
+    });
+    memoryOffset += conversation.memoryContext.length;
+    if (memories.length === 0) continue;
+    try {
+      // Await every writer: separate conversations may update the same OKF entry.
+      const update = await (dependencies.okfManager ?? okfManagerAgent).run(
+        `Update the okf with these memories:\n${memories.map((memory) => `- ${memory}`).join("\n")}`,
+        okfManagerResultSchema,
+      );
+      memoryContext.push(...memories);
+      if (okfUpdate === "none") okfUpdate = update;
+      else {
+        okfUpdate.actionsTaken.push(...update.actionsTaken);
+        okfUpdate.resultSummary += "\n" + update.resultSummary;
+      }
+    } catch (error) {
+      // A detection ends only this invocation. Scanner outages and ordinary
+      // write failures still halt; retrying writes here could duplicate effects.
+      if (!isPromptInjectionDetectedError(error)) throw error;
+      quarantinedMemoryUpdates++;
+      log.warn("messageExtraction: conversation memory update quarantined", { boundary: error.boundary });
+    }
+  }
 
   return {
     ...extracted,
@@ -210,6 +233,7 @@ async function extractMessageChunk(
       processedConversations: extraction.completed,
       quarantinedConversations: extraction.quarantined,
       failedConversations: extraction.failed,
+      ...(quarantinedMemoryUpdates ? { quarantinedMemoryUpdates } : {}),
     },
   };
 }

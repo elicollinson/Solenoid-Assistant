@@ -2,10 +2,6 @@
 #
 # Solenoid Assistant — one image, three entrypoints (migrate, server, worker).
 #
-# Debian-based rather than Alpine on purpose: onnxruntime-node ships prebuilt
-# glibc .so files (bin/napi-v6/linux/{arm64,x64}) and there is no musl build,
-# so Prompt Guard would not load at all on Alpine.
-#
 # Build context is the repo root:
 #   docker build -f deploy/Dockerfile -t solenoid-assistant:local .
 
@@ -16,7 +12,7 @@ ARG VERSION=dev
 FROM oven/bun:${BUN_VERSION}-slim AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
-# Native postinstalls (onnxruntime-node, protobufjs) run here, against Linux,
+# Native postinstalls (protobufjs) run here, against Linux,
 # which is the whole reason node_modules is never copied from the host.
 RUN bun install --frozen-lockfile
 

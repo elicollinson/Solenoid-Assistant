@@ -103,8 +103,7 @@ The seed is anchored to the day it runs. Useful stable records include:
   workflows are demonstrations and correctly have Run disabled.
 
 For Chat or a real workflow run, also configure the model route in `.env` and
-install Prompt Guard with `bun run setup:prompt-guard --accept-license` after
-reviewing its license. Use read-only prompts and the disposable database unless
+verify Model Armor with `bun run verify:model-armor`. Use read-only prompts and the disposable database unless
 the individual case explicitly requires a write.
 
 Optional native/integration cases have additional prerequisites in

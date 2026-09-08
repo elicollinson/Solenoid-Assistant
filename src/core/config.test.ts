@@ -33,12 +33,11 @@ describe("loadRuntimeConfig", () => {
     expect(config.openrouter.baseUrl).toBe("https://openrouter.ai/api/v1");
     expect(config.openrouter.model).toBe("google/gemma-4-31b-it");
     expect(config.openrouter.apiKey).toBeUndefined();
-    expect(config.promptGuard).toEqual({
-      modelPath: "models/prompt-guard-2-86m",
-      device: "cpu",
-      threshold: 0.5,
-      batchSize: 16,
-      chunkOverlap: 32,
+    expect(config.modelArmor).toEqual({
+      enabled: true,
+      projectId: undefined,
+      location: "us-central1",
+      templateId: "base-detector",
     });
     expect(config.modelRoutes).toEqual([{
       provider: "ollama",
@@ -54,9 +53,23 @@ describe("loadRuntimeConfig", () => {
       .toBeUndefined();
     expect(() => loadRuntimeConfig({ PORT: "70000" })).toThrow();
     expect(() => loadRuntimeConfig({ LLM_PROVIDER: "unknown" })).toThrow();
-    expect(() => loadRuntimeConfig({ PROMPT_GUARD_THRESHOLD: "1.1" })).toThrow();
-    expect(() => loadRuntimeConfig({ PROMPT_GUARD_BATCH_SIZE: "0" })).toThrow();
-    expect(() => loadRuntimeConfig({ PROMPT_GUARD_DEVICE: "coreml" })).toThrow();
+
+    const maConfig = loadRuntimeConfig({
+      MODEL_ARMOR_ENABLED: "false",
+      MODEL_ARMOR_PROJECT_ID: "my-gcp-proj",
+      MODEL_ARMOR_LOCATION: "europe-west1",
+      MODEL_ARMOR_TEMPLATE_ID: "custom-template",
+      MODEL_ARMOR_API_KEY: "my-api-key",
+      MODEL_ARMOR_API_ENDPOINT: "https://custom.endpoint",
+    });
+    expect(maConfig.modelArmor).toEqual({
+      enabled: false,
+      projectId: "my-gcp-proj",
+      location: "europe-west1",
+      templateId: "custom-template",
+      apiKey: "my-api-key",
+      apiEndpoint: "https://custom.endpoint",
+    });
   });
 
   test("loads an ordered, non-empty model route chain", () => {

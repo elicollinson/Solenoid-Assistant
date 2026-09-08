@@ -29,7 +29,8 @@ import type { Reviewer, ReviewResult } from "./reviewer";
 import {
   inspectPromptInjection,
   type PromptTextParts,
-} from "../safety/promptGuard";
+} from "../safety/modelArmor";
+import { loadRuntimeConfig } from "./config";
 import { authoredText } from "../safety/authoredText";
 import { actionFor, DEFAULT_ORIGIN, type ScreenAction, type TextOrigin } from "../safety/trust";
 
@@ -162,6 +163,10 @@ export interface PromptInjectionScreeningResult {
   score?: number;
   chunkCount?: number;
   maliciousChunkIndex?: number | null;
+  filterMatchState?: string;
+  invocationResult?: string;
+  confidenceLevel?: string;
+  filterResults?: Record<string, unknown>;
 }
 
 export type PromptInjectionScreener = (
@@ -287,11 +292,13 @@ export class Agent {
     this.think = opts.think ?? true;
     this.thinkOnStructured = opts.thinkOnStructured ?? true;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
-    this.promptInjectionScreener = opts.promptInjectionScreening === false
-      ? undefined
-      : typeof opts.promptInjectionScreening === "function"
-        ? opts.promptInjectionScreening
-        : inspectPromptInjection;
+    const config = loadRuntimeConfig();
+    this.promptInjectionScreener =
+      opts.promptInjectionScreening === false || config.modelArmor.enabled === false
+        ? undefined
+        : typeof opts.promptInjectionScreening === "function"
+          ? opts.promptInjectionScreening
+          : inspectPromptInjection;
     this.onToolOutputInjection = opts.onToolOutputInjection ?? "quarantine";
     if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0) {
       throw new Error("timeoutMs must be a positive finite number");
@@ -1102,7 +1109,7 @@ export class Agent {
     // so there is no model call, no span, and nothing that can throw.
     if (redacted.every((part) => !part.trim())) return;
 
-    // PromptGuardScanner joins parts with a newline before tokenization. Keep
+    // ModelArmor joins parts with a newline before sending to Google Cloud Model Armor. Keep
     // that exact, untruncated string as the primary span input; input_parts
     // additionally preserves the original boundaries for trace debugging.
     const inputValue = redacted.join("\n");
@@ -1112,7 +1119,7 @@ export class Agent {
       {
         [SemanticConventions.INPUT_VALUE]: inputValue,
         [SemanticConventions.INPUT_MIME_TYPE]: "text/plain",
-        "metadata.guardrail_type": "prompt_injection_detection",
+        "metadata.guardrail_type": "google_cloud_model_armor",
         "metadata.boundary": boundary,
         "metadata.action_on_flag": action,
         "metadata.input_part_count": redacted.length,
@@ -1150,6 +1157,18 @@ export class Agent {
         }
         if (result.score !== undefined) {
           span.setAttribute("metadata.score", result.score);
+        }
+        if (result.filterMatchState !== undefined) {
+          span.setAttribute("metadata.filter_match_state", result.filterMatchState);
+        }
+        if (result.invocationResult !== undefined) {
+          span.setAttribute("metadata.invocation_result", result.invocationResult);
+        }
+        if (result.confidenceLevel !== undefined) {
+          span.setAttribute("metadata.confidence_level", result.confidenceLevel);
+        }
+        if (result.filterResults !== undefined) {
+          span.setAttribute("metadata.filter_results", safeJson(result.filterResults));
         }
         if (result.chunkCount !== undefined) {
           span.setAttribute("metadata.chunk_count", result.chunkCount);

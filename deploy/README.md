@@ -131,7 +131,7 @@ over `.env` under Bun, so the container-only overrides live in
 | `PHOENIX_COLLECTOR_ENDPOINT` | `http://localhost:6006` | `http://phoenix:6006` | Service DNS. |
 | `VICTORIALOGS_ENDPOINT` | `http://localhost:9428` | `http://victorialogs:9428` | Service DNS. Shipping is best-effort, so nothing waits on this being up. |
 | `LOG_FORMAT` | `auto` | `json` | No TTY in a container, so `auto` would choose JSON anyway. Said out loud because `docker compose logs` reads these too. |
-| `PROMPT_GUARD_MODEL_PATH` | `models/prompt-guard-2-86m` | `/app/models/prompt-guard-2-86m` | Absolute, since cwd is `/app`. |
+| `MODEL_ARMOR_TEMPLATE_ID` | `base-detector` | `base-detector` | Google Cloud Model Armor template name. |
 | `OPENAI_BASE_URL` | LAN IP or `localhost` | `http://host.docker.internal:1234/v1` **if LM Studio runs on this Mac** | A LAN IP needs no change. `localhost` does. |
 | `OLLAMA_API_URL` | `https://ollama.com` or `localhost:11434` | `http://host.docker.internal:11434` for a local Ollama | Same reason. |
 | `NOTION_MCP_REDIRECT_URI` | `http://localhost:3001/callback` | unchanged | Run `bun run auth:notion` **on the host**, not in the container — it opens a browser and binds :3001. The tokens land in the mounted `.env`. |
@@ -170,7 +170,7 @@ Take option 1.
 - **`bun run serve:tailscale`** — needs the `tailscale` CLI and the daemon's
   state. It proxies to `127.0.0.1:3000`, which is exactly where compose
   publishes. No change.
-- **`bun run auth:notion`**, `setup:prompt-guard`, `make:icons` — one-off
+- **`bun run auth:notion`**, `verify:model-armor`, `make:icons` — one-off
   developer commands; keep running them on the host against the same checkout.
 
 ---

@@ -4,7 +4,7 @@ import { configureLogging, flushLogs, log, shutdownLogging } from "./core/logger
 import { initTracing, shutdownTracing } from "./core/tracing";
 import { initNotionMcpCache, shutdownNotionMcpCache } from "./mcp/notionCache";
 import { installShutdownHandler } from "./core/shutdown";
-import { disposePromptGuard } from "./safety/promptGuard";
+import { disposeModelArmor } from "./safety/modelArmor";
 import { describeDrift } from "./workflows/sync";
 import { isRunnable } from "./workflows/runner";
 
@@ -61,7 +61,7 @@ log.info(`API docs at http://localhost:${app.server?.port}/openapi`);
 
 installShutdownHandler(async () => {
   await app.stop();
-  await disposePromptGuard();
+  await disposeModelArmor();
   await shutdownNotionMcpCache();
   await shutdownTracing();
   // Last, so it carries whatever the four lines above had to say.

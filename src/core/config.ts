@@ -37,22 +37,14 @@ const runtimeConfigSchema = z.object({
     (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
     z.enum(["native", "two-stage"]).optional(),
   ),
-  PROMPT_GUARD_MODEL_PATH: optionalEnvString.default(
-    "models/prompt-guard-2-86m",
-  ),
-  PROMPT_GUARD_DEVICE: z.enum(["cpu", "webgpu"]).default("cpu"),
-  PROMPT_GUARD_THRESHOLD: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.coerce.number().min(0).max(1).default(0.5),
-  ),
-  PROMPT_GUARD_BATCH_SIZE: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.coerce.number().int().min(1).max(128).default(16),
-  ),
-  PROMPT_GUARD_CHUNK_OVERLAP: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.coerce.number().int().min(0).max(509).default(32),
-  ),
+  MODEL_ARMOR_ENABLED: optionalEnvString.default("true"),
+  MODEL_ARMOR_PROJECT_ID: optionalEnvString,
+  MODEL_ARMOR_LOCATION: optionalEnvString.default("us-central1"),
+  MODEL_ARMOR_TEMPLATE_ID: optionalEnvString.default("base-detector"),
+  MODEL_ARMOR_API_KEY: optionalEnvString,
+  MODEL_ARMOR_API_ENDPOINT: optionalEnvString,
+  MODEL_ARMOR_CREDENTIALS_JSON: optionalEnvString,
+  MODEL_ARMOR_CREDENTIALS_BASE64: optionalEnvString,
   PHOENIX_TRACING_ENABLED: optionalEnvString.default("true"),
   PHOENIX_COLLECTOR_ENDPOINT: optionalEnvString.default("http://localhost:6006"),
   PHOENIX_PROJECT_NAME: optionalEnvString.default("solenoid-assistant"),
@@ -119,12 +111,15 @@ export interface RuntimeConfig {
     apiKey?: string;
     model: string;
   };
-  promptGuard: {
-    modelPath: string;
-    device: "cpu" | "webgpu";
-    threshold: number;
-    batchSize: number;
-    chunkOverlap: number;
+  modelArmor: {
+    enabled: boolean;
+    projectId?: string;
+    location: string;
+    templateId: string;
+    apiKey?: string;
+    apiEndpoint?: string;
+    credentialsJson?: string;
+    credentialsBase64?: string;
   };
   phoenix: {
     enabled: boolean;
@@ -267,12 +262,18 @@ export function loadRuntimeConfig(
       ...(parsed.OPENROUTER_API_KEY ? { apiKey: parsed.OPENROUTER_API_KEY } : {}),
       model: parsed.OPENROUTER_MODEL,
     },
-    promptGuard: {
-      modelPath: parsed.PROMPT_GUARD_MODEL_PATH,
-      device: parsed.PROMPT_GUARD_DEVICE,
-      threshold: parsed.PROMPT_GUARD_THRESHOLD,
-      batchSize: parsed.PROMPT_GUARD_BATCH_SIZE,
-      chunkOverlap: parsed.PROMPT_GUARD_CHUNK_OVERLAP,
+    modelArmor: {
+      enabled: parsed.MODEL_ARMOR_ENABLED !== "false",
+      projectId:
+        parsed.MODEL_ARMOR_PROJECT_ID ??
+        process.env.GOOGLE_CLOUD_PROJECT ??
+        process.env.GCP_PROJECT,
+      location: parsed.MODEL_ARMOR_LOCATION,
+      templateId: parsed.MODEL_ARMOR_TEMPLATE_ID,
+      ...(parsed.MODEL_ARMOR_API_KEY ? { apiKey: parsed.MODEL_ARMOR_API_KEY } : {}),
+      ...(parsed.MODEL_ARMOR_API_ENDPOINT ? { apiEndpoint: parsed.MODEL_ARMOR_API_ENDPOINT } : {}),
+      ...(parsed.MODEL_ARMOR_CREDENTIALS_JSON ? { credentialsJson: parsed.MODEL_ARMOR_CREDENTIALS_JSON } : {}),
+      ...(parsed.MODEL_ARMOR_CREDENTIALS_BASE64 ? { credentialsBase64: parsed.MODEL_ARMOR_CREDENTIALS_BASE64 } : {}),
     },
     phoenix: {
       enabled: parsed.PHOENIX_TRACING_ENABLED !== "false",

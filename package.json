@@ -12,8 +12,8 @@
     "eval:safety": "bun run scripts/eval-safety-classifier.ts",
     "eval:safety:expanded": "bun run scripts/eval-safety-classifier-expanded.ts",
     "eval:notinject": "bun run scripts/eval-pint-benchmark.ts",
-    "setup:prompt-guard": "bun run scripts/setup-prompt-guard.ts",
-    "smoke:prompt-guard": "bun run scripts/prompt-guard-smoke.ts",
+    "smoke:model-armor": "bun run scripts/model-armor-smoke.ts",
+    "verify:model-armor": "bun run scripts/verify-model-armor.ts",
     "auth:notion": "bun run scripts/notion-mcp-auth.ts",
     "connect:notion": "bun run scripts/notion-mcp-connect.ts",
     "connect:tavily": "bun run scripts/tavily-mcp-connect.ts",
@@ -54,13 +54,13 @@
     "@arizeai/phoenix-otel": "^1.2.0",
     "@elysiajs/openapi": "^1.4.15",
     "@google/genai": "^2.21.0",
-    "@huggingface/transformers": "4.2.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@opentelemetry/api": "^1.9.1",
     "croner": "^10.0.1",
     "dedent": "^1.7.2",
     "drizzle-orm": "^0.45.2",
     "elysia": "^1.4.29",
+    "google-auth-library": "^9.15.1",
     "oauth": "^0.10.2",
     "ollama": "^0.6.3",
     "openai": "^6.47.0",
@@ -70,7 +70,6 @@
     "zod": "^4.4.3"
   },
   "trustedDependencies": [
-    "onnxruntime-node",
     "protobufjs"
   ],
   "overrides": {

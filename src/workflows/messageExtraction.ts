@@ -58,7 +58,16 @@ export interface MessageExtractionDependencies {
 interface Conversation {
   id: string;
   messages: TrustedMessageView[];
+  priorChunkSummary?: string;
 }
+
+type ConversationOutcome = "processed" | "quarantined" | "failed";
+interface MessageExtractionChunkResult extends MessageExtractionResult {
+  conversationOutcomes: { id: string; outcome: ConversationOutcome }[];
+}
+
+const MAX_MESSAGES_PER_CHUNK = 50;
+const MAX_PRIOR_SUMMARY_CHARS = 2_000;
 
 function groupConversations(messages: TrustedMessageView[]): Conversation[] {
   const grouped = new Map<string, TrustedMessageView[]>();
@@ -73,20 +82,37 @@ function groupConversations(messages: TrustedMessageView[]): Conversation[] {
   }));
 }
 
-// Preserve conversation context even when a single conversation exceeds the target.
+// A chunk is the unit awaited by extractMessages. Split conversations first so
+// even one long thread can never turn the 50-message target into a soft limit.
 function* conversationBatches(conversations: Conversation[]): Generator<Conversation[]> {
   let batch: Conversation[] = [];
   let messageCount = 0;
   for (const conversation of conversations) {
-    if (batch.length > 0 && messageCount + conversation.messages.length > 50) {
-      yield batch;
-      batch = [];
-      messageCount = 0;
+    for (let offset = 0; offset < conversation.messages.length; offset += MAX_MESSAGES_PER_CHUNK) {
+      const messages = conversation.messages.slice(offset, offset + MAX_MESSAGES_PER_CHUNK);
+      if (batch.length > 0 && messageCount + messages.length > MAX_MESSAGES_PER_CHUNK) {
+        yield batch;
+        batch = [];
+        messageCount = 0;
+      }
+      batch.push({ id: conversation.id, messages });
+      messageCount += messages.length;
+      if (messageCount === MAX_MESSAGES_PER_CHUNK) {
+        yield batch;
+        batch = [];
+        messageCount = 0;
+      }
     }
-    batch.push(conversation);
-    messageCount += conversation.messages.length;
   }
   if (batch.length > 0) yield batch;
+}
+
+function boundedPriorSummary(summary: string | undefined): string | undefined {
+  if (!summary) return undefined;
+  if (summary.length <= MAX_PRIOR_SUMMARY_CHARS) return summary;
+  const marker = "\n[…summary bounded…]\n";
+  const half = Math.floor((MAX_PRIOR_SUMMARY_CHARS - marker.length) / 2);
+  return `${summary.slice(0, half)}${marker}${summary.slice(-(MAX_PRIOR_SUMMARY_CHARS - marker.length - half))}`;
 }
 
 export async function extractMessages(
@@ -106,15 +132,27 @@ export async function extractMessages(
       failedConversations: 0,
     },
   };
+  const priorSummaries = new Map<string, string>();
+  const conversationOutcomes = new Map<string, ConversationOutcome>();
   for (const conversations of conversationBatches(groupConversations(retrieved.messages))) {
     // Finish extraction, grading, and the OKF write before starting the next
     // chunk. Only the existing conversation/grading fanout within a chunk remains.
-    const chunk = await extractMessageChunk(conversations, dependencies);
+    const chunk = await extractMessageChunk(
+      conversations.map((conversation) => ({
+        ...conversation,
+        priorChunkSummary: boundedPriorSummary(priorSummaries.get(conversation.id)),
+      })),
+      dependencies,
+      priorSummaries,
+    );
     result.actionItems.push(...chunk.actionItems);
     result.conversationSummaries.push(...chunk.conversationSummaries);
     result.memoryContext.push(...chunk.memoryContext);
-    for (const key of ["processedConversations", "quarantinedConversations", "failedConversations"] as const) {
-      result.screening[key] += chunk.screening[key];
+    for (const { id, outcome } of chunk.conversationOutcomes) {
+      const previous = conversationOutcomes.get(id);
+      if (!previous || outcome === "quarantined" || (outcome === "failed" && previous === "processed")) {
+        conversationOutcomes.set(id, outcome);
+      }
     }
     if (chunk.screening.quarantinedMemoryUpdates) {
       result.screening.quarantinedMemoryUpdates = (result.screening.quarantinedMemoryUpdates ?? 0) + chunk.screening.quarantinedMemoryUpdates;
@@ -127,13 +165,19 @@ export async function extractMessages(
       }
     }
   }
+  for (const outcome of conversationOutcomes.values()) {
+    if (outcome === "processed") result.screening.processedConversations++;
+    else if (outcome === "quarantined") result.screening.quarantinedConversations++;
+    else result.screening.failedConversations++;
+  }
   return result;
 }
 
 async function extractMessageChunk(
   conversations: Conversation[],
   dependencies: MessageExtractionDependencies,
-): Promise<MessageExtractionResult> {
+  priorSummaries: Map<string, string>,
+): Promise<MessageExtractionChunkResult> {
   const intakeAgent = dependencies.intake ?? createImessageConversationAgent(runtimeConfig);
   const extraction = await runIsolated({
     items: conversations,
@@ -160,14 +204,23 @@ async function extractMessageChunk(
   }
 
   const successful = extraction.results.flatMap((result) =>
-    result.status === "fulfilled" ? [result.value] : []
+    result.status === "fulfilled"
+      ? [{ conversation: conversations[result.index]!, value: result.value }]
+      : []
   );
+  for (const { conversation, value } of successful) {
+    if (value.conversationSummaries.length === 0) continue;
+    priorSummaries.set(
+      conversation.id,
+      boundedPriorSummary(value.conversationSummaries.join("\n"))!,
+    );
+  }
   const extracted: ImessageIntakeResult = {
-    actionItems: successful.flatMap((result) => result.actionItems),
+    actionItems: successful.flatMap(({ value }) => value.actionItems),
     conversationSummaries: successful.flatMap(
-      (result) => result.conversationSummaries,
+      ({ value }) => value.conversationSummaries,
     ),
-    memoryContext: successful.flatMap((result) => result.memoryContext),
+    memoryContext: successful.flatMap(({ value }) => value.memoryContext),
   };
 
   const graded = await runIsolated({
@@ -196,7 +249,7 @@ async function extractMessageChunk(
   let okfUpdate: OkfManagerResult | "none" = "none";
   let quarantinedMemoryUpdates = 0;
   let memoryOffset = 0;
-  for (const conversation of successful) {
+  for (const { value: conversation } of successful) {
     const memories = conversation.memoryContext.filter((_, index) => {
       const grade = graded.results[memoryOffset + index];
       if (grade?.status !== "fulfilled") return false;
@@ -235,5 +288,13 @@ async function extractMessageChunk(
       failedConversations: extraction.failed,
       ...(quarantinedMemoryUpdates ? { quarantinedMemoryUpdates } : {}),
     },
+    conversationOutcomes: extraction.results.map((result) => ({
+      id: conversations[result.index]!.id,
+      outcome: result.status === "fulfilled"
+        ? "processed"
+        : result.status === "quarantined"
+        ? "quarantined"
+        : "failed",
+    })),
   };
 }

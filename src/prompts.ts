@@ -114,6 +114,7 @@ export const imessageIntakePrompt: PromptTemplate<IntakeRange | void> = (range) 
 export interface ConversationExtractionInput {
   id: string;
   messages: TrustedMessageView[];
+  priorChunkSummary?: string;
 }
 
 /** One pre-partitioned conversation per agent invocation. */
@@ -134,6 +135,22 @@ export const conversationExtractionPrompt: PromptTemplate<ConversationExtraction
   Capture concise facts about people, places, preferences, and plans that could
   improve future assistance. Attribute opinions to the person who expressed
   them.
+
+  ${conversation.priorChunkSummary
+    ? dedent`
+      # Earlier Context From This Conversation
+      The following bounded summary comes only from earlier message chunks in
+      this same conversation. Use it as context, but extract deliverables only
+      from the messages in the current chunk.
+
+      ${conversation.priorChunkSummary}
+
+      Make the conversation summary cumulative: compactly carry forward useful
+      earlier context along with the current chunk. Keep action items and memory
+      context limited to facts supported by the current chunk, and keep the
+      cumulative conversation summary at or below 2,000 characters.
+    `
+    : ""}
 
   # Conversation
   ${JSON.stringify({

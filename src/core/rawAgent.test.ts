@@ -6,10 +6,12 @@ import {
   AgentContextLimitError,
   AgentRouteError,
   AgentTimeoutError,
+  ContentSafetyDetectedError,
   DEFAULT_AGENT_TIMEOUT_MS,
   PromptInjectionDetectedError,
   PromptInjectionScreeningError,
   extractJson,
+  isContentSafetyDetectedError,
   isPromptInjectionDetectedError,
   isPromptInjectionScreeningError,
   type ModelRouteInputChain,
@@ -581,6 +583,55 @@ describe("prompt-injection screening", () => {
     expect((error as Error).message).toBe("Prompt injection screening failed");
     expect(primary.calls).toHaveLength(0);
     expect(fallback.calls).toHaveLength(0);
+  });
+
+  test("a non-PI safety match is typed, content-free, and terminal", async () => {
+    const primary = new ScriptedProvider([{ content: "unused" }]);
+    const fallback = new ScriptedProvider([{ content: "unused" }]);
+    const agent = new Agent({
+      name: "safe-agent-name",
+      routes: [
+        { client: primary, model: "primary" },
+        { client: fallback, model: "fallback" },
+      ],
+      promptInjectionScreening: async () => ({
+        flagged: false,
+        blocked: true,
+        matchedFilters: ["rai"],
+      }),
+    });
+
+    const error = await agent.run("private blocked payload").catch((caught) => caught);
+    expect(error).toBeInstanceOf(ContentSafetyDetectedError);
+    expect(isContentSafetyDetectedError(error)).toBe(true);
+    expect(error).toMatchObject({ boundary: "input", matchedFilters: ["rai"], agent: "safe-agent-name" });
+    expect((error as Error).message).not.toContain("private blocked payload");
+    expect(primary.calls).toHaveLength(0);
+    expect(fallback.calls).toHaveLength(0);
+  });
+
+  test("configured tool-output abort applies to non-PI safety matches", async () => {
+    const tool = defineTool({
+      name: "external", kind: "read", description: "external data",
+      schema: z.object({}), execute: () => "blocked tool result",
+    });
+    const client = new ScriptedProvider([{
+      finishReason: "tool_calls",
+      toolCalls: [{ id: "tool-1", name: "external", arguments: {} }],
+    }]);
+    const agent = new Agent({
+      routes: routes(client), tools: [tool], onToolOutputInjection: "abort",
+      promptInjectionScreening: async ([text]) => ({
+        flagged: false,
+        blocked: text === "blocked tool result",
+        matchedFilters: ["rai"],
+      }),
+    });
+
+    const error = await agent.run("benign").catch((caught) => caught);
+    expect(error).toBeInstanceOf(ContentSafetyDetectedError);
+    expect((error as ContentSafetyDetectedError).boundary).toBe("tool_output");
+    expect(client.calls).toHaveLength(1);
   });
 
   test("screening can be explicitly disabled", async () => {

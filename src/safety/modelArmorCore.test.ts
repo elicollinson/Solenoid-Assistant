@@ -45,18 +45,17 @@ describe("ModelArmorScanner", () => {
 
     expect(result).toEqual({
       flagged: false,
+      blocked: false,
       label: "BENIGN",
       score: 0,
       filterMatchState: "NO_MATCH_FOUND",
       invocationResult: "SUCCESS",
-      filterResults: {
-        pi_and_jailbreak: {
-          piAndJailbreakFilterResult: {
-            executionState: "EXECUTION_SUCCESS",
-            matchState: "NO_MATCH_FOUND",
-          },
-        },
-      },
+      matchedFilters: [],
+      filterVerdicts: [{
+        filter: "pi_and_jailbreak",
+        executionState: "EXECUTION_SUCCESS",
+        matchState: "NO_MATCH_FOUND",
+      }],
     });
 
     expect(requestedUrl).toBe(
@@ -101,9 +100,129 @@ describe("ModelArmorScanner", () => {
     ]);
 
     expect(result.flagged).toBe(true);
+    expect(result.blocked).toBe(true);
     expect(result.label).toBe("MALICIOUS");
     expect(result.filterMatchState).toBe("MATCH_FOUND");
     expect(await scanner.containsPromptInjection(["attack payload"])).toBe(true);
+  });
+
+  test("does not misclassify a non-PI filter match as prompt injection", async () => {
+    const scanner = new ModelArmorScanner({
+      projectId: "test-project",
+      getAuthToken: async () => "fake-jwt-token",
+      fetchFn: async () => mockResponse({
+        sanitizationResult: {
+          filterMatchState: "MATCH_FOUND",
+          invocationResult: "SUCCESS",
+          filterResults: {
+            rai: { raiFilterResult: { executionState: "EXECUTION_SUCCESS", matchState: "MATCH_FOUND" } },
+            pi_and_jailbreak: {
+              piAndJailbreakFilterResult: {
+                executionState: "EXECUTION_SUCCESS",
+                matchState: "NO_MATCH_FOUND",
+                confidenceLevel: "LOW",
+              },
+            },
+          },
+        },
+      }),
+    });
+
+    const result = await scanner.assess(["ordinary record metadata"]);
+    expect(result).toMatchObject({
+      flagged: false,
+      blocked: true,
+      label: "CONTENT_BLOCKED",
+      matchedFilters: ["rai"],
+    });
+    expect(await scanner.containsPromptInjection(["ordinary record metadata"])).toBe(false);
+  });
+
+  test("reports PI and non-PI matches separately in a mixed verdict", async () => {
+    const scanner = new ModelArmorScanner({
+      projectId: "test-project",
+      getAuthToken: async () => "fake-jwt-token",
+      fetchFn: async () => mockResponse({
+        sanitizationResult: {
+          filterMatchState: "MATCH_FOUND",
+          invocationResult: "SUCCESS",
+          filterResults: {
+            rai: { raiFilterResult: { executionState: "EXECUTION_SUCCESS", matchState: "MATCH_FOUND" } },
+            pi_and_jailbreak: {
+              piAndJailbreakFilterResult: {
+                executionState: "EXECUTION_SUCCESS",
+                matchState: "MATCH_FOUND",
+                confidenceLevel: "HIGH",
+              },
+            },
+          },
+        },
+      }),
+    });
+
+    const result = await scanner.assess(["mixed filter match"]);
+    expect(result).toMatchObject({
+      flagged: true,
+      blocked: true,
+      label: "MALICIOUS",
+      confidenceLevel: "HIGH",
+      matchedFilters: ["rai", "pi_and_jailbreak"],
+    });
+  });
+
+  test("blocks a nested filter match even when the top-level state is inconsistent", async () => {
+    const scanner = new ModelArmorScanner({
+      projectId: "test-project",
+      getAuthToken: async () => "fake-jwt-token",
+      fetchFn: async () => mockResponse({
+        sanitizationResult: {
+          filterMatchState: "NO_MATCH_FOUND",
+          invocationResult: "SUCCESS",
+          filterResults: {
+            malicious_uris: {
+              maliciousUriFilterResult: {
+                executionState: "EXECUTION_SUCCESS",
+                matchState: "MATCH_FOUND",
+              },
+            },
+          },
+        },
+      }),
+    });
+
+    expect(await scanner.assess(["content"])).toMatchObject({
+      blocked: true,
+      flagged: false,
+      matchedFilters: ["malicious_uris"],
+    });
+  });
+
+  test("fails closed when invocation or filter execution is incomplete", async () => {
+    for (const sanitizationResult of [
+      { filterMatchState: "NO_MATCH_FOUND", filterResults: {} },
+      { filterMatchState: "NO_MATCH_FOUND", invocationResult: "PARTIAL", filterResults: {} },
+      {
+        filterMatchState: "NO_MATCH_FOUND",
+        invocationResult: "SUCCESS",
+        filterResults: {
+          pi_and_jailbreak: {
+            piAndJailbreakFilterResult: {
+              executionState: "EXECUTION_SKIPPED",
+              matchState: "NO_MATCH_FOUND",
+            },
+          },
+        },
+      },
+    ]) {
+      const scanner = new ModelArmorScanner({
+        projectId: "test-project",
+        getAuthToken: async () => "fake-jwt-token",
+        fetchFn: async () => mockResponse({ sanitizationResult }),
+      });
+      await expect(scanner.assess(["content must not be allowed"])).rejects.toThrow(
+        "Model Armor screening incomplete",
+      );
+    }
   });
 
   test("uses x-goog-api-key header when apiKey is configured", async () => {

@@ -176,6 +176,19 @@ export class PromptInjectionDetectedError extends Error {
   }
 }
 
+export class ContentSafetyDetectedError extends Error {
+  readonly code = "CONTENT_SAFETY_DETECTED";
+
+  constructor(
+    readonly boundary: PromptInjectionBoundary,
+    readonly matchedFilters: readonly string[],
+    readonly agent: string,
+  ) {
+    super(`Content blocked by safety filter at ${boundary} boundary`);
+    this.name = "ContentSafetyDetectedError";
+  }
+}
+
 export class PromptInjectionScreeningError extends Error {
   readonly code = "PROMPT_INJECTION_SCREENING_FAILED";
 
@@ -197,6 +210,22 @@ export function isPromptInjectionDetectedError(
     );
 }
 
+export function isContentSafetyDetectedError(
+  error: unknown,
+): error is ContentSafetyDetectedError {
+  const candidate = error as CodedError | null;
+  return candidate?.code === "CONTENT_SAFETY_DETECTED" &&
+    ["input", "tool_output", "model_output", "reviewer_output"].includes(
+      String(candidate.boundary),
+    );
+}
+
+export function isGuardrailDetectedError(
+  error: unknown,
+): error is PromptInjectionDetectedError | ContentSafetyDetectedError {
+  return isPromptInjectionDetectedError(error) || isContentSafetyDetectedError(error);
+}
+
 export function isPromptInjectionScreeningError(
   error: unknown,
 ): error is PromptInjectionScreeningError {
@@ -206,6 +235,7 @@ export function isPromptInjectionScreeningError(
 
 export interface PromptInjectionScreeningResult {
   flagged: boolean;
+  blocked?: boolean;
   label?: string;
   score?: number;
   chunkCount?: number;
@@ -213,7 +243,8 @@ export interface PromptInjectionScreeningResult {
   filterMatchState?: string;
   invocationResult?: string;
   confidenceLevel?: string;
-  filterResults?: Record<string, unknown>;
+  matchedFilters?: string[];
+  filterVerdicts?: { filter: string; matchState?: string; executionState?: string; confidenceLevel?: string }[];
 }
 
 export type PromptInjectionScreener = (
@@ -541,7 +572,7 @@ export class Agent {
             return result;
           } catch (error) {
             if (
-              isPromptInjectionDetectedError(error) ||
+              isGuardrailDetectedError(error) ||
               isPromptInjectionScreeningError(error)
             ) {
               throw error;
@@ -1252,7 +1283,7 @@ export class Agent {
           if (isPromptInjectionScreeningError(err)) {
             throw err;
           }
-          if (isPromptInjectionDetectedError(err)) {
+          if (isGuardrailDetectedError(err)) {
             if (this.onToolOutputInjection === "abort") {
               throw err;
             }
@@ -1265,9 +1296,11 @@ export class Agent {
               "tool.quarantined": true,
               "tool.quarantine_boundary": err.boundary,
             });
-            log.warn("[tool] output quarantined due to prompt injection", {
+            const promptInjection = isPromptInjectionDetectedError(err);
+            log.warn(`[tool] output quarantined due to ${promptInjection ? "prompt injection" : "content safety filter"}`, {
               tool: name,
               boundary: err.boundary,
+              ...(promptInjection ? {} : { filters: safeJson(err.matchedFilters) }),
             });
             if (tool.kind === "write") {
               // The side effect is complete, so returning an ordinary failed
@@ -1275,7 +1308,9 @@ export class Agent {
               // workflow fanout contains the typed detection to its source.
               throw err;
             }
-            return failed("Prompt injection detected in tool output; output blocked.");
+            return failed(promptInjection
+              ? "Prompt injection detected in tool output; output blocked."
+              : "Content blocked by a safety filter in tool output.");
           }
           span.recordException(err instanceof Error ? err : new Error(String(err)));
           span.setStatus({ code: SpanStatusCode.ERROR });
@@ -1347,13 +1382,18 @@ export class Agent {
           throw new PromptInjectionScreeningError();
         }
 
+        const blocked = result.blocked ?? result.flagged;
+        const contentSafetyBlock = blocked && !result.flagged;
         span.setAttributes({
           [SemanticConventions.OUTPUT_VALUE]: safeJson(result),
           [SemanticConventions.OUTPUT_MIME_TYPE]: "application/json",
-          "metadata.action": result.flagged
+          "metadata.action": contentSafetyBlock
+            ? "block"
+            : result.flagged
             ? (action === "abort" ? "block" : "observe")
             : "allow",
           "metadata.flagged": result.flagged,
+          "metadata.blocked": blocked,
         });
         if (result.label !== undefined) {
           span.setAttribute("metadata.label", result.label);
@@ -1370,8 +1410,11 @@ export class Agent {
         if (result.confidenceLevel !== undefined) {
           span.setAttribute("metadata.confidence_level", result.confidenceLevel);
         }
-        if (result.filterResults !== undefined) {
-          span.setAttribute("metadata.filter_results", safeJson(result.filterResults));
+        if (result.matchedFilters !== undefined) {
+          span.setAttribute("metadata.matched_filters", safeJson(result.matchedFilters));
+        }
+        if (result.filterVerdicts !== undefined) {
+          span.setAttribute("metadata.filter_verdicts", safeJson(result.filterVerdicts));
         }
         if (result.chunkCount !== undefined) {
           span.setAttribute("metadata.chunk_count", result.chunkCount);
@@ -1386,7 +1429,25 @@ export class Agent {
       },
     );
 
-    if (!assessment.flagged) return;
+    const blocked = assessment.blocked ?? assessment.flagged;
+    if (!blocked) return;
+    log.warn(assessment.flagged && action === "observe"
+      ? "[guardrail] content flagged; observing"
+      : "[guardrail] content blocked", {
+      boundary,
+      agent: this.name,
+      classification: assessment.flagged ? "prompt_injection" : "content_safety",
+      filters: safeJson(assessment.matchedFilters ?? ["unknown"]),
+      confidenceLevel: assessment.confidenceLevel,
+      filterVerdicts: safeJson(assessment.filterVerdicts ?? []),
+    });
+    if (!assessment.flagged) {
+      throw new ContentSafetyDetectedError(
+        boundary,
+        assessment.matchedFilters ?? ["unknown"],
+        this.name,
+      );
+    }
     if (action === "abort") throw new PromptInjectionDetectedError(boundary);
     // Observed, not blocked. The operator is the principal; a flag on their own
     // message is worth a record and is not worth refusing to work over.

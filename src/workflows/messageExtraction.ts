@@ -1,4 +1,4 @@
-import { Agent, AgentCancelledError, isPromptInjectionDetectedError } from "../core/rawAgent";
+import { Agent, AgentCancelledError, isGuardrailDetectedError, isPromptInjectionDetectedError } from "../core/rawAgent";
 import { createModelRoutes } from "../core/providerFactory";
 import { loadRuntimeConfig } from "../core/config";
 import { log } from "../core/logger";
@@ -298,9 +298,12 @@ async function extractMessageChunk(
     } catch (error) {
       // A detection ends only this invocation. Scanner outages and ordinary
       // write failures still halt; retrying writes here could duplicate effects.
-      if (!isPromptInjectionDetectedError(error)) throw error;
+      if (!isGuardrailDetectedError(error)) throw error;
       quarantinedMemoryUpdates++;
-      log.warn("messageExtraction: conversation memory update quarantined", { boundary: error.boundary });
+      log.warn("messageExtraction: conversation memory update quarantined", {
+        boundary: error.boundary,
+        classification: isPromptInjectionDetectedError(error) ? "prompt_injection" : "content_safety",
+      });
     }
   }
 

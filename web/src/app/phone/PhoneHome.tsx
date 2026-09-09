@@ -8,7 +8,7 @@
 // Each tab fetches for itself. The alternative — reading all four here so the
 // state could live in one place — would put four requests on the wire to draw
 // one screen, on the frame least able to afford them.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { usePrefersDusk } from "../frame";
 import {
   answerDeferredWrite as writeDeferred,
@@ -23,13 +23,13 @@ import {
   useWorkflows,
   type HomeAction,
   type HomePayload,
-  type WorkflowRunAccepted,
 } from "../api";
 import { isDeferredWrite, pendingDecisionFor, withoutResolved } from "../settle";
 import { ActivityPhone } from "./ActivityPhone";
 import { CalendarPhone } from "./CalendarPhone";
 import { MemoryPhone } from "./MemoryPhone";
 import { WorkflowsPhone, type WorkflowTrigger } from "./WorkflowsPhone";
+import { NO_TRIGGER, triggerFor, triggerReducer } from "./trigger";
 import { ChatPhone } from "./ChatPhone";
 import { useChat } from "../chat";
 import { PhoneAlert, PhoneNotice, PhoneScreen, type PhoneTab } from "./chrome";
@@ -102,7 +102,10 @@ export function PhoneHome() {
     writeDeferred(actionId)
       .then(() => {
         resolve(decisionId);
+        // Both surfaces draw the gate this closed, and neither is polled
+        // unless something is running: each has to be asked again.
         setHomeNonce((n) => n + 1);
+        setWorkflowsNonce((n) => n + 1);
       })
       .catch((error: unknown) => setWriteError(error instanceof Error ? error.message : String(error)))
       .finally(() => setPendingWrite(null));
@@ -166,6 +169,7 @@ export function PhoneHome() {
           nonce={workflowsNonce}
           openSlug={openOn("Workflows")}
           onOpen={setOpenOn("Workflows")}
+          resolved={resolved}
           pausing={pausing}
           pauseError={pauseError}
           writeError={writeError}
@@ -333,6 +337,7 @@ function Workflows({
   nonce,
   openSlug,
   onOpen,
+  resolved,
   pausing,
   pauseError,
   writeError,
@@ -344,6 +349,7 @@ function Workflows({
   nonce: number;
   openSlug: string | null;
   onOpen: (slug: string | null) => void;
+  resolved: ReadonlySet<string>;
   pausing: string | null;
   pauseError: string | null;
   writeError: string | null;
@@ -352,12 +358,11 @@ function Workflows({
   onResolve: (id: string) => void;
   onDeferred: (actionId: string, decisionId: string) => void;
 }) {
-  // A run started here, and what came of asking. Held on this screen, as the
-  // desktop holds them on its detail: leaving the tab drops them, and the
-  // record — the run itself — is what comes back on the re-read.
-  const [starting, setStarting] = useState(false);
-  const [refused, setRefused] = useState<string | null>(null);
-  const [opened, setOpened] = useState<WorkflowRunAccepted | null>(null);
+  // A run started here, and what came of asking — scoped to the workflow it
+  // was asked for, and begun clean on every press. See ./trigger.ts for why.
+  // Held on this screen, as the desktop holds it on its detail: leaving the
+  // tab drops it, and the record — the run itself — is what comes back.
+  const [asked, dispatch] = useReducer(triggerReducer, NO_TRIGGER);
   const [ticks, setTicks] = useState(0);
 
   const list = useWorkflows("phone", nonce + ticks);
@@ -374,21 +379,22 @@ function Workflows({
   }, [running]);
 
   const trigger: WorkflowTrigger = {
-    pending: starting,
-    error: refused,
-    started: opened?.label ?? null,
-    onClear: () => setRefused(null),
+    ...triggerFor(asked, openSlug),
+    onClear: () => {
+      if (openSlug) dispatch({ type: "clear", slug: openSlug });
+    },
     onRun: (args) => {
       if (!openSlug) return;
-      setStarting(true);
-      setRefused(null);
-      runWorkflow(openSlug, args)
-        .then((accepted) => {
-          setOpened(accepted);
+      const slug = openSlug;
+      dispatch({ type: "asked", slug });
+      runWorkflow(slug, args)
+        .then((run) => {
+          dispatch({ type: "accepted", slug, run });
           setTicks((n) => n + 1);
         })
-        .catch((error: unknown) => setRefused(error instanceof Error ? error.message : String(error)))
-        .finally(() => setStarting(false));
+        .catch((error: unknown) => {
+          dispatch({ type: "refused", slug, message: error instanceof Error ? error.message : String(error) });
+        });
     },
   };
 
@@ -426,6 +432,7 @@ function Workflows({
           detail={one}
           openSlug={openSlug}
           onOpen={onOpen}
+          resolved={resolved}
           busy={pausing !== null}
           onTogglePause={onTogglePause}
           onInvoke={settle}

@@ -578,7 +578,13 @@ function One({
     error: refused,
     started: opened?.label ?? null,
     onRun: start,
-    onClear: () => setRefused(null),
+    // A new request begins clean. The last run's label is what closes the
+    // form once a run is accepted; left in place, it closed the form for the
+    // NEXT run the moment it opened, and a workflow could not be run twice.
+    onClear: () => {
+      setRefused(null);
+      setOpened(null);
+    },
   };
 
   const edits: WorkflowEdits = {

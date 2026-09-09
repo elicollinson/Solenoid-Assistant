@@ -44,6 +44,7 @@ const SHEET_LABEL: Record<HomeState, string> = {
 };
 
 const MONO_META = { font: "var(--text-mono-meta)", color: "var(--text-4)" } as const;
+const NOTHING: ReadonlySet<string> = new Set();
 
 function matches(row: WorkflowRow, filter: Filter, paused: boolean): boolean {
   if (filter === "All") return true;
@@ -58,6 +59,7 @@ export function WorkflowsPhone({
   detail,
   openSlug,
   onOpen,
+  resolved = NOTHING,
   busy = false,
   onTogglePause,
   onInvoke,
@@ -67,6 +69,9 @@ export function WorkflowsPhone({
   detail: Load<WorkflowDetailPayload>;
   openSlug: string | null;
   onOpen: (slug: string | null) => void;
+  /** Gates answered in this browser. A sheet whose gate is here draws it
+   *  closed rather than going on asking what has been answered. */
+  resolved?: ReadonlySet<string>;
   /** A pause is on its way to the server; hold the button until it lands. */
   busy?: boolean;
   onTogglePause: (slug: string, paused: boolean) => void;
@@ -132,6 +137,7 @@ export function WorkflowsPhone({
           row={open}
           paused={isPaused(open)}
           detail={detail}
+          resolved={resolved}
           busy={busy}
           trigger={trigger}
           onClose={() => onOpen(null)}
@@ -216,6 +222,7 @@ function Detail({
   row,
   paused,
   detail,
+  resolved,
   busy,
   trigger,
   onClose,
@@ -225,6 +232,7 @@ function Detail({
   row: WorkflowRow;
   paused: boolean;
   detail: Load<WorkflowDetailPayload>;
+  resolved: ReadonlySet<string>;
   busy: boolean;
   trigger: WorkflowTrigger;
   onClose: () => void;
@@ -328,7 +336,7 @@ function Detail({
         </div>
       ) : null}
 
-      {loaded?.gate && !paused ? (
+      {loaded?.gate && !paused && !resolved.has(loaded.gate.id) ? (
         <div
           style={{
             display: "flex",

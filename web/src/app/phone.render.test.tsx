@@ -354,6 +354,28 @@ describe("workflows", () => {
     for (const tab of ["Executions", "Trace", "Logs"]) expect(drawn).not.toContain(`>${tab}<`);
   });
 
+  test("a gate answered in this browser is drawn closed, not asked again", () => {
+    const gated = workflows.rows.find((r) => r.state === "attention");
+    if (!gated) throw new Error("nothing is waiting on you in the fixtures");
+    const detail = loadWorkflow(db, gated.slug, MORNING, "phone");
+    if (!detail?.gate) throw new Error(`${gated.slug} has no gate`);
+    const sheet = (resolved: ReadonlySet<string>) =>
+      inFrame(
+        <WorkflowsPhone
+          workflows={workflows}
+          detail={{ status: "ready", data: detail }}
+          openSlug={gated.slug}
+          onOpen={noop}
+          resolved={resolved}
+          onTogglePause={noop}
+          onInvoke={noop}
+          trigger={idle}
+        />,
+      );
+    expect(sheet(NOTHING)).toContain(esc(detail.gate.title));
+    expect(sheet(new Set([detail.gate.id]))).not.toContain(esc(detail.gate.title));
+  });
+
   test("the sheet says it in the phone's words, not the desktop's summary", () => {
     const detail = loadWorkflow(db, "weekly-digest", MORNING, "phone");
     const desktop = loadWorkflow(db, "weekly-digest", MORNING);

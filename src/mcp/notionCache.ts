@@ -193,17 +193,22 @@ export async function initNotionMcpCache(
   try {
     return await initPromise;
   } catch (error) {
-    health = isNotionAuthenticationRequiredError(error)
+    const normalized = isNotionAuthenticationRequiredError(error)
+      ? error
+      : isMcpAuthError(error)
+      ? new NotionAuthenticationRequiredError("refresh_rejected")
+      : error;
+    health = isNotionAuthenticationRequiredError(normalized)
       ? {
         status: "authentication_required",
-        reason: error.reason,
+        reason: normalized.reason,
         recovery: "bun run auth:notion; restart service",
       }
       : {
         status: "unavailable",
-        reason: error instanceof Error ? error.name : "UnknownError",
+        reason: normalized instanceof Error ? normalized.name : "UnknownError",
       };
-    throw error;
+    throw normalized;
   } finally {
     // Clear the promise so a failed init can be retried on the next call.
     // On success, cachedClient is set so the early return at the top handles

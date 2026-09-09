@@ -72,6 +72,25 @@ describe("Notion MCP cache health", () => {
     });
   });
 
+  test("normalizes a raw authentication rejection from connection", async () => {
+    const error = await initNotionMcpCache({
+      createConnection: () => ({
+        hasTokens: true,
+        initialize: async () => {},
+        connect: async () => {
+          throw new Error('{"error":"invalid_token"}');
+        },
+      }),
+    }).catch((caught) => caught);
+
+    expect(isNotionAuthenticationRequiredError(error)).toBe(true);
+    expect(getNotionMcpClient()).toBeUndefined();
+    expect(getNotionMcpHealth()).toMatchObject({
+      status: "authentication_required",
+      reason: "refresh_rejected",
+    });
+  });
+
   test("retries successfully after credentials are refreshed", async () => {
     let attempts = 0;
     const fresh = client({

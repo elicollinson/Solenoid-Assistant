@@ -15,7 +15,11 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { z } from "zod";
 import { NotionMcpClient } from "./notionClient";
 import { log } from "../core/logger";
-import { isMcpAuthError } from "./errors";
+import {
+  isMcpAuthError,
+  isNotionAuthenticationRequiredError,
+  NotionAuthenticationRequiredError,
+} from "./errors";
 
 // ---------------------------------------------------------------------------
 // Cached state
@@ -24,6 +28,24 @@ import { isMcpAuthError } from "./errors";
 let cachedClient: Client | undefined;
 let cachedFetchResult: NotionFetchSelfResult | undefined;
 let initPromise: Promise<NotionMcpCache> | undefined;
+
+export type NotionMcpHealth =
+  | { status: "not_initialized" | "connecting" }
+  | { status: "ready"; workspaceConnected: boolean }
+  | { status: "authentication_required"; reason: string; recovery: "bun run auth:notion; restart service" }
+  | { status: "unavailable"; reason: string };
+
+let health: NotionMcpHealth = { status: "not_initialized" };
+
+interface NotionConnection {
+  initialize(): Promise<void>;
+  readonly hasTokens: boolean;
+  connect(): Promise<Client>;
+}
+
+export interface NotionMcpCacheDependencies {
+  createConnection?: () => NotionConnection;
+}
 
 // ---------------------------------------------------------------------------
 // Types (Zod schemas → inferred types)
@@ -88,7 +110,9 @@ export interface NotionMcpCache {
  *   // At app startup (src/index.ts):
  *   await initNotionMcpCache().catch((err) => log.warn("Notion cache init failed", { error: err }));
  */
-export async function initNotionMcpCache(): Promise<NotionMcpCache> {
+export async function initNotionMcpCache(
+  dependencies: NotionMcpCacheDependencies = {},
+): Promise<NotionMcpCache> {
   // Already initialized — return immediately.
   if (cachedClient) {
     return { client: cachedClient, fetchResult: cachedFetchResult };
@@ -98,13 +122,12 @@ export async function initNotionMcpCache(): Promise<NotionMcpCache> {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
-    const notionClient = new NotionMcpClient();
+    health = { status: "connecting" };
+    const notionClient = dependencies.createConnection?.() ?? new NotionMcpClient();
     await notionClient.initialize();
 
     if (!notionClient.hasTokens) {
-      throw new Error(
-        "Notion MCP tokens not found in .env — run `bun run scripts/notion-mcp-auth.ts` first.",
-      );
+      throw new NotionAuthenticationRequiredError("missing_credentials");
     }
 
     log.info("Connecting to Notion MCP server for cache initialization...");
@@ -145,6 +168,14 @@ export async function initNotionMcpCache(): Promise<NotionMcpCache> {
         workspace: ws ? `${ws.name} (${ws.id})` : "unknown",
       });
     } catch (err) {
+      if (isMcpAuthError(err) || isNotionAuthenticationRequiredError(err)) {
+        cachedClient = undefined;
+        cachedFetchResult = undefined;
+        await client.close().catch(() => {});
+        throw isNotionAuthenticationRequiredError(err)
+          ? err
+          : new NotionAuthenticationRequiredError("refresh_rejected");
+      }
       // Non-fatal: the client is still usable for other tools. The fetch
       // result just won't be available.
       log.warn("Notion fetch on startup failed (non-fatal — client still cached)", {
@@ -152,11 +183,27 @@ export async function initNotionMcpCache(): Promise<NotionMcpCache> {
       });
     }
 
+    health = {
+      status: "ready",
+      workspaceConnected: cachedFetchResult?.self?.workspace !== undefined,
+    };
     return { client: cachedClient, fetchResult: cachedFetchResult };
   })();
 
   try {
     return await initPromise;
+  } catch (error) {
+    health = isNotionAuthenticationRequiredError(error)
+      ? {
+        status: "authentication_required",
+        reason: error.reason,
+        recovery: "bun run auth:notion; restart service",
+      }
+      : {
+        status: "unavailable",
+        reason: error instanceof Error ? error.name : "UnknownError",
+      };
+    throw error;
   } finally {
     // Clear the promise so a failed init can be retried on the next call.
     // On success, cachedClient is set so the early return at the top handles
@@ -204,6 +251,11 @@ export function getNotionFetchResult(): NotionFetchSelfResult | undefined {
   return cachedFetchResult;
 }
 
+/** Content-free integration health suitable for logs and health surfaces. */
+export function getNotionMcpHealth(): NotionMcpHealth {
+  return { ...health };
+}
+
 /** Close and clear the shared client during application shutdown. */
 export async function shutdownNotionMcpCache(): Promise<void> {
   const client = cachedClient;
@@ -211,6 +263,7 @@ export async function shutdownNotionMcpCache(): Promise<void> {
   cachedFetchResult = undefined;
   initPromise = undefined;
   reconnectPromise = undefined;
+  health = { status: "not_initialized" };
   await client?.close().catch(() => {});
 }
 

@@ -160,6 +160,8 @@ export type ChatEvent =
     arg: string | null;
     duration: string;
     ok: boolean;
+    /** The call completed, but its untrusted response was withheld. */
+    responseQuarantined?: boolean;
   }
   /** A write is waiting on you. The turn is stopped until /decisions answers. */
   | {

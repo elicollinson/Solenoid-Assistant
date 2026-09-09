@@ -21,12 +21,13 @@ import { loadKnowledge, loadKnowledgeObject, type KnowledgePayload } from "../..
 import { loadWorkflow, loadWorkflows, type WorkflowsPayload } from "../../../src/db/queries/workflows";
 import { reindexOkf } from "../../../src/db/okf/reindex";
 import { seedDesignFixtures } from "../../../src/db/seed/design";
+import { syncWorkflowCatalog } from "../../../src/workflows/sync";
 import { writeOkfFixture } from "../../../src/db/seed/okfBundle";
 import { zonedTime } from "../../../src/db/seed/time";
 import { ActivityPhone } from "./phone/ActivityPhone";
 import { CalendarPhone } from "./phone/CalendarPhone";
 import { MemoryPhone } from "./phone/MemoryPhone";
-import { WorkflowsPhone } from "./phone/WorkflowsPhone";
+import { WorkflowsPhone, type WorkflowTrigger } from "./phone/WorkflowsPhone";
 import { PhoneScreen, PHONE_TABS, phoneFrame } from "./phone/chrome";
 
 let dir: string;
@@ -278,9 +279,18 @@ describe("things I know", () => {
 });
 
 describe("workflows", () => {
+  const idle: WorkflowTrigger = { pending: false, error: null, started: null, onRun: noop, onClear: noop };
   const markup = (payload: WorkflowsPayload = workflows) =>
     inFrame(
-      <WorkflowsPhone workflows={payload} detail={loading} openSlug={null} onOpen={noop} onTogglePause={noop} onInvoke={noop} />,
+      <WorkflowsPhone
+        workflows={payload}
+        detail={loading}
+        openSlug={null}
+        onOpen={noop}
+        onTogglePause={noop}
+        onInvoke={noop}
+        trigger={idle}
+      />,
     );
 
   test("groups by what each one needs rather than only offering filters", () => {
@@ -334,6 +344,7 @@ describe("workflows", () => {
         onOpen={noop}
         onTogglePause={noop}
         onInvoke={noop}
+        trigger={idle}
       />,
     );
     expect(drawn).toContain("What changed");
@@ -355,13 +366,14 @@ describe("workflows", () => {
         onOpen={noop}
         onTogglePause={noop}
         onInvoke={noop}
+        trigger={idle}
       />,
     );
     expect(drawn).toContain("Step four failed twice against the archive.");
     expect(drawn).not.toContain(esc(desktop.summary ?? ""));
   });
 
-  test("nothing here claims it can start a run", () => {
+  test("a design fixture, with no code behind it, does not claim it can start a run", () => {
     const detail = loadWorkflow(db, "bill-watch", MORNING, "phone");
     if (!detail) throw new Error("bill-watch did not load");
     const drawn = inFrame(
@@ -372,8 +384,39 @@ describe("workflows", () => {
         onOpen={noop}
         onTogglePause={noop}
         onInvoke={noop}
+        trigger={idle}
       />,
     );
     expect(drawn).toMatch(/<button[^>]*disabled[^>]*>Run it now<\/button>/);
+  });
+
+  test("a catalogued workflow can be run from the sheet, with its form", () => {
+    // The catalog is what makes a row runnable; the design fixtures are not.
+    syncWorkflowCatalog(db, MORNING);
+    const table = loadWorkflows(db, MORNING, "phone");
+    const row = table.rows.find((r) => r.slug === "safety-classification");
+    const detail = loadWorkflow(db, "safety-classification", MORNING, "phone");
+    if (!row || !detail) throw new Error("the catalog no longer holds the prompt-injection screen");
+    expect(detail.runnable).toBe(true);
+    expect(detail.inputs.length).toBeGreaterThan(0);
+
+    const sheet = (trigger: Partial<WorkflowTrigger>) =>
+      inFrame(
+        <WorkflowsPhone
+          workflows={table}
+          detail={{ status: "ready", data: detail }}
+          openSlug={row.slug}
+          onOpen={noop}
+          onTogglePause={noop}
+          onInvoke={noop}
+          trigger={{ ...idle, ...trigger }}
+        />,
+      );
+    expect(sheet({})).toMatch(/<button[^>]*>Run it now<\/button>/);
+    expect(sheet({})).not.toMatch(/<button[^>]*disabled[^>]*>Run it now<\/button>/);
+    // While it is starting the button says so and cannot be pressed twice;
+    // a refusal is put in the sheet in the server's words.
+    expect(sheet({ pending: true })).toMatch(/<button[^>]*disabled[^>]*>Starting…<\/button>/);
+    expect(sheet({ error: "Words per chunk must be at least 1." })).toContain("Words per chunk must be at least 1.");
   });
 });

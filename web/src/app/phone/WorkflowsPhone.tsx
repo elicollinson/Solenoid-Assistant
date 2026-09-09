@@ -16,7 +16,11 @@ import { SourceStatus } from "../SourceStatus";
 import { useState } from "react";
 import { Badge, Button, Chip, Meter, MonoLabel, SectionRule, Sheet, StatusMark } from "../../kit";
 import type { HomeAction, HomeState, Load, WorkflowDetailPayload, WorkflowRow, WorkflowsPayload } from "../api";
+import type { WorkflowTrigger } from "../WorkflowDetail";
+import { WorkflowRunForm } from "../WorkflowRunForm";
 import { PhoneBody, PhoneRestraint, PhoneTitle } from "./chrome";
+
+export type { WorkflowTrigger };
 
 const FILTERS = ["All", "Needs you", "Running", "Scheduled", "Paused"] as const;
 type Filter = (typeof FILTERS)[number];
@@ -57,6 +61,7 @@ export function WorkflowsPhone({
   busy = false,
   onTogglePause,
   onInvoke,
+  trigger,
 }: {
   workflows: WorkflowsPayload;
   detail: Load<WorkflowDetailPayload>;
@@ -66,6 +71,8 @@ export function WorkflowsPhone({
   busy?: boolean;
   onTogglePause: (slug: string, paused: boolean) => void;
   onInvoke: (action: HomeAction) => void;
+  /** Starting a run: the same three states the desktop's detail carries. */
+  trigger: WorkflowTrigger;
 }) {
   const [filter, setFilter] = useState<Filter>("All");
 
@@ -119,10 +126,14 @@ export function WorkflowsPhone({
 
       {open ? (
         <Detail
+          // Keyed, so opening a second workflow starts with its own form
+          // closed rather than inheriting the first one's.
+          key={open.slug}
           row={open}
           paused={isPaused(open)}
           detail={detail}
           busy={busy}
+          trigger={trigger}
           onClose={() => onOpen(null)}
           onTogglePause={() => onTogglePause(open.slug, !isPaused(open))}
           onInvoke={onInvoke}
@@ -206,6 +217,7 @@ function Detail({
   paused,
   detail,
   busy,
+  trigger,
   onClose,
   onTogglePause,
   onInvoke,
@@ -214,15 +226,41 @@ function Detail({
   paused: boolean;
   detail: Load<WorkflowDetailPayload>;
   busy: boolean;
+  trigger: WorkflowTrigger;
   onClose: () => void;
   onTogglePause: () => void;
   onInvoke: (action: HomeAction) => void;
 }) {
   const loaded = detail.status === "ready" && detail.data.slug === row.slug ? detail.data : null;
   const state = paused ? "idle" : row.state;
+  const [asking, setAsking] = useState(false);
+
+  /* Same rule as the desktop's Run: a workflow that takes no arguments has
+     nothing to ask about, so the button starts it; one that does opens the
+     form here in the sheet. Once the run is on the record the form has
+     nothing left to ask, so it closes itself. */
+  if (asking && trigger.started && !trigger.pending && !trigger.error) setAsking(false);
+  const canRun = Boolean(loaded?.runnable) && !paused && state !== "running" && !trigger.pending;
+  const press = () => {
+    if (!loaded) return;
+    trigger.onClear();
+    if (loaded.inputs.length === 0) {
+      trigger.onRun({});
+      return;
+    }
+    setAsking(true);
+  };
 
   return (
-    <Sheet label={SHEET_LABEL[state]} onClose={onClose} height={660} style={{ bottom: "var(--tabbar-total)" }}>
+    <Sheet
+      // The server's own word once it has answered — "never run" is not
+      // "paused workflow", and only the badge keeps that apart; the five-value
+      // mark is lossy on purpose. The mark's word fills in until it lands.
+      label={paused ? "paused workflow" : (loaded?.badge ?? SHEET_LABEL[state])}
+      onClose={onClose}
+      height={660}
+      style={{ bottom: "var(--tabbar-total)" }}
+    >
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-4)" }}>
           <StatusMark state={state} size={12} />
@@ -254,6 +292,41 @@ function Detail({
       ) : null}
 
       {loaded?.progress && state === "running" ? <Meter value={loaded.progress.value} total={loaded.progress.total} /> : null}
+
+      {state === "running" ? (
+        <p style={{ margin: 0, font: "var(--text-phone-note)", color: "var(--text-3)", textWrap: "pretty" }}>
+          {trigger.started ?? "A run"} is going now. This sheet re-reads itself while it does.
+        </p>
+      ) : null}
+
+      {asking && loaded ? (
+        <WorkflowRunForm
+          touch
+          inputs={loaded.inputs}
+          pending={trigger.pending}
+          error={trigger.error}
+          onRun={(args) => trigger.onRun(args)}
+          onCancel={() => {
+            trigger.onClear();
+            setAsking(false);
+          }}
+        />
+      ) : trigger.error ? (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "var(--sp-3)",
+            padding: "var(--sp-6)",
+            background: "var(--surface-alert)",
+            border: "var(--border-alert)",
+            borderRadius: "var(--radius-card)",
+          }}
+        >
+          <span style={{ font: "var(--text-title)", color: "var(--text-1)" }}>I couldn&rsquo;t start it.</span>
+          <span style={{ font: "var(--text-phone-body)", color: "var(--text-2)", textWrap: "pretty" }}>{trigger.error}</span>
+        </div>
+      ) : null}
 
       {loaded?.gate && !paused ? (
         <div
@@ -336,12 +409,12 @@ function Detail({
       ) : null}
 
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)" }}>
-        {/* A run takes a form — one control per catalog field — and the design
-            draws no form at this width, so the button is drawn as unavailable
-            rather than left out. The pause below is written to the schedule
-            and re-read, the same as the desktop's, and moves the row. */}
-        <Button variant="affirm" size="touch" disabled>
-          Run it now
+        {/* Enabled exactly when the desktop's Run is: a catalogued workflow,
+            not paused, not already going. The design fixtures have no code
+            behind them and stay unavailable. The pause below is written to
+            the schedule and re-read, the same as the desktop's. */}
+        <Button variant="affirm" size="touch" disabled={!canRun} onClick={press}>
+          {trigger.pending ? "Starting…" : state === "running" ? "Running" : "Run it now"}
         </Button>
         {row.scheduled || paused ? (
           <Button size="touch" disabled={busy} onClick={onTogglePause}>

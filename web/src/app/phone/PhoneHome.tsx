@@ -13,6 +13,7 @@ import { usePrefersDusk } from "../frame";
 import {
   answerDeferredWrite as writeDeferred,
   pauseWorkflow,
+  runWorkflow,
   useCalendar,
   useCalendarItem,
   useKnowledge,
@@ -22,12 +23,13 @@ import {
   useWorkflows,
   type HomeAction,
   type HomePayload,
+  type WorkflowRunAccepted,
 } from "../api";
 import { isDeferredWrite, pendingDecisionFor, withoutResolved } from "../settle";
 import { ActivityPhone } from "./ActivityPhone";
 import { CalendarPhone } from "./CalendarPhone";
 import { MemoryPhone } from "./MemoryPhone";
-import { WorkflowsPhone } from "./WorkflowsPhone";
+import { WorkflowsPhone, type WorkflowTrigger } from "./WorkflowsPhone";
 import { ChatPhone } from "./ChatPhone";
 import { useChat } from "../chat";
 import { PhoneAlert, PhoneNotice, PhoneScreen, type PhoneTab } from "./chrome";
@@ -176,6 +178,9 @@ export function PhoneHome() {
     </div>
   );
 }
+
+/** How often the open workflow asks again while a run is going. */
+const RUNNING_TICK_MS = 2000;
 
 const isTab = (view: string): view is PhoneTab =>
   view === "Chat" || view === "Activity" || view === "Calendar" ||
@@ -347,9 +352,45 @@ function Workflows({
   onResolve: (id: string) => void;
   onDeferred: (actionId: string, decisionId: string) => void;
 }) {
-  const list = useWorkflows("phone", nonce);
-  const one = useWorkflow(openSlug, "phone", nonce);
+  // A run started here, and what came of asking. Held on this screen, as the
+  // desktop holds them on its detail: leaving the tab drops them, and the
+  // record — the run itself — is what comes back on the re-read.
+  const [starting, setStarting] = useState(false);
+  const [refused, setRefused] = useState<string | null>(null);
+  const [opened, setOpened] = useState<WorkflowRunAccepted | null>(null);
+  const [ticks, setTicks] = useState(0);
+
+  const list = useWorkflows("phone", nonce + ticks);
+  const one = useWorkflow(openSlug, "phone", nonce + ticks);
   const count = list.status === "ready" ? list.data.rows.length : 0;
+
+  // The server cannot tell the browser that a run moved, so while the open
+  // one is going the browser asks every two seconds, as the desktop does.
+  const running = one.status === "ready" && one.data.state === "running";
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => setTicks((n) => n + 1), RUNNING_TICK_MS);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  const trigger: WorkflowTrigger = {
+    pending: starting,
+    error: refused,
+    started: opened?.label ?? null,
+    onClear: () => setRefused(null),
+    onRun: (args) => {
+      if (!openSlug) return;
+      setStarting(true);
+      setRefused(null);
+      runWorkflow(openSlug, args)
+        .then((accepted) => {
+          setOpened(accepted);
+          setTicks((n) => n + 1);
+        })
+        .catch((error: unknown) => setRefused(error instanceof Error ? error.message : String(error)))
+        .finally(() => setStarting(false));
+    },
+  };
 
   // A gate's button closes the gate as well as doing whatever it says, so the
   // Activity feed stops asking about something answered here. A deferred
@@ -388,6 +429,7 @@ function Workflows({
           busy={pausing !== null}
           onTogglePause={onTogglePause}
           onInvoke={settle}
+          trigger={trigger}
         />
       ) : null}
     </PhoneScreen>

@@ -22,6 +22,7 @@ export function WorkflowRunForm({
   error,
   onRun,
   onCancel,
+  touch = false,
 }: {
   inputs: readonly WorkflowInputField[];
   pending: boolean;
@@ -29,13 +30,17 @@ export function WorkflowRunForm({
   error: string | null;
   onRun: (args: Record<string, string>) => void;
   onCancel: () => void;
+  /** Drawn in a phone sheet: buttons at touch height and stacked, and the
+   *  controls at 16px so Safari does not zoom the page on focus. */
+  touch?: boolean;
 }) {
   const [values, setValues] = useState<Record<string, string>>(() => defaults(inputs));
 
   const missing = inputs.filter((input) => input.required && !values[input.name]?.trim());
+  const size = touch ? "touch" : "md";
 
   return (
-    <Panel style={{ maxWidth: 560, gap: "var(--sp-6)" }}>
+    <Panel style={{ maxWidth: touch ? undefined : 560, gap: "var(--sp-6)" }}>
       <MonoLabel>Run this now</MonoLabel>
 
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-5)" }}>
@@ -44,6 +49,7 @@ export function WorkflowRunForm({
             key={input.name}
             input={input}
             value={values[input.name] ?? ""}
+            touch={touch}
             onChange={(next) => setValues((current) => ({ ...current, [input.name]: next }))}
           />
         ))}
@@ -53,15 +59,22 @@ export function WorkflowRunForm({
         <p style={{ margin: 0, font: "var(--text-body-sm)", color: "var(--danger-text)", textWrap: "pretty" }}>{error}</p>
       ) : null}
 
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-3)" }}>
+      <div
+        style={
+          touch
+            ? { display: "flex", flexDirection: "column", gap: "var(--sp-3)" }
+            : { display: "flex", alignItems: "center", gap: "var(--sp-3)" }
+        }
+      >
         <Button
           variant="affirm"
+          size={size}
           disabled={pending || missing.length > 0}
           onClick={() => onRun(values)}
         >
           {pending ? "Starting…" : "Run it"}
         </Button>
-        <Button variant="bare" onClick={onCancel}>
+        <Button variant="bare" size={size} onClick={onCancel}>
           Not now
         </Button>
         {missing.length ? (
@@ -107,14 +120,20 @@ const TYPE: Record<WorkflowInputField["kind"], string> = {
 function Field({
   input,
   value,
+  touch,
   onChange,
 }: {
   input: WorkflowInputField;
   value: string;
+  touch: boolean;
   onChange: (value: string) => void;
 }) {
   const [focused, setFocused] = useState(false);
-  const style: CSSProperties = { ...CONTROL, borderColor: focused ? "var(--accent)" : undefined };
+  const style: CSSProperties = {
+    ...CONTROL,
+    borderColor: focused ? "var(--accent)" : undefined,
+    ...(touch ? { font: "var(--text-phone-lede)", padding: "10px 12px" } : null),
+  };
 
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2)" }}>

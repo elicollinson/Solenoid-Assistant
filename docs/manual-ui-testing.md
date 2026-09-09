@@ -17,7 +17,7 @@ The same origin presents two different shells at the `699px` breakpoint.
 | --- | --- | --- | --- |
 | Chat | Transcript, conversation rail, composer, streamed tool activity, write approvals | Conversation list, thread, one-line composer | Conversations, completed turns, and approval outcomes are stored |
 | Activity | Filtered feed plus the Waiting on you / Next up / Worth a look aside | Timeline feed; no filters or aside | Most decision actions settle only in the current browser session |
-| Workflows | List, filters, detail, run form, pause/resume, kill, instructions, executions, trace, logs | Filtered/grouped list and summary sheet | Pause/resume persists on both shells; phone Run is disabled |
+| Workflows | List, filters, detail, run form, pause/resume, kill, instructions, executions, trace, logs | Filtered/grouped list, summary sheet, run form | Pause/resume and Run persist on both shells |
 | Reminders | List, filters, detail, evidence | Not present | Done and Later are session-local; destructive/edit controls are disabled |
 | Calendar | Week/day time grid and detail aside | Seven-day strip, agenda, and detail sheet | Read-only apart from navigation or session-local decision effects |
 | Things I know | Group filters, client-side search, memory detail | Group filters and memory detail sheet | Read-only; all memory write/conflict controls are disabled |
@@ -38,8 +38,8 @@ These are current implementation facts, not test setup failures:
 - Desktop Activity decision actions and reminder Done/Later changes do not
   write to SQLite. They revert on reload. Calendar actions can navigate, but
   do not themselves perform an external operation.
-- Phone workflow Pause/Resume writes to the schedule and re-reads, as on the
-  desktop. Starting or killing a workflow, editing its instruction, and viewing
+- Phone workflow Pause/Resume and Run write to the server and re-read, as on
+  the desktop. Killing a workflow, editing its instruction, and viewing
   executions, trace, or logs are desktop-only.
 - Reminders and Recommendations have no phone destination. Phone navigation
   effects aimed at either are ignored.
@@ -100,7 +100,7 @@ The seed is anchored to the day it runs. Useful stable records include:
   requires a disposable database containing a recommendation proposed through
   the real mutation/tool path; do not fabricate one with display-only JSON.
 - The five catalogued workflows are the only runnable rows. The seeded design
-  workflows are demonstrations and correctly have Run disabled.
+  workflows are demonstrations and correctly have Run disabled on both shells.
 
 For Chat or a real workflow run, also configure the model route in `.env` and
 verify Model Armor with `bun run verify:model-armor`. Use read-only prompts and the disposable database unless
@@ -328,11 +328,19 @@ Use 390×844, then check 320px wide and a real device if one is available.
   Memory mutation and conflict buttons must remain disabled.
 - [ ] **P-WF-01 List/detail.** Verify horizontally scrollable filters and
   urgency groups. A detail sheet should contain only summary, gate, effects,
-  stats, and standing instruction—not desktop executions/trace/logs. Run is
-  disabled. Pause/Resume should hold the button during the write, move the row
-  after the re-read, and survive reload; restore the original state. On a
-  viewport shorter than the design's 844px, every sheet's Close row must still
-  be on screen.
+  stats, and standing instruction—not desktop executions/trace/logs. Pause/
+  Resume should hold the button during the write, move the row after the
+  re-read, and survive reload; restore the original state. On a viewport
+  shorter than the design's 844px, every sheet's Close row must still be on
+  screen.
+- [ ] **P-WF-02 Run from the sheet.** Open a design workflow: `Run it now` is
+  disabled. Open Prompt-injection screen: `Run it now` is enabled and opens the
+  form in the sheet, with the same fields, required marking, and defaults as
+  D-WF-04, at touch height. Set Words per chunk to `0` and submit: expect the
+  server's refusal inline and no run. Restore `40` and submit: expect
+  `Starting…`, then `Run 1 is going now` with the header on `running` and the
+  button reading `Running`, two-second re-reads without Reading flashes, and a
+  terminal sheet with `What changed`, stats, and `Run it now` enabled again.
 
 ## Integration and failure checks
 
@@ -404,7 +412,8 @@ state transition.
 - [ ] **S-05** Reminder Done/Later moves rows locally and reverts on reload;
   Recommendations shows its intentional empty state on the fixture database.
 - [ ] **S-06** At 390×844 all five phone tabs work; Calendar/Memory/Workflow
-  sheets open and close; the Ask dock opens, focuses, and cancels without send.
+  sheets open and close; the Ask dock opens, focuses, and cancels without send;
+  the Prompt-injection screen's run form refuses `0` words per chunk inline.
 - [ ] **S-07** Keyboard-open one workflow row and one conversation row; inspect
   the Ask and memory-search accessible names; capture known focus/row gaps.
 - [ ] **S-08** Stop the API and reload once. The shell must remain and show a

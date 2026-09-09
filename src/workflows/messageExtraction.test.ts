@@ -216,6 +216,41 @@ describe("message extraction isolation", () => {
     });
   });
 
+  test("messages without conversation identifiers do not abort valid siblings or get merged", async () => {
+    const intakeProvider = new PromptProvider((prompt) => ({
+      actionItems: [prompt.includes("valid body") ? "kept" : "unexpected"],
+      conversationSummaries: [],
+      memoryContext: [],
+    }));
+    const missingId = {
+      ...message("placeholder", "missing id body", "2026-08-24T10:00:00.000Z"),
+      conversationId: undefined,
+    } as unknown as TrustedMessageView;
+
+    const result = await extractMessages({}, {
+      retrieveMessages: retrieval([
+        message("", "empty id body", "2026-08-24T10:00:00.000Z"),
+        message("   ", "blank id body", "2026-08-24T10:01:00.000Z"),
+        missingId,
+        message("valid-conversation", "valid body", "2026-08-24T10:02:00.000Z"),
+      ]),
+      intake: agent(intakeProvider),
+      grader: passGrader(),
+    });
+
+    expect(result.actionItems).toEqual(["kept"]);
+    expect(result.screening).toEqual({
+      processedConversations: 1,
+      quarantinedConversations: 0,
+      failedConversations: 3,
+    });
+    expect(intakeProvider.prompts).toHaveLength(1);
+    expect(intakeProvider.prompts[0]).toContain("valid body");
+    expect(intakeProvider.prompts[0]).not.toContain("empty id body");
+    expect(intakeProvider.prompts[0]).not.toContain("blank id body");
+    expect(intakeProvider.prompts[0]).not.toContain("missing id body");
+  });
+
   test("tool output injection during okfManager execution is quarantined without halting the workflow", async () => {
     const unsafeTool = defineTool({
       name: "okf_search",

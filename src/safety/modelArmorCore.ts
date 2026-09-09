@@ -263,17 +263,27 @@ export class ModelArmorScanner {
 
     const invocationResult = sanitizationResult.invocationResult ?? "INVOCATION_RESULT_UNSPECIFIED";
     const filterVerdicts = summarizeFilterVerdicts(sanitizationResult.filterResults);
-    const incompleteFilters = filterVerdicts.filter(({ executionState }) =>
-      executionState !== undefined && executionState !== "EXECUTION_SUCCESS"
+    const conclusiveMatchStates = new Set(["MATCH_FOUND", "NO_MATCH_FOUND"]);
+    const incompleteFilters = filterVerdicts.filter(({ executionState, matchState }) =>
+      executionState !== "EXECUTION_SUCCESS" ||
+      !matchState ||
+      !conclusiveMatchStates.has(matchState)
     ).map(({ filter }) => filter);
-    if (invocationResult !== "SUCCESS" || incompleteFilters.length > 0) {
+    const filterMatchState = sanitizationResult.filterMatchState;
+    const piVerdict = filterVerdicts.find(({ filter }) => filter === "pi_and_jailbreak");
+    if (
+      invocationResult !== "SUCCESS" ||
+      !filterMatchState ||
+      !conclusiveMatchStates.has(filterMatchState) ||
+      filterVerdicts.length === 0 ||
+      incompleteFilters.length > 0 ||
+      !piVerdict
+    ) {
       throw new Error(
         `Model Armor screening incomplete (invocation=${invocationResult}, filters=${incompleteFilters.join(",") || "unknown"})`,
       );
     }
 
-    const filterMatchState = sanitizationResult.filterMatchState ?? "NO_MATCH_FOUND";
-    const piVerdict = filterVerdicts.find(({ filter }) => filter === "pi_and_jailbreak");
     const flagged = piVerdict?.matchState === "MATCH_FOUND";
     const matchedFilters = filterVerdicts
       .filter(({ matchState }) => matchState === "MATCH_FOUND")

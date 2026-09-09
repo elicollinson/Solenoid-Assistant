@@ -90,7 +90,7 @@ const WORKFLOWS: readonly RunnableWorkflow[] = [
       start: blankIsAbsent(z.coerce.date()),
       end: blankIsAbsent(z.coerce.date()),
     }),
-    execute: async ({ start, end }) => {
+    execute: async ({ start, end }, { signal }) => {
       // Resolved here rather than left to default inside the reader, so the
       // window is on the trace, in the write-up and in the result. A pass that
       // reads nothing is otherwise indistinguishable from a quiet day — which
@@ -100,7 +100,10 @@ const WORKFLOWS: readonly RunnableWorkflow[] = [
       const windowEnd = end ?? new Date();
       const windowStart = start ?? new Date(windowEnd.getTime() - 24 * 3600_000);
 
-      const result = await extractMessages({ start: windowStart, end: windowEnd });
+      const result = await extractMessages(
+        { start: windowStart, end: windowEnd },
+        { signal },
+      );
       const { processedConversations, quarantinedConversations, failedConversations, quarantinedMemoryUpdates = 0 } = result.screening;
       const kept = result.okfUpdate === "none" ? 0 : 1;
       const window = { start: windowStart.toISOString(), end: windowEnd.toISOString() };

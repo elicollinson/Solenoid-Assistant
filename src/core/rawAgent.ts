@@ -362,6 +362,7 @@ export class Agent {
     // arrow-function-field behavior) despite `run` now being an overloaded
     // method with a generic signature.
     this.run = this.run.bind(this);
+    this.runWithSignal = this.runWithSignal.bind(this);
     this.runMessages = this.runMessages.bind(this);
   }
 
@@ -405,6 +406,28 @@ export class Agent {
     varsOrSchema?: unknown,
     maybeSchema?: z.ZodType,
   ): Promise<unknown> {
+    return this.runWithOptionalSignal(undefined, promptOrTemplate, varsOrSchema, maybeSchema);
+  }
+
+  runWithSignal(signal: AbortSignal, prompt: string): Promise<string>;
+  runWithSignal<S extends z.ZodType>(signal: AbortSignal, prompt: string, schema: S): Promise<z.infer<S>>;
+  runWithSignal<V>(signal: AbortSignal, template: PromptTemplate<V>, vars: V): Promise<string>;
+  runWithSignal<V, S extends z.ZodType>(signal: AbortSignal, template: PromptTemplate<V>, vars: V, schema: S): Promise<z.infer<S>>;
+  async runWithSignal(
+    signal: AbortSignal,
+    promptOrTemplate: string | PromptTemplate<any>,
+    varsOrSchema?: unknown,
+    maybeSchema?: z.ZodType,
+  ): Promise<unknown> {
+    return this.runWithOptionalSignal(signal, promptOrTemplate, varsOrSchema, maybeSchema);
+  }
+
+  private runWithOptionalSignal(
+    signal: AbortSignal | undefined,
+    promptOrTemplate: string | PromptTemplate<any>,
+    varsOrSchema?: unknown,
+    maybeSchema?: z.ZodType,
+  ): Promise<unknown> {
     const schema =
       maybeSchema ?? (varsOrSchema instanceof z.ZodType ? varsOrSchema : undefined);
     const vars = varsOrSchema instanceof z.ZodType ? undefined : varsOrSchema;
@@ -421,6 +444,7 @@ export class Agent {
       schema,
       prompt,
       "text/plain",
+      signal,
     );
   }
 
@@ -450,6 +474,7 @@ export class Agent {
     schema: z.ZodType | undefined,
     inputValue: string,
     inputMimeType: "text/plain" | "application/json",
+    externalSignal?: AbortSignal,
   ): Promise<unknown> {
     // Traced entry: one AGENT root span per invocation. Subclasses customize
     // behavior by overriding runInner/loop — never run or runMessages — so the
@@ -472,6 +497,9 @@ export class Agent {
         ...this.getTraceAttributes(),
       },
       async (span) => {
+        if (externalSignal?.aborted) {
+          throw this.cancellationFrom(externalSignal);
+        }
         // Route attempts restart from the opening transcript. Side effects do
         // not, so keep their journal at invocation scope.
         const writes: WriteJournal = { started: 0 };
@@ -492,6 +520,7 @@ export class Agent {
         }
         for (const [origin, parts] of byOrigin) {
           await this.screenPromptInjection(parts, "input", actionFor(origin));
+          if (externalSignal?.aborted) throw this.cancellationFrom(externalSignal);
         }
         for (let index = 0; index < this.routes.length; index++) {
           const route = this.routes[index]!;
@@ -502,6 +531,7 @@ export class Agent {
               messages,
               schema,
               writes,
+              externalSignal,
             );
             span.setAttribute("agent.completed_route_index", index);
             span.setAttribute(
@@ -572,13 +602,17 @@ export class Agent {
     originalMessages: ChatMessage[],
     schema: z.ZodType | undefined,
     writes: WriteJournal,
+    externalSignal?: AbortSignal,
   ): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(
       () => controller.abort(new AgentTimeoutError(this.timeoutMs)),
       this.timeoutMs,
     );
+    const cancel = () => controller.abort(this.cancellationFrom(externalSignal!));
+    externalSignal?.addEventListener("abort", cancel, { once: true });
     try {
+      if (externalSignal?.aborted) cancel();
       // The loop mutates its transcript. Each provider attempt starts from the
       // same original task rather than inheriting a failed model trajectory.
       const messages = originalMessages.map((message) => ({
@@ -592,6 +626,7 @@ export class Agent {
       throw error;
     } finally {
       clearTimeout(timer);
+      externalSignal?.removeEventListener("abort", cancel);
     }
   }
 
@@ -1081,6 +1116,14 @@ export class Agent {
       });
     }
     return error;
+  }
+
+  private cancellationFrom(signal: AbortSignal): AgentCancelledError {
+    const reason = signal.reason;
+    const detail = reason instanceof Error ? reason.message : String(reason ?? "cancelled");
+    return new AgentCancelledError(`Agent run was cancelled: ${detail}`, {
+      cause: reason,
+    });
   }
 
   private failureKind(error: unknown): AgentFailureKind {

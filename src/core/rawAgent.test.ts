@@ -443,6 +443,33 @@ describe("prompt-injection screening", () => {
     expect(primaryCalls).toHaveLength(4);
   });
 
+  test("intentional identical successful writes in one invocation both execute", async () => {
+    let writes = 0;
+    const tool = defineTool({
+      name: "increment_counter",
+      kind: "write",
+      description: "increment counter",
+      schema: z.object({ amount: z.number() }),
+      execute: () => ++writes,
+    });
+    const repeated = (id: string): Partial<ChatMessage> => ({
+      finishReason: "tool_calls",
+      toolCalls: [{ id, name: "increment_counter", arguments: { amount: 1 } }],
+    });
+    const agent = new Agent({
+      routes: routes(new ScriptedProvider([
+        repeated("first"),
+        repeated("second"),
+        { content: "done" },
+      ])),
+      tools: [tool],
+      promptInjectionScreening: false,
+    });
+
+    expect(await agent.run("increment twice")).toBe("done");
+    expect(writes).toBe(2);
+  });
+
   test("scanner failure is typed, safe, and terminal", async () => {
     const primary = new ScriptedProvider([{ content: "unused" }]);
     const fallback = new ScriptedProvider([{ content: "unused" }]);

@@ -218,8 +218,6 @@ interface LoopOptions {
 
 export interface WriteJournal {
   started: number;
-  completed: Set<string>;
-  quarantined: Set<string>;
 }
 
 export interface AgentOptions {
@@ -429,11 +427,7 @@ export class Agent {
       async (span) => {
         // Route attempts restart from the opening transcript. Side effects do
         // not, so keep their journal at invocation scope.
-        const writes: WriteJournal = {
-          started: 0,
-          completed: new Set(),
-          quarantined: new Set(),
-        };
+        const writes: WriteJournal = { started: 0 };
         // Grouped by declared origin, not by position. Everything defaults to
         // external, so the message-extraction and screenshot workflows — which
         // put a stranger's text into the opening transcript — keep aborting on
@@ -541,7 +535,7 @@ export class Agent {
     signal: AbortSignal,
     client: ChatProvider = this.routes[0].client,
     model: string = this.routes[0].model,
-    writes: WriteJournal = { started: 0, completed: new Set(), quarantined: new Set() },
+    writes: WriteJournal = { started: 0 },
   ): Promise<unknown> {
     // One session per attempt. A route that fails replays the original task, so
     // it should also replay from the same set of unopened groups.
@@ -1008,7 +1002,7 @@ export class Agent {
     rawArgs: unknown,
     signal: AbortSignal | undefined,
     session: ToolSession,
-    writes: WriteJournal = { started: 0, completed: new Set(), quarantined: new Set() },
+    writes: WriteJournal = { started: 0 },
   ): Promise<ToolOutcome> {
     const tool = this.tools.get(name) ?? session.resolve(name);
     if (!tool) {
@@ -1035,17 +1029,6 @@ export class Agent {
         try {
           const args = tool.schema.parse(rawArgs); // validate at the boundary
           span.setAttribute(SemanticConventions.INPUT_VALUE, safeJson(args));
-          const writeKey = `${name}\n${safeJson(args)}`;
-          if (tool.kind === "write" && writes.completed.has(writeKey)) {
-            const output = writes.quarantined.has(writeKey)
-              ? "Write already completed during this run; its response was quarantined. Do not repeat this write."
-              : "Write already completed during this run. Do not repeat this write.";
-            span.setAttributes({
-              "tool.replay_suppressed": true,
-              [SemanticConventions.OUTPUT_VALUE]: output,
-            });
-            return { ok: true, output };
-          }
 
           // Whoever is behind this run gets asked before anything changes.
           // After the parse, so a call that cannot be made is refused on its
@@ -1080,9 +1063,6 @@ export class Agent {
             Promise.resolve(tool.execute(args, { signal })),
             signal ?? new AbortController().signal,
           );
-          if (tool.kind === "write") {
-            writes.completed.add(writeKey);
-          }
           const output = typeof result === "string" ? result : JSON.stringify(result);
           // Every tool result is screened. There is no exemption list, because
           // a tool is the wrong unit to exempt: the interesting cases return
@@ -1119,7 +1099,6 @@ export class Agent {
               boundary: err.boundary,
             });
             if (tool.kind === "write") {
-              writes.quarantined.add(`${name}\n${safeJson(tool.schema.parse(rawArgs))}`);
               // The side effect is complete, so returning an ordinary failed
               // result would invite another call. End only this invocation;
               // workflow fanout contains the typed detection to its source.

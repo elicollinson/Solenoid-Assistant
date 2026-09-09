@@ -24,6 +24,7 @@ import {
   Transcript,
   WITHOUT_WRITEUP,
   ranAs,
+  runGoing,
   type WorkflowEdits,
   type WorkflowTrigger,
 } from "../WorkflowDetail";
@@ -302,6 +303,10 @@ function Detail({
 }) {
   const loaded = detail.status === "ready" && detail.data.slug === row.slug ? detail.data : null;
   const state = paused ? "idle" : row.state;
+  // Whether a run is going, by the run itself. Holding the schedule turns the
+  // mark idle, but the execution it started before the hold is still moving
+  // — and Kill run is the only way to stop THAT, so it goes by this.
+  const going = loaded ? runGoing(loaded) : row.state === "running";
   const [asking, setAsking] = useState(false);
   const [selected, setSelected] = useState("");
   const run = loaded?.executions.find((e) => e.id === selected) ?? loaded?.executions[0];
@@ -312,7 +317,7 @@ function Detail({
      form here in the sheet. Once the run is on the record the form has
      nothing left to ask, so it closes itself. */
   if (asking && trigger.started && !trigger.pending && !trigger.error) setAsking(false);
-  const canRun = Boolean(loaded?.runnable) && !paused && state !== "running" && !trigger.pending;
+  const canRun = Boolean(loaded?.runnable) && !paused && !going && !trigger.pending;
   const press = () => {
     if (!loaded) return;
     trigger.onClear();
@@ -380,7 +385,7 @@ function Detail({
         <Summary
           row={row}
           loaded={loaded}
-          state={state}
+          going={going}
           paused={paused}
           resolved={resolved}
           held={held}
@@ -414,7 +419,7 @@ function Nothing() {
 function Summary({
   row,
   loaded,
-  state,
+  going,
   paused,
   resolved,
   held,
@@ -429,7 +434,8 @@ function Summary({
 }: {
   row: WorkflowRow;
   loaded: WorkflowDetailPayload | null;
-  state: HomeState;
+  /** A run is going, whatever the schedule says. */
+  going: boolean;
   paused: boolean;
   resolved: ReadonlySet<string>;
   held: boolean;
@@ -448,9 +454,9 @@ function Summary({
         <p style={{ ...PROSE, font: "var(--text-phone-lede)" }}>{loaded.summary}</p>
       ) : null}
 
-      {loaded?.progress && state === "running" ? <Meter value={loaded.progress.value} total={loaded.progress.total} /> : null}
+      {loaded?.progress && going ? <Meter value={loaded.progress.value} total={loaded.progress.total} /> : null}
 
-      {state === "running" ? (
+      {going ? (
         <p style={{ margin: 0, font: "var(--text-phone-note)", color: "var(--text-3)", textWrap: "pretty" }}>
           {trigger.started ?? "A run"} is going now. This sheet re-reads itself while it does.
         </p>
@@ -535,11 +541,13 @@ function Summary({
             behind them and stay unavailable. The pause below is written to
             the schedule and re-read, the same as the desktop's. */}
         <Button variant="affirm" size="touch" disabled={!canRun} onClick={onPress}>
-          {trigger.pending ? "Starting…" : state === "running" ? "Running" : "Run it now"}
+          {trigger.pending ? "Starting…" : going ? "Running" : "Run it now"}
         </Button>
         {/* Stopping is the desktop's Kill run: the run is written down as
-            stopped now, and whatever the work returns afterwards is dropped. */}
-        {row.state === "running" ? (
+            stopped now, and whatever the work returns afterwards is dropped.
+            Offered by the run, not the mark: a schedule held off does not stop
+            the execution it already started, and this is what does. */}
+        {going ? (
           <Button variant="danger" size="touch" disabled={held} onClick={edits.onStop}>
             {edits.busy ? "Stopping…" : "Kill run"}
           </Button>

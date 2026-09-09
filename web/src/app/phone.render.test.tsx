@@ -30,6 +30,7 @@ import { MemoryPhone } from "./phone/MemoryPhone";
 import { RecommendationsPhone } from "./phone/RecommendationsPhone";
 import { RemindersPhone } from "./phone/RemindersPhone";
 import { WorkflowsPhone, type WorkflowEdits, type WorkflowTrigger } from "./phone/WorkflowsPhone";
+import { runGoing } from "./WorkflowDetail";
 import { loadReminder, loadReminders, type RemindersPayload } from "../../../src/db/queries/reminders";
 import { loadRecommendation, loadRecommendations } from "../../../src/db/queries/recommendations";
 import { proposeRecommendation } from "../../../src/db/mutations/recommendations";
@@ -492,6 +493,29 @@ describe("workflows", () => {
     expect(sheet({})).toMatch(/<button[^>]*>Kill run<\/button>/);
     expect(sheet({ busy: true })).toMatch(/<button[^>]*disabled[^>]*>Stopping…<\/button>/);
     expect(sheet({ error: "The run had already ended." })).toContain("The run had already ended.");
+    // Holding the schedule turns the mark idle, but the run it started before
+    // the hold is still going — and Kill run is the only way to stop it, so it
+    // stays. start → pause schedule → stop, without re-enabling the schedule.
+    const held = { ...detail, paused: true, state: "idle" as const };
+    const heldRows = { ...workflows, rows: workflows.rows.map((r) => (r.slug === held.slug ? { ...r, paused: true, state: "idle" as const } : r)) };
+    expect(held.executions[0]?.state).toBe("running");
+    const paused = inFrame(
+      <WorkflowsPhone
+        workflows={heldRows}
+        detail={{ status: "ready", data: held }}
+        openSlug="vendor-reconciliation"
+        onOpen={noop}
+        onTogglePause={noop}
+        onInvoke={noop}
+        trigger={idle}
+        edits={quiet}
+      />,
+    );
+    expect(paused).toMatch(/<button[^>]*>Kill run<\/button>/);
+    expect(paused).toContain(">Put it back on schedule<");
+    expect(runGoing(held)).toBe(true);
+    expect(runGoing({ executions: [] })).toBe(false);
+
     // A workflow that is not running offers no stop.
     const idleDetail = loadWorkflow(db, "bill-watch", MORNING, "phone");
     if (!idleDetail) throw new Error("bill-watch did not load");

@@ -43,6 +43,7 @@ import { RecommendationsPhone } from "./RecommendationsPhone";
 import { RemindersPhone } from "./RemindersPhone";
 import { WorkflowsPhone, isSheetTab, type SheetTab, type WorkflowEdits, type WorkflowTrigger } from "./WorkflowsPhone";
 import { NO_TRIGGER, triggerFor, triggerReducer } from "./trigger";
+import { runGoing } from "../WorkflowDetail";
 import { ChatPhone } from "./ChatPhone";
 import { useChat } from "../chat";
 import { PhoneAlert, PhoneNotice, PhoneScreen, PhoneSegments, isPhoneTab, type PhoneTab } from "./chrome";
@@ -589,7 +590,9 @@ function Workflows({
 
   // The server cannot tell the browser that a run moved, so while the open
   // one is going the browser asks every two seconds, as the desktop does.
-  const running = one.status === "ready" && one.data.state === "running";
+  // By the run, not the mark: a paused workflow's mark is idle while the run
+  // it started before the pause is still going, and that run still moves.
+  const running = one.status === "ready" && runGoing(one.data);
   useEffect(() => {
     if (!running) return;
     const timer = setInterval(() => setTicks((n) => n + 1), RUNNING_TICK_MS);

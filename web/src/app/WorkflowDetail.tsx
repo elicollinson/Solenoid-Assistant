@@ -92,6 +92,19 @@ const COLUMN = { display: "flex", flexDirection: "column", gap: "var(--sp-4)" } 
  * that slot instead — and "running · running" is the one pairing where the two
  * halves collapse into one word.
  */
+/**
+ * Whether an execution is going right now, whatever the schedule says.
+ *
+ * Not `workflow.state`: that is the status mark, and a paused workflow's mark
+ * is "idle" even while the run it started before the pause is still in
+ * flight. Pausing a schedule stops the NEXT run from being started; it does
+ * not stop this one, and the button that does — and the re-read that watches
+ * it — have to go by the run itself.
+ */
+export function runGoing(workflow: Pick<WorkflowDetailPayload, "executions">): boolean {
+  return workflow.executions[0]?.state === "running";
+}
+
 export function ranAs(run: WorkflowExecution): string {
   return run.duration === run.badge ? run.duration : `${run.duration} · ${run.badge}`;
 }
@@ -205,7 +218,7 @@ export function WorkflowDetail({
             >
               {trigger.pending ? "Starting…" : state === "running" ? "Running" : "Run"}
             </Button>
-            {workflow.state === "running" ? (
+            {runGoing(workflow) ? (
               <Button variant="danger" size="sm" disabled={edits.busy} onClick={edits.onStop}>
                 {edits.busy ? "Stopping…" : "Kill run"}
               </Button>

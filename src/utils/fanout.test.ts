@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   Agent,
   AgentTimeoutError,
+  ContentSafetyDetectedError,
   PromptInjectionDetectedError,
   PromptInjectionScreeningError,
 } from "../core/rawAgent";
@@ -164,6 +165,25 @@ describe("runIsolated", () => {
       { status: "fulfilled", key: "ok", index: 2, value: "done" },
     ]);
     expect(batch).toMatchObject({ completed: 1, quarantined: 2, failed: 0 });
+  });
+
+  test("quarantines a typed non-PI safety block without relabeling it", async () => {
+    const batch = await runIsolated({
+      items: ["blocked", "ok"],
+      key: (item) => item,
+      concurrency: 2,
+      execute: (item) => {
+        if (item === "blocked") throw new ContentSafetyDetectedError("input", ["rai"], "test-agent");
+        return "done";
+      },
+    });
+
+    expect(batch.results[0]).toMatchObject({
+      status: "quarantined",
+      reason: "content_safety",
+      boundary: "input",
+    });
+    expect(batch).toMatchObject({ completed: 1, quarantined: 1, failed: 0 });
   });
 
   test("records ordinary errors and continues", async () => {

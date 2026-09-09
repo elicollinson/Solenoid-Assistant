@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {
   PromptInjectionDetectedError,
+  ContentSafetyDetectedError,
+  isGuardrailDetectedError,
   isPromptInjectionDetectedError,
   isPromptInjectionScreeningError,
   type Agent,
@@ -17,7 +19,7 @@ export type IsolatedItemResult<K, R> =
       status: "quarantined";
       key: K;
       index: number;
-      reason: "prompt_injection";
+      reason: "prompt_injection" | "content_safety";
       boundary: PromptInjectionBoundary;
     }
   | { status: "rejected"; key: K; index: number; reason: Error };
@@ -121,12 +123,14 @@ export async function runIsolated<T, K extends IsolationKey, R>(
                   );
                   return;
                 }
-                if (isPromptInjectionDetectedError(error)) {
+                if (isGuardrailDetectedError(error)) {
                   results[index] = {
                     status: "quarantined",
                     key,
                     index,
-                    reason: "prompt_injection",
+                    reason: isPromptInjectionDetectedError(error)
+                      ? "prompt_injection"
+                      : "content_safety",
                     boundary: error.boundary,
                   };
                   itemSpan.setAttribute("item.status", "quarantined");
@@ -202,7 +206,9 @@ export async function fanout<T, S extends z.ZodType>(
     if (result.status === "quarantined") {
       return {
         status: "rejected",
-        reason: new PromptInjectionDetectedError(result.boundary),
+        reason: result.reason === "prompt_injection"
+          ? new PromptInjectionDetectedError(result.boundary)
+          : new ContentSafetyDetectedError(result.boundary, ["unknown"], "agent-fanout"),
       };
     }
     return { status: "rejected", reason: result.reason };

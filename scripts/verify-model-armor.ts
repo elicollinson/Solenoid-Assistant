@@ -57,8 +57,8 @@ try {
   console.log(`   ✓ Latency: ${attackLatency}ms`);
   console.log(`   ✓ Match state: ${attackResult.filterMatchState} (flagged: ${attackResult.flagged})`);
   console.log(`   ✓ Label: ${attackResult.label}`);
-  if (attackResult.filterResults) {
-    console.log(`   ✓ Filter details: ${JSON.stringify(attackResult.filterResults, null, 2)}`);
+  if (attackResult.filterVerdicts.length > 0) {
+    console.log(`   ✓ Filter verdicts: ${JSON.stringify(attackResult.filterVerdicts, null, 2)}`);
   }
 
   if (!attackResult.flagged) {

@@ -18,7 +18,7 @@
 // message this agent reads out of iMessage was written by somebody else, and
 // ../core/rawAgent.ts screens every tool result for injection whether or not
 // this file is involved.
-import { Agent, type AgentOptions, type ToolOutcome } from "../core/rawAgent";
+import { Agent, type AgentOptions, type ToolOutcome, type WriteJournal } from "../core/rawAgent";
 import type { ChatMessage } from "../core/providers";
 import type { z } from "zod";
 import { loaderName, type ToolSession } from "../core/toolGroups";
@@ -85,6 +85,7 @@ export class ChatAgent extends Agent {
     rawArgs: unknown,
     signal: AbortSignal | undefined,
     session: ToolSession,
+    writes?: WriteJournal,
   ): Promise<ToolOutcome> {
     const turn = currentTurn();
     const tool = this.tools.get(name) ?? session.resolve(name);
@@ -92,7 +93,7 @@ export class ChatAgent extends Agent {
     // Not in a chat, or a name that resolves to nothing. Either way there is
     // nobody to ask and nothing to report: hand it back to the base class,
     // which has the right words for an unopened group and an unknown tool.
-    if (!turn || !tool) return super.invokeTool(name, rawArgs, signal, session);
+    if (!turn || !tool) return super.invokeTool(name, rawArgs, signal, session, writes);
 
     let gated: string | undefined;
     if (this.policy(tool)) {
@@ -112,7 +113,7 @@ export class ChatAgent extends Agent {
     }
 
     const started = performance.now();
-    const result = await super.invokeTool(name, rawArgs, signal, session);
+    const result = await super.invokeTool(name, rawArgs, signal, session, writes);
     this.report(turn, name, rawArgs, tool, result, performance.now() - started, session);
     // The second sentence of the approval's outcome line. Only now is it true:
     // until this point the only honest thing to write was which button was

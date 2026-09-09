@@ -185,6 +185,12 @@ describe("ModelArmorScanner", () => {
                 matchState: "MATCH_FOUND",
               },
             },
+            pi_and_jailbreak: {
+              piAndJailbreakFilterResult: {
+                executionState: "EXECUTION_SUCCESS",
+                matchState: "NO_MATCH_FOUND",
+              },
+            },
           },
         },
       }),
@@ -201,6 +207,28 @@ describe("ModelArmorScanner", () => {
     for (const sanitizationResult of [
       { filterMatchState: "NO_MATCH_FOUND", filterResults: {} },
       { filterMatchState: "NO_MATCH_FOUND", invocationResult: "PARTIAL", filterResults: {} },
+      { filterMatchState: "NO_MATCH_FOUND", invocationResult: "SUCCESS" },
+      { filterMatchState: "NO_MATCH_FOUND", invocationResult: "SUCCESS", filterResults: {} },
+      {
+        filterMatchState: "NO_MATCH_FOUND",
+        invocationResult: "SUCCESS",
+        filterResults: {
+          pi_and_jailbreak: {
+            piAndJailbreakFilterResult: { executionState: "EXECUTION_SUCCESS" },
+          },
+        },
+      },
+      {
+        invocationResult: "SUCCESS",
+        filterResults: {
+          pi_and_jailbreak: {
+            piAndJailbreakFilterResult: {
+              executionState: "EXECUTION_SUCCESS",
+              matchState: "NO_MATCH_FOUND",
+            },
+          },
+        },
+      },
       {
         filterMatchState: "NO_MATCH_FOUND",
         invocationResult: "SUCCESS",
@@ -239,6 +267,14 @@ describe("ModelArmorScanner", () => {
           sanitizationResult: {
             filterMatchState: "NO_MATCH_FOUND",
             invocationResult: "SUCCESS",
+            filterResults: {
+              pi_and_jailbreak: {
+                piAndJailbreakFilterResult: {
+                  executionState: "EXECUTION_SUCCESS",
+                  matchState: "NO_MATCH_FOUND",
+                },
+              },
+            },
           },
         });
       },
@@ -266,6 +302,14 @@ describe("ModelArmorScanner", () => {
           sanitizationResult: {
             filterMatchState: "NO_MATCH_FOUND",
             invocationResult: "SUCCESS",
+            filterResults: {
+              pi_and_jailbreak: {
+                piAndJailbreakFilterResult: {
+                  executionState: "EXECUTION_SUCCESS",
+                  matchState: "NO_MATCH_FOUND",
+                },
+              },
+            },
           },
         });
       },

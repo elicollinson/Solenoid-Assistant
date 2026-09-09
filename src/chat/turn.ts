@@ -75,7 +75,12 @@ export interface ChatTurn {
    * see `ToolOutcome` in ../core/rawAgent.ts for the record this was getting
    * wrong.
    */
-  settled(decisionId: string, error: string | null, called: string): void;
+  settled(
+    decisionId: string,
+    error: string | null,
+    called: string,
+    completion?: "response_quarantined",
+  ): void;
 }
 
 const storage = new AsyncLocalStorage<ChatTurn>();

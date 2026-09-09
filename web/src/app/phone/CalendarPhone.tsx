@@ -212,6 +212,31 @@ function Detail({
           ))}
         </div>
       ) : null}
+
+      {/* The way through to whatever this is a projection of — the desktop
+          aside's "Where this came from". Not a button: it commits to nothing,
+          it only goes there. */}
+      {loaded?.link ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-4)" }}>
+          <MonoLabel>Where this came from</MonoLabel>
+          <button
+            type="button"
+            onClick={() => onInvoke(loaded.link!)}
+            style={{
+              all: "unset",
+              cursor: "pointer",
+              alignSelf: "flex-start",
+              minHeight: 34,
+              font: "var(--text-mono-control)",
+              letterSpacing: "var(--tracking-control)",
+              textTransform: "uppercase",
+              color: "var(--accent-quiet)",
+            }}
+          >
+            {loaded.link.label} →
+          </button>
+        </div>
+      ) : null}
     </Sheet>
   );
 }

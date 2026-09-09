@@ -17,11 +17,11 @@ The same origin presents two different shells at the `699px` breakpoint.
 | --- | --- | --- | --- |
 | Chat | Transcript, conversation rail, composer, streamed tool activity, write approvals | Conversation list, thread, one-line composer | Conversations, completed turns, and approval outcomes are stored |
 | Activity | Filtered feed plus the Waiting on you / Next up / Worth a look aside | Timeline feed; no filters or aside | Most decision actions settle only in the current browser session |
-| Workflows | List, filters, detail, run form, pause/resume, kill, instructions, executions, trace, logs | Filtered/grouped list, summary sheet, run form | Pause/resume and Run persist on both shells |
-| Reminders | List, filters, detail, evidence | Not present | Done and Later are session-local; destructive/edit controls are disabled |
+| Workflows | List, filters, detail, run form, pause/resume, kill, instructions, permissions, executions, trace, logs | Filtered/grouped list and a sheet carrying the same: Summary, Runs, Trace, Logs, run form, kill, instructions, permissions | Pause/resume, Run, Kill, instructions and permissions persist on both shells |
+| Reminders | List, filters, detail, evidence | Same list, filters, sheet and evidence viewer, reached from the Calendar tab's segment row | Done and Later are session-local; destructive/edit controls are disabled |
 | Calendar | Week/day time grid and detail aside | Seven-day strip, agenda, and detail sheet | Read-only apart from navigation or session-local decision effects |
 | Things I know | Group filters, client-side search, memory detail | Group filters and memory detail sheet | Read-only; all memory write/conflict controls are disabled |
-| Recommendations | List, filters, detail, evidence, adopt/decline | Not present | Adopt/decline is written to the API, with optimistic UI rollback on refusal |
+| Recommendations | List, filters, detail, evidence, adopt/decline | Same list, filters, sheet and evidence, reached from the Memory tab's segment row | Adopt/decline is written to the API, with optimistic UI rollback on refusal |
 | Theme | Paper/Dusk button | Follows the device color-scheme preference | Session-local |
 | PWA | Installable production build | Installable portrait home-screen app with safe-area layout | Only the app shell is cached; `/api` is always live-network-only |
 
@@ -38,11 +38,13 @@ These are current implementation facts, not test setup failures:
 - Desktop Activity decision actions and reminder Done/Later changes do not
   write to SQLite. They revert on reload. Calendar actions can navigate, but
   do not themselves perform an external operation.
-- Phone workflow Pause/Resume and Run write to the server and re-read, as on
-  the desktop. Killing a workflow, editing its instruction, and viewing
-  executions, trace, or logs are desktop-only.
-- Reminders and Recommendations have no phone destination. Phone navigation
-  effects aimed at either are ignored.
+- Phone workflow Pause/Resume, Run, Kill run, standing instructions and tool
+  permissions write to the server and re-read, as on the desktop. The sheet's
+  Runs, Trace and Logs tabs draw the same run record and log store answers.
+- Reminders and Recommendations have no bar entry of their own on the phone:
+  seven labels do not fit a 390px bar. They sit behind Calendar and Memory
+  respectively, one segment row down, and every navigation effect aimed at
+  either reaches it.
 - Memory edits, conflict resolution, and deletion are disabled on both shells.
 - The service worker caches the document and fetched static assets, never API
   responses. An offline launch should draw the shell and an API error, not old
@@ -293,11 +295,19 @@ width, 700px.
 Use 390×844, then check 320px wide and a real device if one is available.
 
 - [ ] **P-NAV-01 Shell.** At 699px or narrower, expect the phone frame and five
-  tabs in this order: Chat, Activity, Calendar, Memory, Workflows. Reminders and
-  Recommendations must not appear. At exactly 700px, expect the desktop shell.
-- [ ] **P-NAV-02 State per tab.** Open a Calendar, Memory, or Workflow sheet,
-  switch tabs, and return. Expect that tab's selected/open item to be retained.
-  Changing a list filter should close its open sheet.
+  tabs in this order: Chat, Activity, Calendar, Memory, Workflows. Calendar
+  carries a `Week · Reminders` segment row under the header and Memory carries
+  `Memories · Suggestions`; the second segment of each opens Reminders and
+  Recommendations with the parent tab still lit. At exactly 700px, expect the
+  desktop shell.
+- [ ] **P-NAV-02 State per tab.** Open a Calendar, Reminder, Memory,
+  Recommendation, or Workflow sheet, switch tabs, and return. Expect that tab's
+  selected/open item to be retained, and a workflow sheet to return on the tab
+  it was left on. Changing a list filter should close its open sheet.
+- [ ] **P-NAV-04 Effects reach every screen.** From Activity, `Read the log`
+  must open the Workflows sheet on Logs; a calendar reminder's `Where this came
+  from` must open the Reminders screen with that reminder's sheet; an effect
+  naming Recommendations must open the Suggestions screen.
 - [ ] **P-NAV-03 Ask dock.** On Activity, Calendar, Memory, or Workflows, press
   the accessible `Ask Solenoid` disc. Expect focused input, blank Send to do
   nothing, Escape/Close to discard, and a nonblank send to create exactly one
@@ -326,13 +336,46 @@ Use 390×844, then check 320px wide and a real device if one is available.
 - [ ] **P-MEM-01 List/detail.** Verify group chips, grouped rows, filter empty
   copy, and a detail sheet. Tapping a fact should expand/collapse provenance.
   Memory mutation and conflict buttons must remain disabled.
+- [ ] **P-REM-01 Reminders.** From Calendar, press the `Reminders` segment.
+  Verify All, Needs you and Done filters, the six due buckets, row title/note/
+  time/source, the attention badge, and Done / Later on every open row. A row
+  opens a sheet with `Mark it done`, `Remind me later`, a disabled `Drop it`,
+  the reason, the decision panel with its buttons, evidence rows that open the
+  source viewer full-height and close again, history, metadata and a disabled
+  instruction edit. Done must move the row to Closed and Later to Someday with
+  the lede recounted; both revert on reload.
+- [ ] **P-REC-01 Recommendations (conditional).** From Memory, press the
+  `Suggestions` segment. On the fixture database expect the intentional empty
+  sentence. With an open suggestion in a disposable database, verify All,
+  Waiting on you, Standing and Set aside; the row's affirm and `No`; and a
+  sheet with the two answers, a disabled `Ask me again later`, noticed prose,
+  the permission panel, effects, evidence and metadata. Adopting must move the
+  row to Standing at once, write `POST /api/recommendations/:id/answer`, and
+  survive reload; a 404/409/500 must roll the row back.
 - [ ] **P-WF-01 List/detail.** Verify horizontally scrollable filters and
-  urgency groups. A detail sheet should contain only summary, gate, effects,
-  stats, and standing instruction—not desktop executions/trace/logs. Pause/
-  Resume should hold the button during the write, move the row after the
-  re-read, and survive reload; restore the original state. On a viewport
-  shorter than the design's 844px, every sheet's Close row must still be on
-  screen.
+  urgency groups. A detail sheet opens on Summary — summary, gate, effects,
+  stats, permissions, standing instruction — with `Summary · Runs · Trace ·
+  Logs` chips under its header. Pause/Resume should hold the button during the
+  write, move the row after the re-read, and survive reload; restore the
+  original state. On a viewport shorter than the design's 844px, every sheet's
+  Close row must still be on screen.
+- [ ] **P-WF-03 Runs, trace and logs.** Open Q3 vendor reconciliation. `Runs`
+  lists every execution with its date, label and outcome; the newest is
+  selected and its write-up, halt reason, tool calls and raw result follow the
+  list. Select an older run, then open Trace and Logs: both must be about that
+  same run. Expanded / Collapsed must reset the whole trace, and the tree must
+  scroll inside its own box rather than widen the sheet. Log filters must show
+  All, Warnings or Errors and report the visible/total count and source.
+- [ ] **P-WF-04 Kill run.** Only in the disposable database, open a workflow
+  with a run going and press `Kill run`. Expect `Stopping…` while the write is
+  out, then the sheet re-read as stopped, the button gone, and a refusal shown
+  as `That didn't take.` above the summary. Pausing a schedule must not stop
+  the current execution.
+- [ ] **P-WF-05 Standing instructions.** Press `Edit instructions` (or `Give
+  me a rule`). Expect a 16px field with the current rule, Save disabled while
+  the text is unchanged, Cancel to discard, Save to persist after the re-read
+  and a reload, and clearing the text to retire the rule. Restore the original
+  before leaving the case.
 - [ ] **P-WF-02 Run from the sheet.** Open a design workflow: `Run it now` is
   disabled. Open Prompt-injection screen: `Run it now` is enabled and opens the
   form in the sheet, with the same fields, required marking, and defaults as
@@ -411,9 +454,11 @@ state transition.
   log source and filters are visible. Run-form required/400 validation works.
 - [ ] **S-05** Reminder Done/Later moves rows locally and reverts on reload;
   Recommendations shows its intentional empty state on the fixture database.
-- [ ] **S-06** At 390×844 all five phone tabs work; Calendar/Memory/Workflow
-  sheets open and close; the Ask dock opens, focuses, and cancels without send;
-  the Prompt-injection screen's run form refuses `0` words per chunk inline.
+- [ ] **S-06** At 390×844 all five phone tabs and both segment screens work;
+  Calendar/Reminder/Memory/Recommendation/Workflow sheets open and close; the
+  workflow sheet switches among Summary/Runs/Trace/Logs; the Ask dock opens,
+  focuses, and cancels without send; the Prompt-injection screen's run form
+  refuses `0` words per chunk inline.
 - [ ] **S-07** Keyboard-open one workflow row and one conversation row; inspect
   the Ask and memory-search accessible names; capture known focus/row gaps.
 - [ ] **S-08** Stop the API and reload once. The shell must remain and show a

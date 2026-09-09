@@ -27,8 +27,13 @@ import { zonedTime } from "../../../src/db/seed/time";
 import { ActivityPhone } from "./phone/ActivityPhone";
 import { CalendarPhone } from "./phone/CalendarPhone";
 import { MemoryPhone } from "./phone/MemoryPhone";
-import { WorkflowsPhone, type WorkflowTrigger } from "./phone/WorkflowsPhone";
-import { PhoneScreen, PHONE_TABS, phoneFrame } from "./phone/chrome";
+import { RecommendationsPhone } from "./phone/RecommendationsPhone";
+import { RemindersPhone } from "./phone/RemindersPhone";
+import { WorkflowsPhone, type WorkflowEdits, type WorkflowTrigger } from "./phone/WorkflowsPhone";
+import { loadReminder, loadReminders, type RemindersPayload } from "../../../src/db/queries/reminders";
+import { loadRecommendation, loadRecommendations } from "../../../src/db/queries/recommendations";
+import { proposeRecommendation } from "../../../src/db/mutations/recommendations";
+import { BAR_OF, PhoneScreen, PHONE_TABS, phoneFrame } from "./phone/chrome";
 
 let dir: string;
 let db: Db;
@@ -75,10 +80,24 @@ afterAll(() => {
 });
 
 describe("the frame", () => {
-  test("carries four destinations and none of the three the phone has no screen for", () => {
+  test("the bar carries the design's five, and the other two sit behind them", () => {
+    // Reminders and Recommendations are reachable — from the Calendar and
+    // Memory screens' segment rows, and by any navigation effect naming them —
+    // but seven labels do not fit a 390px bar, so the bar itself draws five.
     const markup = inFrame(null);
-    for (const label of ["Activity", "Calendar", "Memory", "Workflows"]) expect(markup).toContain(`>${label}<`);
+    for (const label of ["Chat", "Activity", "Calendar", "Memory", "Workflows"]) expect(markup).toContain(`>${label}<`);
     for (const absent of ["Reminders", "Recommendations", "Settings"]) expect(markup).not.toContain(`>${absent}<`);
+    expect(BAR_OF.Reminders).toBe("Calendar");
+    expect(BAR_OF.Recommendations).toBe("Things I know");
+  });
+
+  test("a screen behind another lights that one's bar entry", () => {
+    const markup = renderToStaticMarkup(
+      <PhoneScreen tab="Reminders" onTab={noop}>
+        {null}
+      </PhoneScreen>,
+    );
+    expect(markup).toMatch(/aria-current="page"[^>]*>(?:(?!<\/button>).)*Calendar/);
   });
 
   test("the tab bar and the rail disagree about the store's name on purpose", () => {
@@ -280,6 +299,7 @@ describe("things I know", () => {
 
 describe("workflows", () => {
   const idle: WorkflowTrigger = { pending: false, error: null, started: null, onRun: noop, onClear: noop };
+  const quiet: WorkflowEdits = { busy: false, error: null, onStop: noop, onInstructions: noop, onPermission: noop };
   const markup = (payload: WorkflowsPayload = workflows) =>
     inFrame(
       <WorkflowsPhone
@@ -290,6 +310,7 @@ describe("workflows", () => {
         onTogglePause={noop}
         onInvoke={noop}
         trigger={idle}
+        edits={quiet}
       />,
     );
 
@@ -331,7 +352,7 @@ describe("workflows", () => {
     expect(after).toContain("Paused by you");
   });
 
-  test("a tapped row opens the summary, the gate and the rule — and no trace", () => {
+  test("a tapped row opens the summary, the gate and the rule, with the other three tabs behind chips", () => {
     const gated = workflows.rows.find((r) => r.state === "attention");
     if (!gated) throw new Error("nothing is waiting on you in the fixtures");
     const detail = loadWorkflow(db, gated.slug, MORNING, "phone");
@@ -345,13 +366,16 @@ describe("workflows", () => {
         onTogglePause={noop}
         onInvoke={noop}
         trigger={idle}
+        edits={quiet}
       />,
     );
     expect(drawn).toContain("What changed");
     expect(drawn).toContain("This workflow");
     expect(drawn).toContain(esc(detail.gate?.title ?? ""));
-    // The four tabs stay on the desktop: cutting a trace to fit makes it worse.
-    for (const tab of ["Executions", "Trace", "Logs"]) expect(drawn).not.toContain(`>${tab}<`);
+    // The desktop's other three tabs are here too, one chip each; the sheet
+    // opens on Summary and draws the rest only when asked.
+    for (const tab of ["Trace", "Logs"]) expect(drawn).toContain(`>${tab}<`);
+    expect(drawn).not.toContain("Recent executions");
   });
 
   test("a gate answered in this browser is drawn closed, not asked again", () => {
@@ -370,6 +394,7 @@ describe("workflows", () => {
           onTogglePause={noop}
           onInvoke={noop}
           trigger={idle}
+          edits={quiet}
         />,
       );
     expect(sheet(NOTHING)).toContain(esc(detail.gate.title));
@@ -389,6 +414,7 @@ describe("workflows", () => {
         onTogglePause={noop}
         onInvoke={noop}
         trigger={idle}
+        edits={quiet}
       />,
     );
     expect(drawn).toContain("Step four failed twice against the archive.");
@@ -407,9 +433,102 @@ describe("workflows", () => {
         onTogglePause={noop}
         onInvoke={noop}
         trigger={idle}
+        edits={quiet}
       />,
     );
     expect(drawn).toMatch(/<button[^>]*disabled[^>]*>Run it now<\/button>/);
+  });
+
+  test("the sheet carries the desktop's other three tabs, on the run you picked", () => {
+    const detail = loadWorkflow(db, "vendor-reconciliation", MORNING, "phone");
+    if (!detail || !detail.executions[0]) throw new Error("vendor-reconciliation kept no runs");
+    const sheet = (tab: "Summary" | "Executions" | "Trace" | "Logs") =>
+      inFrame(
+        <WorkflowsPhone
+          workflows={workflows}
+          detail={{ status: "ready", data: detail }}
+          openSlug="vendor-reconciliation"
+          onOpen={noop}
+          tab={tab}
+          onTab={noop}
+          onTogglePause={noop}
+          onInvoke={noop}
+          trigger={idle}
+          edits={quiet}
+        />,
+      );
+    // The chips, with the run count on Runs.
+    expect(sheet("Summary")).toContain(`>Runs ${detail.executions.length}<`);
+    for (const label of ["Summary", "Trace", "Logs"]) expect(sheet("Summary")).toContain(`>${label}<`);
+    // Runs lists every execution and draws the newest one's account.
+    const runs = sheet("Executions");
+    for (const run of detail.executions) expect(runs).toContain(esc(run.label));
+    expect(runs).toContain("Recent executions");
+    // Trace and Logs are the same run's diagnostics, with their controls.
+    const trace = sheet("Trace");
+    expect(trace).toContain(">Expanded<");
+    expect(trace).toContain(">Collapsed<");
+    const logs = sheet("Logs");
+    for (const level of ["All", "Warnings", "Errors"]) expect(logs).toContain(`>${level}<`);
+    expect(logs).toContain("raw log");
+  });
+
+  test("a running workflow can be stopped from the sheet, and says so while it is", () => {
+    const detail = loadWorkflow(db, "vendor-reconciliation", MORNING, "phone");
+    if (!detail || detail.state !== "running") throw new Error("vendor-reconciliation is not running in the fixtures");
+    const sheet = (edits: Partial<WorkflowEdits>) =>
+      inFrame(
+        <WorkflowsPhone
+          workflows={workflows}
+          detail={{ status: "ready", data: detail }}
+          openSlug="vendor-reconciliation"
+          onOpen={noop}
+          onTogglePause={noop}
+          onInvoke={noop}
+          trigger={idle}
+          edits={{ ...quiet, ...edits }}
+        />,
+      );
+    expect(sheet({})).toMatch(/<button[^>]*>Kill run<\/button>/);
+    expect(sheet({ busy: true })).toMatch(/<button[^>]*disabled[^>]*>Stopping…<\/button>/);
+    expect(sheet({ error: "The run had already ended." })).toContain("The run had already ended.");
+    // A workflow that is not running offers no stop.
+    const idleDetail = loadWorkflow(db, "bill-watch", MORNING, "phone");
+    if (!idleDetail) throw new Error("bill-watch did not load");
+    expect(
+      inFrame(
+        <WorkflowsPhone
+          workflows={workflows}
+          detail={{ status: "ready", data: idleDetail }}
+          openSlug="bill-watch"
+          onOpen={noop}
+          onTogglePause={noop}
+          onInvoke={noop}
+          trigger={idle}
+          edits={quiet}
+        />,
+      ),
+    ).not.toContain("Kill run");
+  });
+
+  test("the standing rule can be edited from the sheet", () => {
+    const detail = loadWorkflow(db, "contract-review", MORNING, "phone");
+    if (!detail) throw new Error("contract-review did not load");
+    const drawn = inFrame(
+      <WorkflowsPhone
+        workflows={workflows}
+        detail={{ status: "ready", data: detail }}
+        openSlug="contract-review"
+        onOpen={noop}
+        onTogglePause={noop}
+        onInvoke={noop}
+        trigger={idle}
+        edits={quiet}
+      />,
+    );
+    expect(drawn).toContain("Standing instructions");
+    expect(drawn).toMatch(/<button[^>]*>(Edit instructions|Give me a rule)<\/button>/);
+    expect(drawn).not.toMatch(/<button[^>]*disabled[^>]*>(Edit instructions|Give me a rule)<\/button>/);
   });
 
   test("a catalogued workflow can be run from the sheet, with its form", () => {
@@ -432,6 +551,7 @@ describe("workflows", () => {
           onTogglePause={noop}
           onInvoke={noop}
           trigger={{ ...idle, ...trigger }}
+          edits={quiet}
         />,
       );
     expect(sheet({})).toMatch(/<button[^>]*>Run it now<\/button>/);
@@ -440,5 +560,124 @@ describe("workflows", () => {
     // a refusal is put in the sheet in the server's words.
     expect(sheet({ pending: true })).toMatch(/<button[^>]*disabled[^>]*>Starting…<\/button>/);
     expect(sheet({ error: "Words per chunk must be at least 1." })).toContain("Words per chunk must be at least 1.");
+  });
+});
+
+describe("reminders", () => {
+  let reminders: RemindersPayload;
+  beforeAll(() => {
+    reminders = loadReminders(db, MORNING);
+  });
+  const NO_MARKS = new Map<string, "done" | "later">();
+  const markup = (marks = NO_MARKS) =>
+    inFrame(
+      <RemindersPhone reminders={reminders} detail={loading} openId={null} onOpen={noop} marks={marks} onMark={noop} onInvoke={noop} />,
+    );
+
+  test("every reminder is a row under its due bucket, with the three filters", () => {
+    const drawn = markup();
+    for (const label of ["All", "Needs you", "Done"]) expect(drawn).toContain(`>${label}<`);
+    for (const row of reminders.rows) expect(drawn).toContain(esc(row.title));
+    expect(drawn).toContain("Overdue");
+  });
+
+  test("a due row offers Done and Later, and a mark moves it to Closed or Someday", () => {
+    const due = reminders.rows.find((r) => r.group === "Today" || r.group === "Overdue");
+    if (!due) throw new Error("nothing is due in the fixtures");
+    expect(markup()).toContain(">Done<");
+    expect(markup()).toContain(">Later<");
+    const done = markup(new Map([[due.id, "done"]]));
+    expect(done).toContain("Closed");
+    expect(done).toContain("You closed this out, so I stopped tracking it.");
+    const later = markup(new Map([[due.id, "later"]]));
+    expect(later).toContain("Someday");
+  });
+
+  test("a tapped reminder opens a sheet with its reason, gate, evidence and history", () => {
+    const gated = reminders.rows.find((r) => r.gated);
+    if (!gated) throw new Error("no gated reminder in the fixtures");
+    const detail = loadReminder(db, gated.id, MORNING);
+    if (!detail) throw new Error(`${gated.title} did not load`);
+    const drawn = inFrame(
+      <RemindersPhone
+        reminders={reminders}
+        detail={{ status: "ready", data: detail }}
+        openId={gated.id}
+        onOpen={noop}
+        marks={NO_MARKS}
+        onMark={noop}
+        onInvoke={noop}
+      />,
+    );
+    expect(drawn).toContain("Why I set this");
+    expect(drawn).toContain("This is the decision I");
+    for (const action of detail.gate?.actions ?? []) expect(drawn).toContain(esc(action.label));
+    expect(drawn).toContain("What I");
+    expect(drawn).toMatch(/<button[^>]*>Mark it done<\/button>/);
+    expect(drawn).toMatch(/<button[^>]*>Remind me later<\/button>/);
+    // Dropping a reminder has no write path on either shell.
+    expect(drawn).toMatch(/<button[^>]*disabled[^>]*>Drop it<\/button>/);
+    if (detail.evidence.length) expect(drawn).toContain(esc(detail.evidence[0]!.title));
+    expect(drawn).toContain("var(--tabbar-total)");
+  });
+});
+
+describe("recommendations", () => {
+  test("an empty store says so rather than inventing a suggestion", () => {
+    const drawn = inFrame(
+      <RecommendationsPhone
+        recommendations={loadRecommendations(db, MORNING)}
+        detail={loading}
+        openId={null}
+        onOpen={noop}
+        stances={new Map()}
+        onAnswer={noop}
+      />,
+    );
+    expect(drawn).toContain("Nothing to suggest yet.");
+    for (const label of ["All", "Waiting on you", "Standing", "Set aside"]) expect(drawn).toContain(`>${label}<`);
+  });
+
+  test("an open suggestion carries its two answers, a sheet, and moves when answered", () => {
+    const id = proposeRecommendation(db, {
+      title: "Let me settle vendor differences under £50 myself",
+      blurb: "I asked you about fourteen of these last quarter and you approved every one.",
+      confidence: "strong",
+      prose: ["Every reconciliation run this quarter turned up a handful of differences small enough that the answer never changed."],
+      restraint: "I did not apply this while waiting.",
+      basisLabel: "14 approvals · 0 rejections",
+      scopeLabel: "Vendor reconciliation",
+      scopeOkfUri: "okf:policy/spend-floor",
+      from: "6 runs",
+      effect: [["Questions I'd stop asking", "roughly 12 a quarter"]],
+      affirm: "Set the floor at £50",
+      quiet: "Keep asking me",
+      formedAt: MORNING,
+    });
+    const list = loadRecommendations(db, MORNING);
+    const detail = loadRecommendation(db, id, MORNING);
+    if (!detail) throw new Error("the proposed recommendation did not load");
+    const sheet = (stances: ReadonlyMap<string, "adopted" | "declined">, openId: string | null) =>
+      inFrame(
+        <RecommendationsPhone recommendations={list} detail={{ status: "ready", data: detail }} openId={openId} onOpen={noop} stances={stances} onAnswer={noop} />,
+      );
+    const open = sheet(new Map(), null);
+    expect(open).toContain("Waiting on you");
+    expect(open).toMatch(/<button[^>]*>Set the floor at £50<\/button>/);
+    expect(open).toContain(">No<");
+
+    const opened = sheet(new Map(), id);
+    expect(opened).toContain("What I noticed");
+    expect(opened).toContain("This is the permission I");
+    expect(opened).toContain("What changes if you say yes");
+    expect(opened).toContain(">Keep asking me<");
+    expect(opened).toMatch(/<button[^>]*disabled[^>]*>Ask me again later<\/button>/);
+
+    const adopted = sheet(new Map([[id, "adopted"]]), id);
+    expect(adopted).toContain("Standing");
+    expect(adopted).toContain("You took this just now.");
+    expect(adopted).not.toMatch(/<button[^>]*>Set the floor at £50<\/button>/);
+    const declined = sheet(new Map([[id, "declined"]]), null);
+    expect(declined).toContain("Set aside");
   });
 });

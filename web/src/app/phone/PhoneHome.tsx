@@ -1,38 +1,51 @@
 // The app below 700px.
 //
-// Four destinations and no rail. Which four is the design's decision, not a
-// shortage of room: Reminders and Recommendations have no phone screen drawn,
-// and the design's own rule is absent rather than invented. Nothing here hints
-// at them, so nothing here promises something a tap cannot deliver.
+// The desktop's seven destinations and no rail. Five of them are the tab bar,
+// which is what the design drew; Reminders and Recommendations sit behind
+// Calendar and Memory respectively — where the rail already groups them —
+// with a segment row to move between the pair. Nothing the desktop can reach
+// is out of reach here.
 //
-// Each tab fetches for itself. The alternative — reading all four here so the
-// state could live in one place — would put four requests on the wire to draw
-// one screen, on the frame least able to afford them.
+// Each tab fetches for itself. The alternative — reading everything here so
+// the state could live in one place — would put seven requests on the wire to
+// draw one screen, on the frame least able to afford them.
 import { useEffect, useReducer, useRef, useState } from "react";
 import { usePrefersDusk } from "../frame";
 import {
   answerDeferredWrite as writeDeferred,
+  answerRecommendation as writeAnswer,
   pauseWorkflow,
   runWorkflow,
+  saveInstructions,
+  saveWorkflowPermission,
+  stopWorkflow,
   useCalendar,
   useCalendarItem,
   useKnowledge,
   useKnowledgeObject,
   useHome,
+  useRecommendation,
+  useRecommendations,
+  useReminder,
+  useReminders,
   useWorkflow,
   useWorkflows,
   type HomeAction,
   type HomePayload,
 } from "../api";
 import { isDeferredWrite, pendingDecisionFor, withoutResolved } from "../settle";
+import type { LocalStance } from "../RecommendationsView";
+import type { LocalMark } from "../RemindersView";
 import { ActivityPhone } from "./ActivityPhone";
 import { CalendarPhone } from "./CalendarPhone";
 import { MemoryPhone } from "./MemoryPhone";
-import { WorkflowsPhone, type WorkflowTrigger } from "./WorkflowsPhone";
+import { RecommendationsPhone } from "./RecommendationsPhone";
+import { RemindersPhone } from "./RemindersPhone";
+import { WorkflowsPhone, isSheetTab, type SheetTab, type WorkflowEdits, type WorkflowTrigger } from "./WorkflowsPhone";
 import { NO_TRIGGER, triggerFor, triggerReducer } from "./trigger";
 import { ChatPhone } from "./ChatPhone";
 import { useChat } from "../chat";
-import { PhoneAlert, PhoneNotice, PhoneScreen, type PhoneTab } from "./chrome";
+import { PhoneAlert, PhoneNotice, PhoneScreen, PhoneSegments, isPhoneTab, type PhoneTab } from "./chrome";
 
 /** What each screen has open, kept per screen rather than as one field: coming
  *  back to Workflows should find the sheet you left open there. */
@@ -42,6 +55,10 @@ export function PhoneHome() {
   const dusk = usePrefersDusk();
   const [tab, setTab] = useState<PhoneTab>("Activity");
   const [open, setOpen] = useState<OpenBy>({});
+  // Which of the workflow sheet's four tabs is showing. Held here rather than
+  // in the sheet so a feed button naming one — "Trace" — opens it there, and
+  // so coming back to Workflows finds the tab you left.
+  const [workflowTab, setWorkflowTab] = useState<SheetTab>("Summary");
   // What the ask dock was last used to say, if anything. It is handed to the
   // Chat tab, which starts a conversation with it and sends it — the design's
   // `seed`. Cleared once spent, so switching back to Chat later does not send
@@ -52,6 +69,12 @@ export function PhoneHome() {
   // strikes: the entry turns done and the header recounts, and a reload puts
   // the question back. The one exception is below.
   const [resolved, setResolved] = useState<ReadonlySet<string>>(() => new Set());
+  // Same bargain for a reminder closed or pushed, as on the desktop: nothing
+  // writes those yet, so the mark lives here and reverts on reload.
+  const [reminderMarks, setReminderMarks] = useState<ReadonlyMap<string, LocalMark>>(() => new Map());
+  // A suggestion answered here moves at once and the write follows; a refusal
+  // takes the answer back. See `answerRecommendation`.
+  const [recommendationStances, setRecommendationStances] = useState<ReadonlyMap<string, LocalStance>>(() => new Map());
 
   // Which deferred write is being run right now, and what went wrong if it
   // was refused. The desktop keeps the same two, for the same reason: this is
@@ -85,6 +108,8 @@ export function PhoneHome() {
 
   const resolve = (decisionId: string) => setResolved((current) => new Set(current).add(decisionId));
 
+  const markReminder = (id: string, mark: LocalMark) => setReminderMarks((current) => new Map(current).set(id, mark));
+
   /**
    * A deferred write, answered.
    *
@@ -114,21 +139,46 @@ export function PhoneHome() {
   /**
    * Where a button says to go.
    *
-   * The desktop routes to any of its seven views. Here only four exist, so an
-   * effect naming Reminders is dropped rather than half-followed — a tab bar
-   * that jumped to a screen the phone does not draw would be worse than a
-   * button that only settles what it settles.
+   * Every one of the desktop's seven views has a screen here now, so an
+   * effect naming any of them is followed: the tab, the thing it names, and
+   * — for a workflow — which of the sheet's tabs to open on.
    *
    * Settling is not done here. Which decision an action closes is a fact about
    * the feed, and the feed is two components down; each screen closes what it
    * can see and calls this for the rest.
    */
   const invoke = (action: HomeAction) => {
-    const effect = action.effect as { view?: string; id?: string } | null;
-    if (!effect || typeof effect.view !== "string" || !isTab(effect.view)) return;
+    const effect = action.effect as { view?: string; id?: string; tab?: string } | null;
+    if (!effect || typeof effect.view !== "string" || !isPhoneTab(effect.view)) return;
     const view = effect.view;
     setTab(view);
     setOpen((current) => ({ ...current, [view]: effect.id ?? null }));
+    if (view === "Workflows") setWorkflowTab(typeof effect.tab === "string" && isSheetTab(effect.tab) ? effect.tab : "Summary");
+  };
+
+  /**
+   * Answering a suggestion.
+   *
+   * The screen moves first and the write follows, as on the desktop. An answer
+   * is one tap and the row it moves is right under your thumb, so waiting for
+   * the server would show you a button that looks unpressed for as long as
+   * the round trip takes. If the write is refused — you answered it on the
+   * desktop, or I withdrew it while this screen was open — the row goes back
+   * to asking, which is the truth: the next read would put it back anyway.
+   * The decision behind it closes too, so the feed stops asking on one
+   * screen what you answered on another.
+   */
+  const answerRecommendation = (id: string, stance: LocalStance, _wasOpen: boolean, action: HomeAction) => {
+    setRecommendationStances((current) => new Map(current).set(id, stance));
+    if (action.decisionId) resolve(action.decisionId);
+    invoke(action);
+    writeAnswer(id, stance).catch(() => {
+      setRecommendationStances((current) => {
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+    });
   };
 
   /** Said from another screen: go to Chat and let it start one with this. */
@@ -136,6 +186,8 @@ export function PhoneHome() {
     setSeed(text);
     setTab("Chat");
   };
+
+  const goto = (next: PhoneTab) => () => setTab(next);
 
   return (
     <div data-theme={dusk ? "dusk" : undefined} style={{ display: "contents" }}>
@@ -156,10 +208,51 @@ export function PhoneHome() {
         />
       ) : null}
       {tab === "Calendar" ? (
-        <Calendar tab={tab} onTab={setTab} onAsk={ask} openId={openOn("Calendar")} onOpen={setOpenOn("Calendar")} onInvoke={invoke} />
+        <Calendar
+          tab={tab}
+          onTab={setTab}
+          onAsk={ask}
+          openId={openOn("Calendar")}
+          onOpen={setOpenOn("Calendar")}
+          onInvoke={invoke}
+          onReminders={goto("Reminders")}
+        />
+      ) : null}
+      {tab === "Reminders" ? (
+        <Reminders
+          tab={tab}
+          onTab={setTab}
+          onAsk={ask}
+          openId={openOn("Reminders")}
+          onOpen={setOpenOn("Reminders")}
+          marks={reminderMarks}
+          onMark={markReminder}
+          onInvoke={invoke}
+          onResolve={resolve}
+          onCalendar={goto("Calendar")}
+        />
       ) : null}
       {tab === "Things I know" ? (
-        <Memory tab={tab} onTab={setTab} onAsk={ask} openId={openOn("Things I know")} onOpen={setOpenOn("Things I know")} />
+        <Memory
+          tab={tab}
+          onTab={setTab}
+          onAsk={ask}
+          openId={openOn("Things I know")}
+          onOpen={setOpenOn("Things I know")}
+          onRecommendations={goto("Recommendations")}
+        />
+      ) : null}
+      {tab === "Recommendations" ? (
+        <Recommendations
+          tab={tab}
+          onTab={setTab}
+          onAsk={ask}
+          openId={openOn("Recommendations")}
+          onOpen={setOpenOn("Recommendations")}
+          stances={recommendationStances}
+          onAnswer={answerRecommendation}
+          onMemory={goto("Things I know")}
+        />
       ) : null}
       {tab === "Workflows" ? (
         <Workflows
@@ -169,6 +262,8 @@ export function PhoneHome() {
           nonce={workflowsNonce}
           openSlug={openOn("Workflows")}
           onOpen={setOpenOn("Workflows")}
+          sheetTab={workflowTab}
+          onSheetTab={setWorkflowTab}
           resolved={resolved}
           pausing={pausing}
           pauseError={pauseError}
@@ -185,10 +280,6 @@ export function PhoneHome() {
 
 /** How often the open workflow asks again while a run is going. */
 const RUNNING_TICK_MS = 2000;
-
-const isTab = (view: string): view is PhoneTab =>
-  view === "Chat" || view === "Activity" || view === "Calendar" ||
-  view === "Things I know" || view === "Workflows";
 
 type Chrome = { tab: PhoneTab; onTab: (tab: PhoneTab) => void; onAsk: (text: string) => void };
 
@@ -299,7 +390,13 @@ function Calendar({
   openId,
   onOpen,
   onInvoke,
-}: Chrome & { openId: string | null; onOpen: (id: string | null) => void; onInvoke: (action: HomeAction) => void }) {
+  onReminders,
+}: Chrome & {
+  openId: string | null;
+  onOpen: (id: string | null) => void;
+  onInvoke: (action: HomeAction) => void;
+  onReminders: () => void;
+}) {
   const list = useCalendar("phone");
   const one = useCalendarItem(openId);
 
@@ -307,6 +404,12 @@ function Calendar({
   // disc floating over a sheet sits on its last rows and its buttons.
   return (
     <PhoneScreen meta={list.status === "ready" ? list.data.range : undefined} tab={tab} onTab={onTab} onAsk={openId ? undefined : onAsk}>
+      <PhoneSegments
+        items={[
+          { label: "Week", selected: true, onSelect: () => {} },
+          { label: "Reminders", selected: false, onSelect: onReminders },
+        ]}
+      />
       {list.status === "loading" ? <PhoneNotice label="Reading" text="Laying out your week." /> : null}
       {list.status === "error" ? <PhoneNotice label="No answer" text={`I couldn't read the week — ${list.message}.`} /> : null}
       {list.status === "ready" ? (
@@ -316,16 +419,122 @@ function Calendar({
   );
 }
 
-function Memory({ tab, onTab, onAsk, openId, onOpen }: Chrome & { openId: string | null; onOpen: (id: string | null) => void }) {
+function Reminders({
+  tab,
+  onTab,
+  onAsk,
+  openId,
+  onOpen,
+  marks,
+  onMark,
+  onInvoke,
+  onResolve,
+  onCalendar,
+}: Chrome & {
+  openId: string | null;
+  onOpen: (id: string | null) => void;
+  marks: ReadonlyMap<string, LocalMark>;
+  onMark: (id: string, mark: LocalMark) => void;
+  onInvoke: (action: HomeAction) => void;
+  onResolve: (id: string) => void;
+  onCalendar: () => void;
+}) {
+  const list = useReminders();
+  const one = useReminder(openId);
+  const due = list.status === "ready" ? list.data.rows.filter((r) => r.group === "Overdue" || r.group === "Today").length : 0;
+
+  // A gate's button closes the gate as well as doing whatever it says, so the
+  // Activity feed stops asking about something answered here.
+  const settle = (action: HomeAction) => {
+    if (one.status === "ready" && one.data.gate && action.effectKind !== "navigate") onResolve(one.data.gate.id);
+    onInvoke(action);
+  };
+
+  return (
+    <PhoneScreen meta={list.status === "ready" ? `${due} due` : undefined} tab={tab} onTab={onTab} onAsk={openId ? undefined : onAsk}>
+      <PhoneSegments
+        items={[
+          { label: "Week", selected: false, onSelect: onCalendar },
+          { label: "Reminders", selected: true, onSelect: () => {} },
+        ]}
+      />
+      {list.status === "loading" ? <PhoneNotice label="Reading" text="Listing what I'm holding for you." /> : null}
+      {list.status === "error" ? <PhoneNotice label="No answer" text={`I couldn't list them — ${list.message}.`} /> : null}
+      {list.status === "ready" ? (
+        <RemindersPhone
+          reminders={list.data}
+          detail={one}
+          openId={openId}
+          onOpen={onOpen}
+          marks={marks}
+          onMark={(id, mark) => onMark(id, mark)}
+          onInvoke={settle}
+        />
+      ) : null}
+    </PhoneScreen>
+  );
+}
+
+function Memory({
+  tab,
+  onTab,
+  onAsk,
+  openId,
+  onOpen,
+  onRecommendations,
+}: Chrome & { openId: string | null; onOpen: (id: string | null) => void; onRecommendations: () => void }) {
   const list = useKnowledge("phone");
   const one = useKnowledgeObject(openId);
   const facts = list.status === "ready" ? list.data.rows.reduce((sum, row) => sum + row.facts, 0) : 0;
 
   return (
     <PhoneScreen meta={list.status === "ready" ? `${facts} facts` : undefined} tab={tab} onTab={onTab} onAsk={openId ? undefined : onAsk}>
+      <PhoneSegments
+        items={[
+          { label: "Memories", selected: true, onSelect: () => {} },
+          { label: "Suggestions", selected: false, onSelect: onRecommendations },
+        ]}
+      />
       {list.status === "loading" ? <PhoneNotice label="Reading" text="Going through what I've written down." /> : null}
       {list.status === "error" ? <PhoneNotice label="No answer" text={`I couldn't read the store — ${list.message}.`} /> : null}
       {list.status === "ready" ? <MemoryPhone knowledge={list.data} detail={one} openId={openId} onOpen={onOpen} /> : null}
+    </PhoneScreen>
+  );
+}
+
+function Recommendations({
+  tab,
+  onTab,
+  onAsk,
+  openId,
+  onOpen,
+  stances,
+  onAnswer,
+  onMemory,
+}: Chrome & {
+  openId: string | null;
+  onOpen: (id: string | null) => void;
+  stances: ReadonlyMap<string, LocalStance>;
+  onAnswer: (id: string, stance: LocalStance, wasOpen: boolean, action: HomeAction) => void;
+  onMemory: () => void;
+}) {
+  const list = useRecommendations();
+  const one = useRecommendation(openId);
+  const waiting = list.status === "ready" ? list.data.rows.filter((r) => r.group === "Waiting on you" && !stances.has(r.id)).length : 0;
+
+  return (
+    <PhoneScreen meta={list.status === "ready" ? `${waiting} open` : undefined} tab={tab} onTab={onTab} onAsk={openId ? undefined : onAsk}>
+      <PhoneSegments
+        items={[
+          { label: "Memories", selected: false, onSelect: onMemory },
+          { label: "Suggestions", selected: true, onSelect: () => {} },
+        ]}
+      />
+      {list.status === "loading" ? <PhoneNotice label="Reading" text="Listing what I'd change about how I work." /> : null}
+      {list.status === "error" ? <PhoneNotice label="No answer" text={`I couldn't list them — ${list.message}.`} /> : null}
+      {list.status === "ready" ? (
+        <RecommendationsPhone recommendations={list.data} detail={one} openId={openId} onOpen={onOpen} stances={stances} onAnswer={onAnswer} />
+      ) : null}
     </PhoneScreen>
   );
 }
@@ -337,6 +546,8 @@ function Workflows({
   nonce,
   openSlug,
   onOpen,
+  sheetTab,
+  onSheetTab,
   resolved,
   pausing,
   pauseError,
@@ -349,6 +560,8 @@ function Workflows({
   nonce: number;
   openSlug: string | null;
   onOpen: (slug: string | null) => void;
+  sheetTab: SheetTab;
+  onSheetTab: (tab: SheetTab) => void;
   resolved: ReadonlySet<string>;
   pausing: string | null;
   pauseError: string | null;
@@ -364,9 +577,14 @@ function Workflows({
   // tab drops it, and the record — the run itself — is what comes back.
   const [asked, dispatch] = useReducer(triggerReducer, NO_TRIGGER);
   const [ticks, setTicks] = useState(0);
+  // The desktop's three edits — stop, rule, permission — share one busy and
+  // one refusal, and every one of them is followed by a re-read.
+  const [editing, setEditing] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
-  const list = useWorkflows("phone", nonce + ticks);
-  const one = useWorkflow(openSlug, "phone", nonce + ticks);
+  const reads = nonce + ticks;
+  const list = useWorkflows("phone", reads);
+  const one = useWorkflow(openSlug, "phone", reads);
   const count = list.status === "ready" ? list.data.rows.length : 0;
 
   // The server cannot tell the browser that a run moved, so while the open
@@ -395,6 +613,30 @@ function Workflows({
         .catch((error: unknown) => {
           dispatch({ type: "refused", slug, message: error instanceof Error ? error.message : String(error) });
         });
+    },
+  };
+
+  const write = (act: () => Promise<unknown>) => {
+    setEditing(true);
+    setEditError(null);
+    act()
+      .catch((error: unknown) => setEditError(error instanceof Error ? error.message : String(error)))
+      .finally(() => {
+        setTicks((n) => n + 1);
+        setEditing(false);
+      });
+  };
+  const edits: WorkflowEdits = {
+    busy: editing,
+    error: editError,
+    onStop: () => {
+      if (openSlug) write(() => stopWorkflow(openSlug));
+    },
+    onInstructions: (text) => {
+      if (openSlug) write(() => saveInstructions(openSlug, text));
+    },
+    onPermission: (capability, mode) => {
+      if (openSlug) write(() => saveWorkflowPermission(openSlug, capability, mode));
     },
   };
 
@@ -431,12 +673,19 @@ function Workflows({
           workflows={list.data}
           detail={one}
           openSlug={openSlug}
-          onOpen={onOpen}
+          onOpen={(slug) => {
+            onOpen(slug);
+            if (slug !== openSlug) onSheetTab("Summary");
+          }}
+          tab={sheetTab}
+          onTab={onSheetTab}
           resolved={resolved}
           busy={pausing !== null}
           onTogglePause={onTogglePause}
           onInvoke={settle}
           trigger={trigger}
+          edits={edits}
+          nonce={reads}
         />
       ) : null}
     </PhoneScreen>

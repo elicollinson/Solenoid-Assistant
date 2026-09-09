@@ -48,7 +48,7 @@ export function withLocalMark(row: ReminderRow, marks: ReadonlyMap<string, Local
  * here takes it off this count, which is the whole point: the sentence would
  * otherwise keep insisting on something the list below it no longer shows.
  */
-function overdueClause(rows: readonly ReminderRow[]): string {
+export function overdueClause(rows: readonly ReminderRow[]): string {
   const late = rows.filter((row) => row.group === "Overdue").length;
   if (late === 0) return "Nothing is overdue.";
   if (late === 1) return "One of them is past when you asked to hear about it.";

@@ -92,7 +92,7 @@ const COLUMN = { display: "flex", flexDirection: "column", gap: "var(--sp-4)" } 
  * that slot instead — and "running · running" is the one pairing where the two
  * halves collapse into one word.
  */
-function ranAs(run: WorkflowExecution): string {
+export function ranAs(run: WorkflowExecution): string {
   return run.duration === run.badge ? run.duration : `${run.duration} · ${run.badge}`;
 }
 
@@ -399,17 +399,21 @@ function SummaryPane({
  * Keyed on the stored text by its caller, so a save landing from elsewhere
  * remounts this with the new rule rather than leaving a stale draft over it.
  */
-function Instructions({
+export function Instructions({
   text,
   busy,
   onSave,
+  touch = false,
 }: {
   text: string | null;
   busy: boolean;
   onSave: (text: string) => void;
+  /** In a phone sheet: buttons at touch height, the field at 16px. */
+  touch?: boolean;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const editing = draft != null;
+  const size = touch ? "touch" : "sm";
 
   return (
     <div style={COLUMN}>
@@ -430,16 +434,16 @@ function Instructions({
               borderRadius: "var(--radius-control)",
               background: "var(--surface-app)",
               color: "var(--text-1)",
-              font: "var(--text-body-sm)",
+              font: touch ? "var(--text-phone-lede)" : "var(--text-body-sm)",
               lineHeight: 1.5,
               resize: "vertical",
               outline: "none",
             }}
           />
-          <div style={{ display: "flex", gap: "var(--sp-3)" }}>
+          <div style={{ display: "flex", gap: "var(--sp-3)", flexDirection: touch ? "column" : "row" }}>
             <Button
               variant="affirm"
-              size="sm"
+              size={size}
               disabled={busy || draft.trim() === (text ?? "")}
               onClick={() => {
                 onSave(draft);
@@ -448,7 +452,7 @@ function Instructions({
             >
               {busy ? "Saving…" : "Save"}
             </Button>
-            <Button variant="bare" size="sm" onClick={() => setDraft(null)}>
+            <Button variant="bare" size={size} onClick={() => setDraft(null)}>
               Cancel
             </Button>
           </div>
@@ -461,7 +465,7 @@ function Instructions({
           <p style={{ margin: 0, font: "var(--text-body-sm)", color: text ? "var(--text-2)" : "var(--text-3)", textWrap: "pretty" }}>
             {text ?? "You haven't given me a rule for this one, so I run it the way it was set up."}
           </p>
-          <Button variant="bare" size="sm" onClick={() => setDraft(text ?? "")} style={{ alignSelf: "flex-start" }}>
+          <Button variant="bare" size={size} onClick={() => setDraft(text ?? "")} style={{ alignSelf: "flex-start" }}>
             {text ? "Edit instructions" : "Give me a rule"}
           </Button>
         </>
@@ -560,7 +564,7 @@ function ExecutionsPane({
  * two need to be checked against each other. Collapsed by default because a
  * screenshot sweep returns a page of JSON and the account of it is two lines.
  */
-function Output({ json }: { json: string }) {
+export function Output({ json }: { json: string }) {
   const [open, setOpen] = useState(false);
   const lines = json.split("\n").length;
 
@@ -610,7 +614,7 @@ function Output({ json }: { json: string }) {
   );
 }
 
-function Transcript({ turns }: { turns: NonNullable<WorkflowExecution["detail"]>["transcript"] }) {
+export function Transcript({ turns }: { turns: NonNullable<WorkflowExecution["detail"]>["transcript"] }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-6)" }}>
       {turns.map((turn, i) => (
@@ -671,7 +675,7 @@ function ExecRow({ run, selected, onClick }: { run: WorkflowExecution; selected:
   );
 }
 
-function TracePane({ workflow, run }: { workflow: WorkflowDetailPayload; run: WorkflowExecution }) {
+export function TracePane({ workflow, run }: { workflow: WorkflowDetailPayload; run: WorkflowExecution }) {
   const [open, setOpen] = useState(true);
   const nodes = (run.detail?.trace ?? []).map(toTraceNode);
 
@@ -687,8 +691,8 @@ function TracePane({ workflow, run }: { workflow: WorkflowDetailPayload; run: Wo
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-6)", maxWidth: 900 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--sp-6)" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-6)", maxWidth: 900, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--sp-6)", flexWrap: "wrap" }}>
         <MonoLabel>{workflow.step ? `${run.label} · step ${workflow.step.replace("/", " of ")}` : run.label}</MonoLabel>
         <div style={{ display: "flex", gap: "var(--sp-2)", flexShrink: 0 }}>
           <Chip selected={open} onClick={() => setOpen(true)}>
@@ -699,8 +703,10 @@ function TracePane({ workflow, run }: { workflow: WorkflowDetailPayload; run: Wo
           </Chip>
         </div>
       </div>
-      {/* Remounting is what makes the two chips reset every node's own state. */}
-      <TraceTree key={String(open)} nodes={nodes} defaultOpen={open} />
+      {/* Remounting is what makes the two chips reset every node's own state.
+          The tree scrolls sideways inside its own box on a narrow screen rather
+          than widening the sheet it sits in. */}
+      <TraceTree key={String(open)} nodes={nodes} defaultOpen={open} style={{ overflowX: "auto" }} />
       <p style={{ margin: 0, font: "var(--text-body-sm)", color: "var(--text-3)", maxWidth: "var(--measure)" }}>
         Amber steps are held on purpose, not broken. Grey steps are waiting on something above them.
       </p>
@@ -721,7 +727,7 @@ function toTraceNode(node: WorkflowTraceNode): TraceNode {
 }
 
 /** Why a run has no account of itself, by how it ended. */
-const WITHOUT_WRITEUP: Record<string, string> = {
+export const WITHOUT_WRITEUP: Record<string, string> = {
   stopped: "You stopped this one before it finished, so it never wrote an account of itself. The log below has what it managed first.",
   running: "I'll write the account when this pass ends.",
   halted: "It halted before it could write anything up. The error is above and the log has the rest.",
@@ -746,7 +752,7 @@ const LEVELS = ["All", "Warnings", "Errors"] as const;
  * on screen from the workflow read, and the store's answer replaces it when it
  * lands.
  */
-function LogsPane({ run, nonce }: { run: WorkflowExecution; nonce: number }) {
+export function LogsPane({ run, nonce }: { run: WorkflowExecution; nonce: number }) {
   const [level, setLevel] = useState<(typeof LEVELS)[number]>("All");
   const stored = useRunLogs(run.id, nonce);
 
@@ -775,8 +781,8 @@ function LogsPane({ run, nonce }: { run: WorkflowExecution; nonce: number }) {
     }));
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-6)", maxWidth: 900 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--sp-6)" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-6)", maxWidth: 900, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--sp-6)", flexWrap: "wrap" }}>
         <MonoLabel>{run.label} · raw log</MonoLabel>
         <div style={{ display: "flex", gap: "var(--sp-2)", flexShrink: 0 }}>
           {LEVELS.map((l) => (

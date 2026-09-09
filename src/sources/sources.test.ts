@@ -173,6 +173,46 @@ describe("screenshot retention", () => {
     ).rejects.toThrow("hash mismatch");
     expect(candidate(hash, db)).toBeNull();
   });
+  test("consumer discards after exactly five failures and collection cannot restart retries", async () => {
+    await stagePhoto(photo, png, db);
+    let calls = 0;
+    const fail = async () => { calls++; throw new Error("outage"); };
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      db.$client.query("UPDATE source_candidates SET retry_at=0 WHERE hash=?").run(hash);
+      expect(await consumeScreenshot(db, fail)).toBe(true);
+      expect(candidate(hash, db)!.attempts).toBe(attempt);
+      expect(candidate(hash, db)!.status).toBe(attempt < 5 ? "failed" : "rejected");
+    }
+    expect(calls).toBe(5);
+    expect(await stat(assetPath(hash, ".png", true)).catch(() => null)).toBeNull();
+    expect(await stat(assetPath(hash, ".png")).catch(() => null)).toBeNull();
+    expect(db.$client.query("SELECT * FROM source_photo_candidates").all()).toHaveLength(0);
+    expect(await stagePhoto(photo, png, db)).toEqual({ status: "rejected" });
+    expect(await consumeScreenshot(db, fail)).toBe(false);
+    expect(calls).toBe(5);
+  });
+  test("a fifth attempt can still succeed", async () => {
+    await stagePhoto(photo, png, db);
+    db.$client.query("UPDATE source_candidates SET attempts=4 WHERE hash=?").run(hash);
+    await consumeScreenshot(db, async () => ({ result: { classification: "Movie", name: "Arrival" }, status: "rejected" }));
+    expect(candidate(hash, db)!.attempts).toBe(5);
+    expect(candidate(hash, db)!.status).toBe("accepted");
+    expect(await readFile(assetPath(hash, ".png"))).toEqual(png);
+  });
+  test("legacy exhausted candidates are discarded without another call, respecting active leases", async () => {
+    await stagePhoto(photo, png, db);
+    db.$client.query("UPDATE source_candidates SET status='processing',attempts=11,retry_at=?,lease_until=? WHERE hash=?")
+      .run(Date.now() + 3600000, Date.now() + 3600000, hash);
+    let calls = 0;
+    const classify = async () => { calls++; throw new Error("must not run"); };
+    expect(await consumeScreenshot(db, classify)).toBe(false);
+    db.$client.query("UPDATE source_candidates SET lease_until=0 WHERE hash=?").run(hash);
+    expect(await consumeScreenshot(db, classify)).toBe(true);
+    expect(calls).toBe(0);
+    expect(candidate(hash, db)!.attempts).toBe(11);
+    expect(candidate(hash, db)!.status).toBe("rejected");
+    expect(await stat(assetPath(hash, ".png", true)).catch(() => null)).toBeNull();
+  });
   test("consumer retries transient errors without falsely rejecting", async () => {
     await stagePhoto(photo, png, db);
     await consumeScreenshot(db, async () => {

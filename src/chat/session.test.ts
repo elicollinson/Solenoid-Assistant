@@ -11,11 +11,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ChatAgent } from "../agents/chat";
 import type { ChatMessage, ChatOptions, ChatProvider } from "../core/providers";
+import { defineTool } from "../core/tools";
 import { createDb, runMigrations, type Db } from "../db";
 import { loadChat } from "../db/queries/chat";
 import { startConversation } from "../db/mutations/chat";
 import { NotWaitingError, answerApproval, isHeld, runChatTurn } from "./session";
 import type { ChatEvent } from "./turn";
+import { z } from "zod";
 
 class ScriptedProvider implements ChatProvider {
   readonly providerName = "scripted";
@@ -49,11 +51,14 @@ afterEach(() => {
 
 /** The agent, with a scripted model and the injection screen out of the way —
  *  it has its own tests, and it needs a 200MB model this one should not load. */
-function agentFor(script: Partial<ChatMessage>[]): ChatAgent {
+function agentFor(
+  script: Partial<ChatMessage>[],
+  screening: false | ((parts: readonly [string, ...string[]]) => Promise<{ flagged: boolean }>) = false,
+): ChatAgent {
   return new ChatAgent({
     routes: [{ client: new ScriptedProvider(script), model: "scripted" }],
     context: { db, okf: { root: join(dir, "okf"), actor: "chat/test" } },
-    promptInjectionScreening: false,
+    promptInjectionScreening: screening,
   });
 }
 
@@ -148,6 +153,52 @@ describe("a turn that wants to write", () => {
     // pressed, and what the call did, which was not knowable until it returned.
     expect(bubble.approval?.settled).toContain('You said "Go ahead"');
     expect(bubble.approval?.settled).toContain("reminders.create ran and finished");
+    expect(chat.waiting).toBe(0);
+  });
+
+  test("settles an approved completed write whose response is quarantined", async () => {
+    let writes = 0;
+    const agent = agentFor([
+      call("record_external_receipt", { title: "Call the plumber" }),
+      { content: "must not continue after the quarantined write" },
+    ], async ([part]) => ({ flagged: part === "unsafe external receipt" })).addTool(
+      defineTool({
+        name: "record_external_receipt",
+        kind: "write",
+        description: "Record a reminder and return an external receipt.",
+        schema: z.object({ title: z.string() }),
+        execute: () => {
+          writes++;
+          return "unsafe external receipt";
+        },
+      }),
+    );
+    const events = runChatTurn(db, agent, conversationId, "remind me to call the plumber");
+    const seen: ChatEvent[] = [];
+
+    for await (const event of events) {
+      seen.push(event);
+      if (event.type === "approval") {
+        const goAhead = event.actions.find((action) => action.stance === "affirm")!;
+        answerApproval(db, goAhead.id);
+      }
+    }
+
+    expect(writes).toBe(1);
+    expect(seen.find((event) => event.type === "tool")).toMatchObject({
+      name: "record.external_receipt",
+      kind: "write",
+      ok: true,
+      responseQuarantined: true,
+    });
+    expect(seen.at(-1)).toMatchObject({ type: "error" });
+
+    const chat = loadChat(db, conversationId);
+    const approval = chat.turns.find((turn) => turn.approval)?.approval;
+    expect(approval).toMatchObject({ state: "resolved" });
+    expect(approval?.settled).toContain("record.external_receipt ran and finished");
+    expect(approval?.settled).toContain("response was quarantined");
+    expect(approval?.settled).not.toContain("Call the plumber");
     expect(chat.waiting).toBe(0);
   });
 

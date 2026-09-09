@@ -64,6 +64,7 @@ export function extractJson(raw: string): string {
 
 export const DEFAULT_AGENT_TIMEOUT_MS = 5 * 60_000;
 const SUBMIT_RESULT_TOOL_NAME = "submit_result";
+const MAX_TRANSIENT_PROVIDER_ATTEMPTS = 2;
 
 export class AgentTimeoutError extends Error {
   readonly code = "AGENT_TIMEOUT";
@@ -75,11 +76,57 @@ export class AgentTimeoutError extends Error {
 }
 
 export class AgentRunError extends Error {
-  readonly code = "AGENT_RUN_FAILED";
+  readonly code: string = "AGENT_RUN_FAILED";
 
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "AgentRunError";
+  }
+}
+
+export type AgentFailureKind =
+  | "timeout"
+  | "cancelled"
+  | "context_limit"
+  | "provider_connection"
+  | "provider_error";
+
+export interface AgentRouteFailure {
+  provider: string;
+  model: string;
+  kind: AgentFailureKind;
+  message: string;
+}
+
+export class AgentRouteError extends AgentRunError {
+  override readonly code = "AGENT_ROUTES_FAILED";
+
+  constructor(readonly failures: readonly AgentRouteFailure[]) {
+    super(
+      "All model routes failed: " + failures.map((failure, index) =>
+        `${index + 1}. ${failure.provider}/${failure.model} [${failure.kind}]: ${failure.message}`
+      ).join("; "),
+      { cause: failures.at(-1) },
+    );
+    this.name = "AgentRouteError";
+  }
+}
+
+export class AgentContextLimitError extends AgentRunError {
+  override readonly code = "AGENT_CONTEXT_LIMIT";
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AgentContextLimitError";
+  }
+}
+
+export class AgentCancelledError extends AgentRunError {
+  override readonly code = "AGENT_CANCELLED";
+
+  constructor(message = "Agent run was cancelled", options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AgentCancelledError";
   }
 }
 
@@ -428,6 +475,7 @@ export class Agent {
         // Route attempts restart from the opening transcript. Side effects do
         // not, so keep their journal at invocation scope.
         const writes: WriteJournal = { started: 0 };
+        const routeFailures: AgentRouteFailure[] = [];
         // Grouped by declared origin, not by position. Everything defaults to
         // external, so the message-extraction and screenshot workflows — which
         // put a stranger's text into the opening transcript — keep aborting on
@@ -468,13 +516,29 @@ export class Agent {
             ) {
               throw error;
             }
+            const normalized = this.normalizeProviderFailure(error);
+            if (
+              normalized instanceof AgentContextLimitError ||
+              normalized instanceof AgentCancelledError
+            ) {
+              throw normalized;
+            }
+            routeFailures.push({
+              provider: route.client.providerName ?? "unknown",
+              model: route.model,
+              kind: this.failureKind(normalized),
+              message: normalized instanceof Error ? normalized.message : String(normalized),
+            });
             const nextRoute = this.routes[index + 1];
-            if (!nextRoute) throw error;
+            if (!nextRoute) {
+              if (routeFailures.length === 1) throw normalized;
+              throw new AgentRouteError(routeFailures);
+            }
             if (writes.started > 0) {
               span.addEvent("agent.route_fallback_suppressed", {
                 "agent.started_writes": writes.started,
               });
-              throw error;
+              throw normalized;
             }
             span.addEvent("agent.route_advanced", {
               "route.failed_index": index,
@@ -482,7 +546,8 @@ export class Agent {
               "route.failed_model": route.model,
               "route.next_provider": nextRoute.client.providerName ?? "unknown",
               "route.next_model": nextRoute.model,
-              "route.error": error instanceof Error ? error.message : String(error),
+              "route.error": normalized instanceof Error ? normalized.message : String(normalized),
+              "route.failure_kind": this.failureKind(normalized),
             });
             log.warn("[route] task failed; requeueing on the next model route", {
               failedRouteIndex: index,
@@ -491,7 +556,8 @@ export class Agent {
               nextRouteIndex: index + 1,
               nextProvider: nextRoute.client.providerName ?? "unknown",
               nextModel: nextRoute.model,
-              error: error instanceof Error ? error.message : String(error),
+              failureKind: this.failureKind(normalized),
+              error: normalized instanceof Error ? normalized.message : String(normalized),
             });
           }
         }
@@ -711,6 +777,7 @@ export class Agent {
 
     let turn = 0;
     let retryDelayMs = 250;
+    let transientAttempts = 0;
     while (true) {
       if (options.signal.aborted) throw abortReason(options.signal);
       turn++;
@@ -741,14 +808,19 @@ export class Agent {
           options.signal,
         );
         retryDelayMs = 250;
+        transientAttempts = 0;
       } catch (error) {
         if (options.signal.aborted) throw abortReason(options.signal);
-        if (!this.isTransientProviderError(error)) throw error;
+        const normalized = this.normalizeProviderFailure(error);
+        if (!this.isTransientProviderError(normalized)) throw normalized;
+        transientAttempts++;
+        if (transientAttempts >= MAX_TRANSIENT_PROVIDER_ATTEMPTS) throw normalized;
         log.warn("[retry] transient model call failure", {
           turn,
           phase: options.phase,
+          failureKind: this.failureKind(normalized),
           retryInMs: retryDelayMs,
-          error: error instanceof Error ? error.message : String(error),
+          error: normalized instanceof Error ? normalized.message : String(normalized),
         });
         await this.waitFor(retryDelayMs, options.signal);
         retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
@@ -962,6 +1034,62 @@ export class Agent {
     ].includes(candidate?.name ?? "") || (
       candidate?.name === "TypeError" && candidate?.message?.includes("fetch failed") === true
     );
+  }
+
+  private normalizeProviderFailure(error: unknown): unknown {
+    if (
+      error instanceof AgentTimeoutError ||
+      error instanceof AgentContextLimitError ||
+      error instanceof AgentCancelledError
+    ) return error;
+    const candidate = error as {
+      status?: number;
+      statusCode?: number;
+      code?: string;
+      name?: string;
+      message?: string;
+      cause?: { code?: string };
+    };
+    const status = candidate?.status ?? candidate?.statusCode;
+    const code = String(candidate?.code ?? candidate?.cause?.code ?? "").toLowerCase();
+    const message = error instanceof Error ? error.message : String(error);
+    const lowered = message.toLowerCase();
+    if (
+      code === "context_length_exceeded" ||
+      code === "prompt_too_long" ||
+      ((status === 400 || status === 413) && [
+        "context length",
+        "context window",
+        "maximum context",
+        "too many tokens",
+        "prompt is too long",
+      ].some((part) => lowered.includes(part)))
+    ) {
+      return new AgentContextLimitError(message, {
+        cause: error instanceof Error ? error : undefined,
+      });
+    }
+    if (
+      candidate?.name === "AbortError" ||
+      code === "abort_err" ||
+      code === "err_canceled" ||
+      lowered === "the operation was aborted" ||
+      lowered === "request was cancelled"
+    ) {
+      return new AgentCancelledError(message, {
+        cause: error instanceof Error ? error : undefined,
+      });
+    }
+    return error;
+  }
+
+  private failureKind(error: unknown): AgentFailureKind {
+    if (error instanceof AgentTimeoutError) return "timeout";
+    if (error instanceof AgentCancelledError) return "cancelled";
+    if (error instanceof AgentContextLimitError) return "context_limit";
+    return this.isTransientProviderError(error)
+      ? "provider_connection"
+      : "provider_error";
   }
 
   private awaitWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

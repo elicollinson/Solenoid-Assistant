@@ -69,17 +69,35 @@ interface MessageExtractionChunkResult extends MessageExtractionResult {
 const MAX_MESSAGES_PER_CHUNK = 50;
 const MAX_PRIOR_SUMMARY_CHARS = 2_000;
 
-function groupConversations(messages: TrustedMessageView[]): Conversation[] {
+interface GroupedConversations {
+  conversations: Conversation[];
+  invalidSources: number;
+}
+
+function groupConversations(messages: TrustedMessageView[]): GroupedConversations {
   const grouped = new Map<string, TrustedMessageView[]>();
+  let invalidSources = 0;
   for (const message of messages) {
-    const existing = grouped.get(message.conversationId);
+    // The database can contain messages without a chat identifier. Keep each
+    // such source separate and out of the model boundary: assigning a shared
+    // fallback key would merge unrelated conversations, while passing an empty
+    // key would make runIsolated reject every valid sibling before execution.
+    const conversationId: unknown = message.conversationId;
+    if (typeof conversationId !== "string" || conversationId.trim().length === 0) {
+      invalidSources++;
+      continue;
+    }
+    const existing = grouped.get(conversationId);
     if (existing) existing.push(message);
-    else grouped.set(message.conversationId, [message]);
+    else grouped.set(conversationId, [message]);
   }
-  return [...grouped].map(([id, conversationMessages]) => ({
-    id,
-    messages: conversationMessages,
-  }));
+  return {
+    conversations: [...grouped].map(([id, conversationMessages]) => ({
+      id,
+      messages: conversationMessages,
+    })),
+    invalidSources,
+  };
 }
 
 // A chunk is the unit awaited by extractMessages. Split conversations first so
@@ -121,6 +139,7 @@ export async function extractMessages(
 ): Promise<MessageExtractionResult> {
   // Take one chronological snapshot so a long run cannot shift its own window.
   const retrieved = (dependencies.retrieveMessages ?? readAllTrustedMessageWindow)(params);
+  const grouped = groupConversations(retrieved.messages);
   const result: MessageExtractionResult = {
     actionItems: [],
     conversationSummaries: [],
@@ -129,12 +148,18 @@ export async function extractMessages(
     screening: {
       processedConversations: 0,
       quarantinedConversations: 0,
-      failedConversations: 0,
+      failedConversations: grouped.invalidSources,
     },
   };
   const priorSummaries = new Map<string, string>();
   const conversationOutcomes = new Map<string, ConversationOutcome>();
-  for (const conversations of conversationBatches(groupConversations(retrieved.messages))) {
+  if (grouped.invalidSources > 0) {
+    log.warn("messageExtraction: messages without valid conversation identifiers skipped", {
+      skipped: grouped.invalidSources,
+      total: retrieved.messages.length,
+    });
+  }
+  for (const conversations of conversationBatches(grouped.conversations)) {
     // Finish extraction, grading, and the OKF write before starting the next
     // chunk. Only the existing conversation/grading fanout within a chunk remains.
     const chunk = await extractMessageChunk(

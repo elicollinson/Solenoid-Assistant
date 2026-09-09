@@ -1260,11 +1260,15 @@ export class Agent {
 
     const blocked = assessment.blocked ?? assessment.flagged;
     if (!blocked) return;
-    log.warn("[guardrail] content blocked", {
+    log.warn(assessment.flagged && action === "observe"
+      ? "[guardrail] content flagged; observing"
+      : "[guardrail] content blocked", {
       boundary,
       agent: this.name,
       classification: assessment.flagged ? "prompt_injection" : "content_safety",
       filters: safeJson(assessment.matchedFilters ?? ["unknown"]),
+      confidenceLevel: assessment.confidenceLevel,
+      filterVerdicts: safeJson(assessment.filterVerdicts ?? []),
     });
     if (!assessment.flagged) {
       throw new ContentSafetyDetectedError(

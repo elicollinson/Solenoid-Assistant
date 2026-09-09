@@ -107,17 +107,21 @@ function Entry({
       // `actions` is the kit's slot for "a wrapping row under the body", which
       // is where the design puts both the buttons and a running item's meter.
       // The meter goes here rather than in `children` because children is a
-      // <p>: a div inside it is invalid markup, and a running entry never
-      // carries buttons for it to collide with.
+      // <p>: a div inside it is invalid markup. The meter wins when both could
+      // apply: the design draws a running entry as a quiet line with its
+      // progress, even when the feed marks it prominent, and the desktop's
+      // Open / Pause / Trace row is three half-buttons at this width.
       actions={
-        prominent && item.actions.length ? (
+        item.state === "running" && item.progress ? (
+          <Meter value={item.progress.value} total={item.progress.total} style={{ width: 180, maxWidth: "100%" }} />
+        ) : prominent && item.actions.length ? (
           item.actions.map((a) => (
             <Button key={a.id} variant={STANCE_TO_VARIANT[a.stance]} size="touch" onClick={() => onInvoke(a)}>
               {a.label}
             </Button>
           ))
         ) : item.progress ? (
-          <Meter value={item.progress.value} total={item.progress.total} style={{ maxWidth: 180 }} />
+          <Meter value={item.progress.value} total={item.progress.total} style={{ width: 180, maxWidth: "100%" }} />
         ) : null
       }
     >

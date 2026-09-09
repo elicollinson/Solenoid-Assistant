@@ -54,7 +54,7 @@ function stateFor(
     waiting: list.waiting,
     live,
     open: noop,
-    start: noop,
+    start: async () => null,
     send: noop,
     answer: noop,
     reload: noop,

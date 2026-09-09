@@ -197,6 +197,40 @@ export function PhoneBody({ children, style }: { children?: ReactNode; style?: C
   );
 }
 
+/** Something a write was refused with. One line above the list rather than a
+ *  whole body, because the list underneath is still true and still usable. */
+export function PhoneAlert({ label, children }: { label: string; children?: ReactNode }) {
+  return (
+    <p
+      role="alert"
+      style={{
+        margin: 0,
+        padding: "var(--sp-5) var(--gutter-phone)",
+        borderTop: "var(--border-alert)",
+        borderBottom: "var(--border-alert)",
+        background: "var(--surface-alert)",
+        font: "var(--text-phone-note)",
+        color: "var(--text-2)",
+        textWrap: "pretty",
+        flexShrink: 0,
+      }}
+    >
+      <span
+        style={{
+          font: "var(--text-mono-label)",
+          letterSpacing: "var(--tracking-label)",
+          textTransform: "uppercase",
+          color: "var(--danger-text)",
+          marginRight: "var(--sp-4)",
+        }}
+      >
+        {label}
+      </span>
+      {children}
+    </p>
+  );
+}
+
 /** What a screen says while it is reading, and when it could not. Same two
  *  states the desktop draws, in the phone's own measure. */
 export function PhoneNotice({ label, text }: { label: string; text: string }) {

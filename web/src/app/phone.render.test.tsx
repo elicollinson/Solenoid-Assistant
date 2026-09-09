@@ -147,12 +147,25 @@ describe("activity", () => {
 
   test("only what needs you carries buttons", () => {
     const drawn = markup();
-    const prominent = home.sections.flatMap((s) => s.items).filter((i) => i.prominent && i.actions.length);
+    const prominent = home.sections
+      .flatMap((s) => s.items)
+      .filter((i) => i.prominent && i.actions.length && !(i.state === "running" && i.progress));
     expect(prominent.length).toBeGreaterThan(0);
     for (const item of prominent) for (const action of item.actions) expect(drawn).toContain(`>${action.label}<`);
 
     const quiet = home.sections.flatMap((s) => s.items).find((i) => !i.prominent && i.actions.length);
     if (quiet?.actions[0]) expect(drawn).not.toContain(`>${quiet.actions[0].label}<`);
+  });
+
+  test("a running entry draws its progress, not the desktop's row of buttons", () => {
+    // The seed marks the running entry prominent as well. The design draws it
+    // as a quiet line with its meter, and Open / Pause / Trace at 390px is
+    // three half-buttons — so the meter wins.
+    const running = home.sections.flatMap((s) => s.items).find((i) => i.state === "running" && i.progress);
+    if (!running?.actions[0]) throw new Error("the fixtures no longer hold a running entry with actions");
+    const drawn = markup();
+    expect(drawn).not.toContain(`>${running.actions[0].label}<`);
+    expect(drawn).toContain("var(--meter-fill)");
   });
 
   test("settling one takes its buttons away and turns it done", () => {
@@ -265,17 +278,9 @@ describe("things I know", () => {
 });
 
 describe("workflows", () => {
-  const markup = (paused: ReadonlySet<string> = NOTHING) =>
+  const markup = (payload: WorkflowsPayload = workflows) =>
     inFrame(
-      <WorkflowsPhone
-        workflows={workflows}
-        detail={loading}
-        openSlug={null}
-        onOpen={noop}
-        pausedLocally={paused}
-        onTogglePause={noop}
-        onInvoke={noop}
-      />,
+      <WorkflowsPhone workflows={payload} detail={loading} openSlug={null} onOpen={noop} onTogglePause={noop} onInvoke={noop} />,
     );
 
   test("groups by what each one needs rather than only offering filters", () => {
@@ -302,11 +307,14 @@ describe("workflows", () => {
     expect(drawn).not.toContain("Running since 06:12");
   });
 
-  test("a pause taken here moves the row rather than only dimming it", () => {
+  test("a pause the server has written moves the row rather than only dimming it", () => {
     const running = workflows.rows.find((r) => r.state === "running");
     if (!running) throw new Error("nothing is running in the fixtures");
     const before = markup();
-    const after = markup(new Set([running.slug]));
+    const after = markup({
+      ...workflows,
+      rows: workflows.rows.map((r) => (r.slug === running.slug ? { ...r, paused: true } : r)),
+    });
     expect(before.indexOf("Going now")).toBeGreaterThan(-1);
     // Its own group empties out with it, since it was the only one going.
     expect(after).not.toContain("Going now");
@@ -324,7 +332,6 @@ describe("workflows", () => {
         detail={{ status: "ready", data: detail }}
         openSlug={gated.slug}
         onOpen={noop}
-        pausedLocally={NOTHING}
         onTogglePause={noop}
         onInvoke={noop}
       />,
@@ -346,7 +353,6 @@ describe("workflows", () => {
         detail={{ status: "ready", data: detail }}
         openSlug="weekly-digest"
         onOpen={noop}
-        pausedLocally={NOTHING}
         onTogglePause={noop}
         onInvoke={noop}
       />,
@@ -364,7 +370,6 @@ describe("workflows", () => {
         detail={{ status: "ready", data: detail }}
         openSlug="bill-watch"
         onOpen={noop}
-        pausedLocally={NOTHING}
         onTogglePause={noop}
         onInvoke={noop}
       />,

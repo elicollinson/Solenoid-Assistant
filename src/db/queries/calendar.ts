@@ -64,7 +64,13 @@ function atLocal(dayNoon: Date, hour: number, minute: number): Date {
   const target = hour * 60 + minute;
   const walked = new Date(dayNoon.getTime() + (target - minutesOf(dayNoon)) * 60_000);
   const drift = target - minutesOf(walked);
-  return drift === 0 ? walked : new Date(walked.getTime() + drift * 60_000);
+  const at = drift === 0 ? walked : new Date(walked.getTime() + drift * 60_000);
+  // On the minute. `dayNoon` is walked forward from the clock the read was
+  // made at, seconds and all, and a projected run's id is built from this —
+  // so without this every read of the week renamed every run it projected,
+  // and a sheet opened on one could not find it again after a re-read.
+  at.setSeconds(0, 0);
+  return at;
 }
 const dayOfMonth = (d: Date) => String(Number(dayKey(d).slice(8, 10)));
 const yearOf = (d: Date) => dayKey(d).slice(0, 4);

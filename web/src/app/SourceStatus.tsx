@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 
 type Snapshot = {
   sources: Array<{
@@ -9,7 +9,7 @@ type Snapshot = {
   }>;
   queue: Array<{ status: string; count: number }>;
 };
-export function SourceStatus() {
+export function SourceStatus({ style }: { style?: CSSProperties } = {}) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   useEffect(() => {
@@ -43,8 +43,9 @@ export function SourceStatus() {
       role="status"
       style={{
         padding: "var(--sp-3) var(--sp-6)",
-        font: "var(--text-small)",
+        font: "var(--text-body-sm)",
         color: "var(--text-3)",
+        ...style,
       }}
     >
       {unavailable

@@ -17,7 +17,7 @@ The same origin presents two different shells at the `699px` breakpoint.
 | --- | --- | --- | --- |
 | Chat | Transcript, conversation rail, composer, streamed tool activity, write approvals | Conversation list, thread, one-line composer | Conversations, completed turns, and approval outcomes are stored |
 | Activity | Filtered feed plus the Waiting on you / Next up / Worth a look aside | Timeline feed; no filters or aside | Most decision actions settle only in the current browser session |
-| Workflows | List, filters, detail, run form, pause/resume, kill, instructions, executions, trace, logs | Filtered/grouped list and summary sheet | Desktop writes persist; phone pause is session-local and phone Run is disabled |
+| Workflows | List, filters, detail, run form, pause/resume, kill, instructions, executions, trace, logs | Filtered/grouped list and summary sheet | Pause/resume persists on both shells; phone Run is disabled |
 | Reminders | List, filters, detail, evidence | Not present | Done and Later are session-local; destructive/edit controls are disabled |
 | Calendar | Week/day time grid and detail aside | Seven-day strip, agenda, and detail sheet | Read-only apart from navigation or session-local decision effects |
 | Things I know | Group filters, client-side search, memory detail | Group filters and memory detail sheet | Read-only; all memory write/conflict controls are disabled |
@@ -38,9 +38,9 @@ These are current implementation facts, not test setup failures:
 - Desktop Activity decision actions and reminder Done/Later changes do not
   write to SQLite. They revert on reload. Calendar actions can navigate, but
   do not themselves perform an external operation.
-- Phone workflow Pause/Resume is local and reverts on reload. Starting or
-  killing a workflow, editing its instruction, and viewing executions, trace,
-  or logs are desktop-only.
+- Phone workflow Pause/Resume writes to the schedule and re-reads, as on the
+  desktop. Starting or killing a workflow, editing its instruction, and viewing
+  executions, trace, or logs are desktop-only.
 - Reminders and Recommendations have no phone destination. Phone navigation
   effects aimed at either are ignored.
 - Memory edits, conflict resolution, and deletion are disabled on both shells.
@@ -300,28 +300,39 @@ Use 390×844, then check 320px wide and a real device if one is available.
   Changing a list filter should close its open sheet.
 - [ ] **P-NAV-03 Ask dock.** On Activity, Calendar, Memory, or Workflows, press
   the accessible `Ask Solenoid` disc. Expect focused input, blank Send to do
-  nothing, Escape/Close to discard, and a nonblank send to create/open a Chat
-  conversation with the message sent once. Chat itself must not show the dock.
+  nothing, Escape/Close to discard, and a nonblank send to create exactly one
+  Chat conversation (one `POST /api/chat`) with the message sent into it once.
+  Chat itself must not show the dock, and neither must a screen with a sheet
+  open.
 - [ ] **P-ACT-01 Timeline.** Expect the phone-authored lede, waiting clause in
   amber, grouped timeline, at most the prominent needs-you items carrying
-  touch-sized actions, and progress on a running entry. A local settlement must
-  update the timeline/count and revert after reload.
+  touch-sized actions, and progress (never the desktop's Open/Pause/Trace row)
+  on a running entry. A local settlement must update the timeline/count and
+  revert after reload. A deferred write (`Send it` on a gate whose pair carries
+  a tool call) goes to the server as on the desktop: the feed re-reads with the
+  outcome, and a refusal shows a `Not written` line above the timeline.
 - [ ] **P-CHAT-01 List/thread.** Expect the conversation list newest first,
   Start a new one, thread back link, stored turns, and a single-line composer.
   Enter or Send submits; blank input does not. During approval the field reads
   `Answer above first`; during work it reports `Working.` and blocks another
-  send.
+  send. After `That turn didn't finish`, the composer must return to `Enter
+  sends.` and accept the next message, and your question must not be drawn
+  twice.
 - [ ] **P-CAL-01 Agenda.** Change days in the seven-cell strip. Expect only the
   selected day's rows, an on-day now line, day/week restraint text, and the
   open sheet to close when the day changes. A row should open a touch-sized
-  detail sheet whose Close returns to the agenda.
+  detail sheet whose Close returns to the agenda. A projected run on a later
+  day must keep its sheet across a tab switch and back.
 - [ ] **P-MEM-01 List/detail.** Verify group chips, grouped rows, filter empty
   copy, and a detail sheet. Tapping a fact should expand/collapse provenance.
   Memory mutation and conflict buttons must remain disabled.
 - [ ] **P-WF-01 List/detail.** Verify horizontally scrollable filters and
   urgency groups. A detail sheet should contain only summary, gate, effects,
   stats, and standing instruction—not desktop executions/trace/logs. Run is
-  disabled. Pause/Resume should move the row locally and revert on reload.
+  disabled. Pause/Resume should hold the button during the write, move the row
+  after the re-read, and survive reload; restore the original state. On a
+  viewport shorter than the design's 844px, every sheet's Close row must still
+  be on screen.
 
 ## Integration and failure checks
 

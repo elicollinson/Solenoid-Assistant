@@ -8,9 +8,11 @@
 // Each tab fetches for itself. The alternative — reading all four here so the
 // state could live in one place — would put four requests on the wire to draw
 // one screen, on the frame least able to afford them.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePrefersDusk } from "../frame";
 import {
+  answerDeferredWrite as writeDeferred,
+  pauseWorkflow,
   useCalendar,
   useCalendarItem,
   useKnowledge,
@@ -21,14 +23,14 @@ import {
   type HomeAction,
   type HomePayload,
 } from "../api";
-import { pendingDecisionFor, withoutResolved } from "../settle";
+import { isDeferredWrite, pendingDecisionFor, withoutResolved } from "../settle";
 import { ActivityPhone } from "./ActivityPhone";
 import { CalendarPhone } from "./CalendarPhone";
 import { MemoryPhone } from "./MemoryPhone";
 import { WorkflowsPhone } from "./WorkflowsPhone";
 import { ChatPhone } from "./ChatPhone";
 import { useChat } from "../chat";
-import { PhoneNotice, PhoneScreen, type PhoneTab } from "./chrome";
+import { PhoneAlert, PhoneNotice, PhoneScreen, type PhoneTab } from "./chrome";
 
 /** What each screen has open, kept per screen rather than as one field: coming
  *  back to Workflows should find the sheet you left open there. */
@@ -44,23 +46,65 @@ export function PhoneHome() {
   // it a second time.
   const [seed, setSeed] = useState<string | null>(null);
 
-  // Nothing writes to the database yet, so settling something settles it here:
-  // the same bargain the desktop strikes, and the same two sets holding it.
+  // A gate answered in the browser settles here, the same bargain the desktop
+  // strikes: the entry turns done and the header recounts, and a reload puts
+  // the question back. The one exception is below.
   const [resolved, setResolved] = useState<ReadonlySet<string>>(() => new Set());
-  const [pausedLocally, setPausedLocally] = useState<ReadonlySet<string>>(() => new Set());
+
+  // Which deferred write is being run right now, and what went wrong if it
+  // was refused. The desktop keeps the same two, for the same reason: this is
+  // the one button on the feed that DOES something rather than closing a
+  // question, so it waits for the server and can be told no.
+  const [pendingWrite, setPendingWrite] = useState<string | null>(null);
+  const [writeError, setWriteError] = useState<string | null>(null);
+  const [homeNonce, setHomeNonce] = useState(0);
+
+  // A pause is written, not kept in this tab — the desktop's rule, and the
+  // schedule's: what the row says is what the worker will honour. While the
+  // write is out the button is held, and a refusal is put in front of you.
+  const [pausing, setPausing] = useState<string | null>(null);
+  const [pauseError, setPauseError] = useState<string | null>(null);
+  const [workflowsNonce, setWorkflowsNonce] = useState(0);
 
   const openOn = (screen: PhoneTab) => open[screen] ?? null;
   const setOpenOn = (screen: PhoneTab) => (id: string | null) => setOpen((current) => ({ ...current, [screen]: id }));
 
-  const togglePause = (slug: string) =>
-    setPausedLocally((current) => {
-      const next = new Set(current);
-      if (next.has(slug)) next.delete(slug);
-      else next.add(slug);
-      return next;
-    });
+  const togglePause = (slug: string, paused: boolean) => {
+    if (pausing) return;
+    setPauseError(null);
+    setPausing(slug);
+    pauseWorkflow(slug, paused)
+      .catch((error: unknown) => setPauseError(error instanceof Error ? error.message : String(error)))
+      .finally(() => {
+        setWorkflowsNonce((n) => n + 1);
+        setPausing(null);
+      });
+  };
 
   const resolve = (decisionId: string) => setResolved((current) => new Set(current).add(decisionId));
+
+  /**
+   * A deferred write, answered.
+   *
+   * The screen waits for the server here, unlike every other button. The
+   * others close a question — true the instant you press them. This one runs
+   * a tool that can still be refused by a rule narrowed since the run asked,
+   * so moving the row first would show you a write as done that the server
+   * was about to turn down. One at a time: these make real writes, and a
+   * double tap is two.
+   */
+  const answerDeferred = (actionId: string, decisionId: string) => {
+    if (pendingWrite) return;
+    setWriteError(null);
+    setPendingWrite(actionId);
+    writeDeferred(actionId)
+      .then(() => {
+        resolve(decisionId);
+        setHomeNonce((n) => n + 1);
+      })
+      .catch((error: unknown) => setWriteError(error instanceof Error ? error.message : String(error)))
+      .finally(() => setPendingWrite(null));
+  };
 
   /**
    * Where a button says to go.
@@ -94,7 +138,17 @@ export function PhoneHome() {
         <Chat onTab={setTab} seed={seed} onSeeded={() => setSeed(null)} />
       ) : null}
       {tab === "Activity" ? (
-        <Activity tab={tab} onTab={setTab} onAsk={ask} resolved={resolved} onInvoke={invoke} onResolve={resolve} />
+        <Activity
+          tab={tab}
+          onTab={setTab}
+          onAsk={ask}
+          nonce={homeNonce}
+          resolved={resolved}
+          writeError={writeError}
+          onInvoke={invoke}
+          onResolve={resolve}
+          onDeferred={answerDeferred}
+        />
       ) : null}
       {tab === "Calendar" ? (
         <Calendar tab={tab} onTab={setTab} onAsk={ask} openId={openOn("Calendar")} onOpen={setOpenOn("Calendar")} onInvoke={invoke} />
@@ -107,12 +161,16 @@ export function PhoneHome() {
           tab={tab}
           onTab={setTab}
           onAsk={ask}
+          nonce={workflowsNonce}
           openSlug={openOn("Workflows")}
           onOpen={setOpenOn("Workflows")}
-          pausedLocally={pausedLocally}
+          pausing={pausing}
+          pauseError={pauseError}
+          writeError={writeError}
           onTogglePause={togglePause}
           onInvoke={invoke}
           onResolve={resolve}
+          onDeferred={answerDeferred}
         />
       ) : null}
     </div>
@@ -143,20 +201,26 @@ function Chat({
   onSeeded: () => void;
 }) {
   const chat = useChat("phone");
-  const { start, send, openId } = chat;
+  const { start, send } = chat;
+  // Whether the seed is already on its way. The effect below re-runs when the
+  // list lands, when the new conversation opens, and — in development — once
+  // more on mount; without this each of those started a conversation of its
+  // own, and the message went into whichever the auto-open reached first.
+  const seeding = useRef(false);
 
   // Two steps and they cannot be one: a conversation has to exist before
-  // anything can be said into it. `start` opens it, this fires again when
-  // `openId` lands, and the seed goes in then.
+  // anything can be said into it. `start` opens it and answers with its id,
+  // and the seed goes into THAT one by name — not into whatever happens to be
+  // open by the time the answer comes back.
   useEffect(() => {
-    if (!seed) return;
-    if (!openId) {
-      start();
-      return;
-    }
-    send(seed);
-    onSeeded();
-  }, [seed, openId, start, send, onSeeded]);
+    if (!seed || seeding.current) return;
+    seeding.current = true;
+    void start().then((id) => {
+      if (id) send(seed, id);
+      onSeeded();
+      seeding.current = false;
+    });
+  }, [seed, start, send, onSeeded]);
 
   return <ChatPhone chat={chat} onTab={onTab} />;
 }
@@ -165,18 +229,39 @@ function Activity({
   tab,
   onTab,
   onAsk,
+  nonce,
   resolved,
+  writeError,
   onInvoke,
   onResolve,
-}: Chrome & { resolved: ReadonlySet<string>; onInvoke: (action: HomeAction) => void; onResolve: (id: string) => void }) {
-  const home = useHome("phone");
+  onDeferred,
+}: Chrome & {
+  nonce: number;
+  resolved: ReadonlySet<string>;
+  writeError: string | null;
+  onInvoke: (action: HomeAction) => void;
+  onResolve: (id: string) => void;
+  onDeferred: (actionId: string, decisionId: string) => void;
+}) {
+  const home = useHome("phone", nonce);
   const shown: HomePayload | null = home.status === "ready" ? withoutResolved(home.data, resolved) : null;
 
-  // A gate answered in the feed has to drop out of the header's count as well
-  // as out of the entry, or the two halves of the screen disagree about what is
-  // still waiting. The lookup needs the payload, which is why it is here.
+  // The desktop's rules, on the desktop's payload. A button that only goes
+  // somewhere goes there and closes nothing: reading the draft is not an
+  // answer to whether it should be sent. A deferred write goes to the server
+  // and waits. Everything else settles here, and drops out of the header's
+  // count as well as out of the entry — the lookup needs the payload, which
+  // is why this is here rather than in PhoneHome.
   const settle = (action: HomeAction) => {
-    const decisionId = home.status === "ready" ? pendingDecisionFor(home.data, action.id) : null;
+    if (action.effectKind === "navigate") {
+      onInvoke(action);
+      return;
+    }
+    const decisionId = action.decisionId ?? (home.status === "ready" ? pendingDecisionFor(home.data, action.id) : null);
+    if (decisionId && (action.effectKind === "tool_call" || (home.status === "ready" && isDeferredWrite(home.data, action.id)))) {
+      onDeferred(action.id, decisionId);
+      return;
+    }
     if (decisionId) onResolve(decisionId);
     onInvoke(action);
   };
@@ -189,6 +274,9 @@ function Activity({
           label="No answer"
           text={`I couldn't reach the API — ${home.message}. Start it with \`bun run start:server\`, and seed it with \`bun run db:seed\` if you haven't yet.`}
         />
+      ) : null}
+      {writeError ? (
+        <PhoneAlert label="Not written">{writeError} Nothing changed; the question is still open.</PhoneAlert>
       ) : null}
       {shown ? <ActivityPhone home={shown} resolved={resolved} onInvoke={settle} /> : null}
     </PhoneScreen>
@@ -206,8 +294,10 @@ function Calendar({
   const list = useCalendar("phone");
   const one = useCalendarItem(openId);
 
+  // No disc while a sheet is up: the design draws one or the other, and a
+  // disc floating over a sheet sits on its last rows and its buttons.
   return (
-    <PhoneScreen meta={list.status === "ready" ? list.data.range : undefined} tab={tab} onTab={onTab} onAsk={onAsk}>
+    <PhoneScreen meta={list.status === "ready" ? list.data.range : undefined} tab={tab} onTab={onTab} onAsk={openId ? undefined : onAsk}>
       {list.status === "loading" ? <PhoneNotice label="Reading" text="Laying out your week." /> : null}
       {list.status === "error" ? <PhoneNotice label="No answer" text={`I couldn't read the week — ${list.message}.`} /> : null}
       {list.status === "ready" ? (
@@ -223,7 +313,7 @@ function Memory({ tab, onTab, onAsk, openId, onOpen }: Chrome & { openId: string
   const facts = list.status === "ready" ? list.data.rows.reduce((sum, row) => sum + row.facts, 0) : 0;
 
   return (
-    <PhoneScreen meta={list.status === "ready" ? `${facts} facts` : undefined} tab={tab} onTab={onTab} onAsk={onAsk}>
+    <PhoneScreen meta={list.status === "ready" ? `${facts} facts` : undefined} tab={tab} onTab={onTab} onAsk={openId ? undefined : onAsk}>
       {list.status === "loading" ? <PhoneNotice label="Reading" text="Going through what I've written down." /> : null}
       {list.status === "error" ? <PhoneNotice label="No answer" text={`I couldn't read the store — ${list.message}.`} /> : null}
       {list.status === "ready" ? <MemoryPhone knowledge={list.data} detail={one} openId={openId} onOpen={onOpen} /> : null}
@@ -235,42 +325,67 @@ function Workflows({
   tab,
   onTab,
   onAsk,
+  nonce,
   openSlug,
   onOpen,
-  pausedLocally,
+  pausing,
+  pauseError,
+  writeError,
   onTogglePause,
   onInvoke,
   onResolve,
+  onDeferred,
 }: Chrome & {
+  nonce: number;
   openSlug: string | null;
   onOpen: (slug: string | null) => void;
-  pausedLocally: ReadonlySet<string>;
-  onTogglePause: (slug: string) => void;
+  pausing: string | null;
+  pauseError: string | null;
+  writeError: string | null;
+  onTogglePause: (slug: string, paused: boolean) => void;
   onInvoke: (action: HomeAction) => void;
   onResolve: (id: string) => void;
+  onDeferred: (actionId: string, decisionId: string) => void;
 }) {
-  const list = useWorkflows("phone");
-  const one = useWorkflow(openSlug, "phone");
+  const list = useWorkflows("phone", nonce);
+  const one = useWorkflow(openSlug, "phone", nonce);
   const count = list.status === "ready" ? list.data.rows.length : 0;
 
   // A gate's button closes the gate as well as doing whatever it says, so the
-  // Activity feed stops asking about something answered here.
+  // Activity feed stops asking about something answered here. A deferred
+  // write is told apart by the pair, as on the feed: the gate that holds a
+  // `tool_call` is one, and both of its buttons have to reach the server.
   const settle = (action: HomeAction) => {
-    if (one.status === "ready" && one.data.gate) onResolve(one.data.gate.id);
+    if (action.effectKind === "navigate") {
+      onInvoke(action);
+      return;
+    }
+    const gate = one.status === "ready" ? one.data.gate : null;
+    const decisionId = action.decisionId ?? gate?.id ?? null;
+    const deferred = Boolean(gate?.actions.some((a) => a.effectKind === "tool_call"));
+    if (decisionId && deferred && (action.effectKind === "tool_call" || action.effectKind === "resolve")) {
+      onDeferred(action.id, decisionId);
+      return;
+    }
+    if (decisionId) onResolve(decisionId);
     onInvoke(action);
   };
 
   return (
-    <PhoneScreen meta={list.status === "ready" ? `${count} workflows` : undefined} tab={tab} onTab={onTab} onAsk={onAsk}>
+    <PhoneScreen meta={list.status === "ready" ? `${count} workflows` : undefined} tab={tab} onTab={onTab} onAsk={openSlug ? undefined : onAsk}>
       {list.status === "loading" ? <PhoneNotice label="Reading" text="Listing everything I run." /> : null}
       {list.status === "error" ? <PhoneNotice label="No answer" text={`I couldn't list them — ${list.message}.`} /> : null}
+      {pauseError ? <PhoneAlert label="Not changed">{pauseError} The schedule is as it was.</PhoneAlert> : null}
+      {writeError ? (
+        <PhoneAlert label="Not written">{writeError} Nothing changed; the question is still open.</PhoneAlert>
+      ) : null}
       {list.status === "ready" ? (
         <WorkflowsPhone
           workflows={list.data}
           detail={one}
           openSlug={openSlug}
           onOpen={onOpen}
-          pausedLocally={pausedLocally}
+          busy={pausing !== null}
           onTogglePause={onTogglePause}
           onInvoke={settle}
         />

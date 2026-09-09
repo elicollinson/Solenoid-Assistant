@@ -265,11 +265,13 @@ function Detail({
       {loaded && loaded.sections.length ? (
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-4)" }}>
           <MonoLabel>As I wrote it down</MonoLabel>
-          {loaded.sections.map((section) => (
-            <div key={section.heading} style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)" }}>
+          {/* Keyed with the position as well: a memory can carry the same
+              heading twice, and React then drops or doubles one of them. */}
+          {loaded.sections.map((section, index) => (
+            <div key={`${section.heading}-${index}`} style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)" }}>
               {section.heading ? <span style={LABEL}>{section.heading}</span> : null}
-              {section.paragraphs.map((p) => (
-                <p key={p} style={{ margin: 0, font: "var(--text-phone-body)", color: "var(--text-2)", textWrap: "pretty" }}>
+              {section.paragraphs.map((p, i) => (
+                <p key={i} style={{ margin: 0, font: "var(--text-phone-body)", color: "var(--text-2)", textWrap: "pretty" }}>
                   {p}
                 </p>
               ))}

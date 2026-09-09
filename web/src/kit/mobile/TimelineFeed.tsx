@@ -58,7 +58,11 @@ export function TimelineItem({
           >
             {title}
           </span>
-          {time ? <span style={{ marginLeft: "auto", font: "var(--text-mono-meta)", color: "var(--text-4)" }}>{time}</span> : null}
+          {time ? (
+            <span style={{ marginLeft: "auto", flexShrink: 0, whiteSpace: "nowrap", font: "var(--text-mono-meta)", color: "var(--text-4)" }}>
+              {time}
+            </span>
+          ) : null}
         </div>
         {children ? (
           <p

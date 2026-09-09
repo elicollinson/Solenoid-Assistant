@@ -10,7 +10,7 @@
 // width and its buttons stack, because at this width a row of two buttons is
 // two half-buttons.
 import { ApprovalBubble, Button, ChatTurn, ConversationRow, RetroWigglyLine } from "../../kit";
-import { spoken, useFollowBottom, type ChatState } from "../chat";
+import { echoed, spoken, useFollowBottom, type ChatState } from "../chat";
 import { useVoiceMode } from "../useVoiceMode";
 import { PhoneScreen, type PhoneTab } from "./chrome";
 
@@ -236,9 +236,11 @@ function Thread({ chat, chrome }: { chat: ChatState; chrome: Partial<Chrome> }) 
 
           {live ? (
             <>
-              <ChatTurn touch by="user" at="now">
-                {live.asked}
-              </ChatTurn>
+              {echoed(chat) ? null : (
+                <ChatTurn touch by="user" at="now">
+                  {live.asked}
+                </ChatTurn>
+              )}
               <ChatTurn
                 touch
                 by="agent"
@@ -294,7 +296,9 @@ function Thread({ chat, chrome }: { chat: ChatState; chrome: Partial<Chrome> }) 
 
       <ThreadComposer
         chat={chat}
-        busy={Boolean(live)}
+        // A turn that ended in an error is still on screen, but it is over —
+        // nothing is running, and the next thing you say has to be sendable.
+        busy={Boolean(live && !live.error)}
         waiting={waiting}
         voiceActive={voice.active}
         onToggleVoice={voice.active ? voice.stopVoice : voice.startVoice}

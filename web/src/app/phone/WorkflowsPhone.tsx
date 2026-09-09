@@ -54,7 +54,7 @@ export function WorkflowsPhone({
   detail,
   openSlug,
   onOpen,
-  pausedLocally,
+  busy = false,
   onTogglePause,
   onInvoke,
 }: {
@@ -62,22 +62,23 @@ export function WorkflowsPhone({
   detail: Load<WorkflowDetailPayload>;
   openSlug: string | null;
   onOpen: (slug: string | null) => void;
-  pausedLocally: ReadonlySet<string>;
-  onTogglePause: (slug: string) => void;
+  /** A pause is on its way to the server; hold the button until it lands. */
+  busy?: boolean;
+  onTogglePause: (slug: string, paused: boolean) => void;
   onInvoke: (action: HomeAction) => void;
 }) {
   const [filter, setFilter] = useState<Filter>("All");
 
-  // A pause taken here has not reached the database, so the row's own `paused`
-  // is the server's answer and this is what is no longer true about it.
-  const isPaused = (row: WorkflowRow) => (pausedLocally.has(row.slug) ? !row.paused : row.paused);
+  // The row's own `paused` is the server's answer, and the only one: a pause
+  // is written, then re-read, the same as on the desktop.
+  const isPaused = (row: WorkflowRow) => row.paused;
   const shown = workflows.rows.filter((row) => matches(row, filter, isPaused(row)));
   const open = openSlug ? workflows.rows.find((r) => r.slug === openSlug) : undefined;
 
   return (
     <>
       <PhoneTitle title="Workflows" lede={workflows.lede} />
-      <SourceStatus />
+      <SourceStatus style={{ padding: "0 var(--gutter-phone) var(--sp-6)", font: "var(--text-phone-note)" }} />
 
       <div style={{ display: "flex", gap: "var(--sp-2)", padding: "0 var(--gutter-phone) var(--sp-6)", overflowX: "auto", flexShrink: 0 }}>
         {FILTERS.map((label) => (
@@ -121,8 +122,9 @@ export function WorkflowsPhone({
           row={open}
           paused={isPaused(open)}
           detail={detail}
+          busy={busy}
           onClose={() => onOpen(null)}
-          onTogglePause={() => onTogglePause(open.slug)}
+          onTogglePause={() => onTogglePause(open.slug, !isPaused(open))}
           onInvoke={onInvoke}
         />
       ) : null}
@@ -203,6 +205,7 @@ function Detail({
   row,
   paused,
   detail,
+  busy,
   onClose,
   onTogglePause,
   onInvoke,
@@ -210,6 +213,7 @@ function Detail({
   row: WorkflowRow;
   paused: boolean;
   detail: Load<WorkflowDetailPayload>;
+  busy: boolean;
   onClose: () => void;
   onTogglePause: () => void;
   onInvoke: (action: HomeAction) => void;
@@ -332,14 +336,15 @@ function Detail({
       ) : null}
 
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)" }}>
-        {/* Nothing writes to the database yet, so a run started here would be a
-            button that lies. The pause below is honest because it only changes
-            what this browser draws, and says so by moving the row. */}
+        {/* A run takes a form — one control per catalog field — and the design
+            draws no form at this width, so the button is drawn as unavailable
+            rather than left out. The pause below is written to the schedule
+            and re-read, the same as the desktop's, and moves the row. */}
         <Button variant="affirm" size="touch" disabled>
           Run it now
         </Button>
         {row.scheduled || paused ? (
-          <Button size="touch" onClick={onTogglePause}>
+          <Button size="touch" disabled={busy} onClick={onTogglePause}>
             {paused ? "Put it back on schedule" : "Hold it off the schedule"}
           </Button>
         ) : null}

@@ -8,7 +8,7 @@ import {
   RetroWigglyLine,
   StatusMark,
 } from "../kit";
-import { spoken, useFollowBottom, type ChatState } from "./chat";
+import { echoed, spoken, useFollowBottom, type ChatState } from "./chat";
 import { useVoiceMode } from "./useVoiceMode";
 
 /**
@@ -191,7 +191,7 @@ export function ChatView({ chat }: { chat: ChatState }) {
           <div style={{ maxWidth: "var(--measure)" }}>
             <Composer
               onSend={chat.send}
-              busy={Boolean(live)}
+              busy={Boolean(live && !live.error)}
               waiting={Boolean(live?.pending)}
               voiceActive={voice.active}
               onToggleVoice={voice.active ? voice.stopVoice : voice.startVoice}
@@ -287,9 +287,11 @@ function Live({ chat }: { chat: ChatState }) {
   const live = chat.live!;
   return (
     <>
-      <ChatTurn by="user" at="now">
-        {live.asked}
-      </ChatTurn>
+      {echoed(chat) ? null : (
+        <ChatTurn by="user" at="now">
+          {live.asked}
+        </ChatTurn>
+      )}
       <ChatTurn
         by="agent"
         at="now"

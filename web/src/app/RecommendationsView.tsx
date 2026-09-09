@@ -64,7 +64,7 @@ export function withLocalStance(row: RecommendationRow, stances: ReadonlyMap<str
 }
 
 /** How many are yours to answer, said the way the server said it. */
-function waitingClause(rows: readonly RecommendationRow[]): string {
+export function waitingClause(rows: readonly RecommendationRow[]): string {
   const open = rows.filter((row) => row.group === "Waiting on you").length;
   if (open === 0) return "Nothing is waiting on you right now.";
   if (open === 1) return "One is waiting on you, and I haven't acted on it.";

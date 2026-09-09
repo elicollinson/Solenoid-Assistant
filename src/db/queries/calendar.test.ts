@@ -269,6 +269,17 @@ describe("one thing on the canvas", () => {
     expect(loadCalendarItem(db, scheduled?.id ?? "", MORNING)?.title).toBe("calendar-tidy");
   });
 
+  test("a schedule's id is the same on every read, whatever second the clock was on", () => {
+    // The phone keeps the open sheet's id across a tab switch and re-reads the
+    // week on the way back; an id that carried the seconds of the read would
+    // never be found again.
+    const later = new Date(MORNING.getTime() + 41_507);
+    const first = week.items.filter((i) => i.id.startsWith("schedule:")).map((i) => i.id);
+    const again = loadCalendar(db, later).items.filter((i) => i.id.startsWith("schedule:")).map((i) => i.id);
+    expect(first.length).toBeGreaterThan(0);
+    expect(again).toEqual(first);
+  });
+
   test("nothing answers for an id that is not there", () => {
     expect(loadCalendarItem(db, "nope", MORNING)).toBeNull();
     expect(loadCalendarItem(db, "schedule:not-a-workflow:0", MORNING)).toBeNull();

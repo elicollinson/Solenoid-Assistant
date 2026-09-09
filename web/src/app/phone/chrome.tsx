@@ -7,7 +7,7 @@
 // that disagreed with the others about what the phone can reach would be a bug
 // nobody notices until they tap it.
 import type { CSSProperties, ReactNode } from "react";
-import { AskDock, TabBar } from "../../kit";
+import { AskDock, Chip, TabBar } from "../../kit";
 import { useInstalled } from "../frame";
 
 /**
@@ -24,11 +24,36 @@ import { useInstalled } from "../frame";
  * are absent, not hidden — nothing on the phone claims they exist.
  */
 export const PHONE_TABS = ["Chat", "Activity", "Calendar", "Things I know", "Workflows"] as const;
-export type PhoneTab = (typeof PHONE_TABS)[number];
+export type PhoneBarTab = (typeof PHONE_TABS)[number];
+
+/**
+ * Every destination the phone can reach — the desktop's seven.
+ *
+ * Reminders and Recommendations have no bar entry of their own: seven labels
+ * do not fit a 390px bar, and the design's tab bar was drawn with five. They
+ * sit where the rail already groups them — Reminders under Today beside the
+ * Calendar, Recommendations under Memory beside the store — and each pair is
+ * one bar entry with a segment row under the header to move between them. A
+ * navigation effect naming either is followed, not dropped.
+ */
+export type PhoneTab = PhoneBarTab | "Reminders" | "Recommendations";
+
+/** Which bar entry lights for each destination. */
+export const BAR_OF: Record<PhoneTab, PhoneBarTab> = {
+  Chat: "Chat",
+  Activity: "Activity",
+  Calendar: "Calendar",
+  Reminders: "Calendar",
+  "Things I know": "Things I know",
+  Recommendations: "Things I know",
+  Workflows: "Workflows",
+};
+
+export const isPhoneTab = (view: string): view is PhoneTab => view in BAR_OF;
 
 /** What the bar calls each one. "Things I know" is the rail's name for the
  *  store and does not fit a quarter of 390px, so the bar says Memory. */
-const TAB_LABEL: Record<PhoneTab, string> = {
+const TAB_LABEL: Record<PhoneBarTab, string> = {
   Chat: "Chat",
   Activity: "Activity",
   Calendar: "Calendar",
@@ -134,13 +159,37 @@ export function PhoneScreen({
       {onAsk ? <AskDock onSend={onAsk} /> : null}
 
       <TabBar
-        items={PHONE_TABS.map((label) => ({ label: TAB_LABEL[label], selected: label === tab }))}
+        items={PHONE_TABS.map((label) => ({ label: TAB_LABEL[label], selected: label === BAR_OF[tab] }))}
         onSelect={(_item, index) => {
           const next = PHONE_TABS[index];
           if (next) onTab(next);
         }}
         style={{ flexShrink: 0 }}
       />
+    </div>
+  );
+}
+
+/**
+ * Two destinations behind one bar entry, and the way between them.
+ *
+ * Drawn under the header and above the title, so the title still says which
+ * one you are on. The row is the same chips every list filter uses; what makes
+ * it a switch rather than a filter is that the whole screen changes.
+ */
+export function PhoneSegments({ items }: { items: readonly { label: string; selected: boolean; onSelect: () => void }[] }) {
+  return (
+    <div role="tablist" style={{ display: "flex", gap: "var(--sp-2)", padding: "0 var(--gutter-phone) var(--sp-6)", flexShrink: 0 }}>
+      {items.map((item) => (
+        <Chip
+          key={item.label}
+          selected={item.selected}
+          onClick={item.onSelect}
+          style={{ flexShrink: 0, minHeight: 34 }}
+        >
+          {item.label}
+        </Chip>
+      ))}
     </div>
   );
 }
@@ -194,6 +243,40 @@ export function PhoneBody({ children, style }: { children?: ReactNode; style?: C
     >
       {children}
     </div>
+  );
+}
+
+/** Something a write was refused with. One line above the list rather than a
+ *  whole body, because the list underneath is still true and still usable. */
+export function PhoneAlert({ label, children }: { label: string; children?: ReactNode }) {
+  return (
+    <p
+      role="alert"
+      style={{
+        margin: 0,
+        padding: "var(--sp-5) var(--gutter-phone)",
+        borderTop: "var(--border-alert)",
+        borderBottom: "var(--border-alert)",
+        background: "var(--surface-alert)",
+        font: "var(--text-phone-note)",
+        color: "var(--text-2)",
+        textWrap: "pretty",
+        flexShrink: 0,
+      }}
+    >
+      <span
+        style={{
+          font: "var(--text-mono-label)",
+          letterSpacing: "var(--tracking-label)",
+          textTransform: "uppercase",
+          color: "var(--danger-text)",
+          marginRight: "var(--sp-4)",
+        }}
+      >
+        {label}
+      </span>
+      {children}
+    </p>
   );
 }
 

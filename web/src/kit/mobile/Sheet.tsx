@@ -26,6 +26,12 @@ export function Sheet({
         right: 0,
         bottom: 0,
         height,
+        // The design's heights assume the 844px frame. In a browser on a real
+        // phone the frame is whatever the viewport leaves, often under 700px,
+        // and a 640px sheet then has its Close row above the top edge where
+        // `overflow: hidden` clips it and nothing can dismiss it. So it is
+        // capped to what is left under the app header, and scrolls inside.
+        maxHeight: "calc(100% - var(--tabbar-total) - var(--safe-top) - 56px)",
         display: "flex",
         flexDirection: "column",
         minHeight: 0,

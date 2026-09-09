@@ -65,13 +65,16 @@ export interface ChatState {
   live: LiveTurn | null;
   /** Open one, or pass null to go back to the list. */
   open(id: string | null): void;
-  /** Start a fresh one and open it. */
-  start(): void;
+  /** Start a fresh one and open it. Answers with its id, or null if the
+   *  server refused — the failure is already on `message` by then. */
+  start(): Promise<string | null>;
   /**
-   * Say something into the open conversation. Starts one first if there is
-   * none, which is what the ask dock does from another screen entirely.
+   * Say something into the open conversation — or into `into`, when the
+   * caller has just started one and knows its id before this render does.
+   * With neither, the server's newest conversation takes it, which is what
+   * the ask dock does from a screen that never loaded one.
    */
-  send(text: string): void;
+  send(text: string, into?: string): void;
   /** Press a button on the approval the run is waiting on. */
   answer(actionId: string): void;
   /** Re-read from the server. */
@@ -207,23 +210,27 @@ export function useChat(surface: Surface = "desktop"): ChatState {
     setOpenId(list.conversations[0]!.id);
   }, [list, openId]);
 
-  const start = useCallback(() => {
-    void fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" } })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`the server answered ${response.status}`);
-        const { conversationId } = (await response.json()) as { conversationId: string };
-        chosen.current = true;
-        setLive(null);
-        setOpenId(conversationId);
-        reload();
-      })
-      .catch((error: unknown) => {
-        setFailure(error instanceof Error ? error.message : String(error));
-      });
-  }, [reload]);
+  const start = useCallback(
+    () =>
+      fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" } })
+        .then(async (response) => {
+          if (!response.ok) throw new Error(`the server answered ${response.status}`);
+          const { conversationId } = (await response.json()) as { conversationId: string };
+          chosen.current = true;
+          setLive(null);
+          setOpenId(conversationId);
+          reload();
+          return conversationId;
+        })
+        .catch((error: unknown) => {
+          setFailure(error instanceof Error ? error.message : String(error));
+          return null;
+        }),
+    [reload],
+  );
 
   const send = useCallback(
-    (text: string) => {
+    (text: string, into?: string) => {
       const said = text.trim();
       if (!said || running.current) return;
       running.current = true;
@@ -234,7 +241,7 @@ export function useChat(surface: Surface = "desktop"): ChatState {
           // "latest" rather than an id when nothing is open: the ask dock sends
           // from a screen that has never loaded a conversation, and the server
           // starting one is a round trip this does not have to make.
-          const target = openId ?? "latest";
+          const target = into ?? openId ?? "latest";
           const response = await fetch(`/api/chat/${encodeURIComponent(target)}/messages`, {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -366,6 +373,20 @@ export function useFollowBottom(): {
   }, []);
 
   return { box, content };
+}
+
+/**
+ * Whether the stored transcript already ends with what the live turn asked.
+ *
+ * The server writes your message down before it starts on the answer, so a
+ * turn that then fails leaves it stored with no reply. A re-read in the
+ * meantime — the phone's ask dock opens the conversation and sends in the
+ * same breath — puts that stored copy on screen beside the live one, and the
+ * same sentence is drawn twice. When it is, the live bubble is the copy.
+ */
+export function echoed(chat: Pick<ChatState, "stored" | "live">): boolean {
+  const last = chat.stored.at(-1);
+  return Boolean(chat.live && last && last.by === "user" && last.body === chat.live.asked);
 }
 
 /**

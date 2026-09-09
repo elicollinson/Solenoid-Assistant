@@ -14,7 +14,7 @@ import { RecommendationsView, type LocalStance } from "./RecommendationsView";
 import { ReminderDetail } from "./ReminderDetail";
 import { RemindersView, type LocalMark } from "./RemindersView";
 import { ThingsIKnowView } from "./ThingsIKnowView";
-import { WorkflowDetail, type WorkflowEdits, type WorkflowTrigger } from "./WorkflowDetail";
+import { WorkflowDetail, runGoing, type WorkflowEdits, type WorkflowTrigger } from "./WorkflowDetail";
 import { WorkflowsView } from "./WorkflowsView";
 import { useChat } from "./chat";
 import { isDeferredWrite, pendingDecisionFor, withoutResolved } from "./settle";
@@ -551,7 +551,9 @@ function One({
   const [opened, setOpened] = useState<WorkflowRunAccepted | null>(null);
 
   const workflow = useWorkflow(slug, "desktop", writes.reads);
-  const running = workflow.status === "ready" && workflow.data.state === "running";
+  // By the run, not the mark: a paused workflow's mark is idle while the run
+  // it started before the pause is still going, and that run still moves.
+  const running = workflow.status === "ready" && runGoing(workflow.data);
   const tick = useTick(running ? RUNNING_TICK_MS : null);
 
   useEffect(() => {
@@ -578,7 +580,13 @@ function One({
     error: refused,
     started: opened?.label ?? null,
     onRun: start,
-    onClear: () => setRefused(null),
+    // A new request begins clean. The last run's label is what closes the
+    // form once a run is accepted; left in place, it closed the form for the
+    // NEXT run the moment it opened, and a workflow could not be run twice.
+    onClear: () => {
+      setRefused(null);
+      setOpened(null);
+    },
   };
 
   const edits: WorkflowEdits = {

@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type OpenAI from "openai";
 import type { Ollama } from "ollama";
-import { OllamaProvider, OpenAIProvider } from "./providers";
+import { OllamaProvider, OpenAIProvider, ProviderResponseError } from "./providers";
 
 describe("OpenAIProvider", () => {
   test("disables reasoning and captures LM Studio reasoning content", async () => {
@@ -72,6 +72,100 @@ describe("OpenAIProvider", () => {
       },
     ]);
     expect(result.finishReason).toBe("length");
+  });
+
+  test.each([
+    ["a missing choices collection", {}, "choices"],
+    ["an empty choices collection", { choices: [] }, "choices"],
+    [
+      "a missing assistant message",
+      { choices: [{ finish_reason: "stop" }] },
+      "choices.0.message",
+    ],
+    [
+      "missing assistant content",
+      { choices: [{ message: { role: "assistant" } }] },
+      "choices.0.message.content",
+    ],
+    [
+      "non-string assistant content",
+      { choices: [{ message: { role: "assistant", content: { text: "wrong shape" } } }] },
+      "choices.0.message.content",
+    ],
+  ])("reports a typed error for %s", async (_label, response, expectedPath) => {
+    const client = {
+      chat: { completions: { create: mock(async () => response) } },
+    } as unknown as OpenAI;
+
+    const operation = new OpenAIProvider(client).chat(
+      [{ role: "user", content: "test" }],
+      { model: "compatible-model", tools: [] },
+    );
+
+    const error = await operation.catch((caught) => caught);
+    expect(error).toBeInstanceOf(ProviderResponseError);
+    expect(error).toMatchObject({
+      name: "ProviderResponseError",
+      code: "INVALID_PROVIDER_RESPONSE",
+      provider: "openai",
+    });
+    expect(error.message).toContain(expectedPath);
+  });
+
+  test.each([["null", null], ["omitted", undefined]])(
+    "accepts %s content when the assistant returns a tool call",
+    async (_label, content) => {
+      const client = {
+        chat: {
+          completions: {
+            create: mock(async () => ({
+              choices: [{
+                finish_reason: "tool_calls",
+                message: {
+                  role: "assistant",
+                  ...(content !== undefined ? { content } : {}),
+                  tool_calls: [{
+                    id: "call_1",
+                    type: "function",
+                    function: { name: "lookup", arguments: '{"id":1}' },
+                  }],
+                },
+              }],
+            })),
+          },
+        },
+      } as unknown as OpenAI;
+
+      const result = await new OpenAIProvider(client).chat(
+        [{ role: "user", content: "test" }],
+        { model: "compatible-model", tools: [] },
+      );
+
+      expect(result.content).toBe("");
+      expect(result.toolCalls).toEqual([{ id: "call_1", name: "lookup", arguments: { id: 1 } }]);
+    },
+  );
+
+  test("preserves an abort reason instead of replacing it with a response error", async () => {
+    const controller = new AbortController();
+    const reason = new Error("workflow stopped");
+    const client = {
+      chat: {
+        completions: {
+          create: mock(async () => {
+            controller.abort(reason);
+            return { choices: [] };
+          }),
+        },
+      },
+    } as unknown as OpenAI;
+
+    const operation = new OpenAIProvider(client).chat(
+      [{ role: "user", content: "test" }],
+      { model: "compatible-model", tools: [], signal: controller.signal },
+    );
+
+    await expect(operation).rejects.toBe(reason);
   });
 });
 

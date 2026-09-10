@@ -9,6 +9,7 @@ import {
 } from "ollama";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
+import { z } from "zod";
 import { tracedChat } from "./tracing/tracedProvider";
 import type { FunctionToolDefinition } from "./tools";
 import type { TextOrigin } from "../safety/trust";
@@ -107,6 +108,60 @@ export interface ChatProvider {
   readonly traced?: boolean;
   /** How schema-constrained tasks should be completed on this backend. */
   readonly structuredOutputStrategy?: StructuredOutputStrategy;
+}
+
+/** A provider returned a successful HTTP response that cannot be normalized. */
+export class ProviderResponseError extends Error {
+  readonly code = "INVALID_PROVIDER_RESPONSE";
+
+  constructor(
+    readonly provider: string,
+    readonly detail: string,
+  ) {
+    super(`${provider} returned an invalid chat completion: ${detail}`);
+    this.name = "ProviderResponseError";
+  }
+}
+
+const openAIChatCompletionSchema = z.object({
+  choices: z.array(z.object({
+    finish_reason: z.string().nullable().optional(),
+    message: z.object({
+      role: z.literal("assistant"),
+      content: z.string().nullish(),
+      reasoning_content: z.unknown().optional(),
+      tool_calls: z.array(z.object({
+        id: z.string(),
+        type: z.literal("function"),
+        function: z.object({
+          name: z.string(),
+          arguments: z.string(),
+        }).passthrough(),
+      }).passthrough()).optional(),
+    }).passthrough().superRefine((message, context) => {
+      const hasContent = typeof message.content === "string";
+      const hasReasoning = typeof message.reasoning_content === "string";
+      const hasToolCall = Boolean(message.tool_calls?.length);
+      if (!hasContent && !hasReasoning && !hasToolCall) {
+        context.addIssue({
+          code: "custom",
+          path: ["content"],
+          message: "expected text, reasoning content, or at least one tool call",
+        });
+      }
+    }),
+  }).passthrough()).min(1),
+  usage: z.object({
+    prompt_tokens: z.number().optional(),
+    completion_tokens: z.number().optional(),
+    total_tokens: z.number().optional(),
+  }).passthrough().nullish(),
+}).passthrough();
+
+function throwIfAborted(signal: AbortSignal | undefined, fallbackMessage: string): void {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  throw new DOMException(fallbackMessage, "AbortError");
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +307,7 @@ export class OpenAIProvider extends BaseChatProvider {
   }
 
   protected async chatInner(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage> {
+    throwIfAborted(opts.signal, "OpenAI request aborted");
     const openaiMessages = messages.map((m) => this.toOpenAI(m));
     // Real OpenAI enforces response_format server-side, but OpenAI-compatible
     // backends (e.g. Ollama Cloud's /v1) may silently ignore it — instruct too.
@@ -261,7 +317,7 @@ export class OpenAIProvider extends BaseChatProvider {
         content: `Respond with a single JSON object matching this JSON schema, and nothing else — no markdown, no code fences, no commentary:\n${JSON.stringify(opts.format.schema)}`,
       });
     }
-    const res = await this.client.chat.completions.create(
+    const rawResponse: unknown = await this.client.chat.completions.create(
       {
         model: opts.model,
         messages: openaiMessages,
@@ -291,11 +347,20 @@ export class OpenAIProvider extends BaseChatProvider {
       { signal: opts.signal },
     );
 
-    const choice = res.choices[0];
-    const msg = choice?.message;
-    if (!msg) throw new Error("OpenAI returned no choices");
-    const reasoningContent = (msg as unknown as { reasoning_content?: unknown })
-      .reasoning_content;
+    // Some OpenAI-compatible servers can return a successful HTTP response
+    // whose body does not match Chat Completions. Validate before indexing it
+    // so operators get a stable diagnostic instead of a property-access crash.
+    throwIfAborted(opts.signal, "OpenAI request aborted");
+    const parsed = openAIChatCompletionSchema.safeParse(rawResponse);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      const path = issue?.path.length ? issue.path.join(".") : "response";
+      throw new ProviderResponseError(this.providerName, `${path}: ${issue?.message ?? "malformed payload"}`);
+    }
+    const res = parsed.data;
+    const choice = res.choices[0]!; // schema requires at least one choice
+    const msg = choice.message;
+    const reasoningContent = msg.reasoning_content;
     return {
       role: "assistant",
       content: msg.content ?? "",

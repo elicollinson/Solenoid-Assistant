@@ -13,7 +13,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { log } from "../core/logger";
-import { isMcpAuthError } from "./errors";
+import { isMcpAuthError, NotionAuthenticationRequiredError } from "./errors";
 import { setEnvValue } from "../core/envFile";
 export { setEnvValue } from "../core/envFile";
 
@@ -605,7 +605,7 @@ export class NotionMcpClient {
    */
   async connect(): Promise<Client> {
     if (!this.accessToken) {
-      throw new Error("Not authenticated — run the auth flow first");
+      throw new NotionAuthenticationRequiredError("missing_credentials");
     }
 
     try {
@@ -664,10 +664,10 @@ export class NotionMcpClient {
   /** Refresh the access token using the stored refresh token. */
   async ensureValidToken(): Promise<TokenResponse> {
     if (!this.refreshToken) {
-      throw new Error("No refresh token available");
+      throw new NotionAuthenticationRequiredError("missing_credentials");
     }
     if (!this.clientId) {
-      throw new Error("Client not registered");
+      throw new NotionAuthenticationRequiredError("missing_credentials");
     }
 
     try {
@@ -688,7 +688,10 @@ export class NotionMcpClient {
         error instanceof Error &&
         error.message === "REAUTH_REQUIRED"
       ) {
-        throw new Error("Re-authentication required");
+        throw new NotionAuthenticationRequiredError("refresh_rejected");
+      }
+      if (error instanceof Error && error.message === "INVALID_CLIENT") {
+        throw new NotionAuthenticationRequiredError("invalid_client");
       }
       throw error;
     }

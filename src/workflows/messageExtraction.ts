@@ -1,4 +1,4 @@
-import { Agent, isGuardrailDetectedError, isPromptInjectionDetectedError } from "../core/rawAgent";
+import { Agent, AgentCancelledError, isGuardrailDetectedError, isPromptInjectionDetectedError } from "../core/rawAgent";
 import { createModelRoutes } from "../core/providerFactory";
 import { loadRuntimeConfig } from "../core/config";
 import { log } from "../core/logger";
@@ -47,12 +47,24 @@ export interface MessageExtractionResult extends Omit<ImessageIntakeResult, "mem
 }
 
 export interface MessageExtractionDependencies {
+  signal?: AbortSignal;
   intake?: Agent;
   grader?: Agent;
   okfManager?: Agent;
   retrieveMessages?: (
     params: MessageExtractionParams,
   ) => TrustedMessageWindowResult;
+}
+
+const NEVER_ABORTED = new AbortController().signal;
+
+function ensureActive(signal: AbortSignal): void {
+  if (!signal.aborted) return;
+  const reason = signal.reason;
+  throw new AgentCancelledError(
+    `Message extraction was cancelled: ${reason instanceof Error ? reason.message : String(reason ?? "cancelled")}`,
+    { cause: reason },
+  );
 }
 
 interface Conversation {
@@ -137,8 +149,11 @@ export async function extractMessages(
   params: MessageExtractionParams = {},
   dependencies: MessageExtractionDependencies = {},
 ): Promise<MessageExtractionResult> {
+  const signal = dependencies.signal ?? NEVER_ABORTED;
+  ensureActive(signal);
   // Take one chronological snapshot so a long run cannot shift its own window.
   const retrieved = (dependencies.retrieveMessages ?? readAllTrustedMessageWindow)(params);
+  ensureActive(signal);
   const grouped = groupConversations(retrieved.messages);
   const result: MessageExtractionResult = {
     actionItems: [],
@@ -160,6 +175,7 @@ export async function extractMessages(
     });
   }
   for (const conversations of conversationBatches(grouped.conversations)) {
+    ensureActive(signal);
     // Finish extraction, grading, and the OKF write before starting the next
     // chunk. Only the existing conversation/grading fanout within a chunk remains.
     const chunk = await extractMessageChunk(
@@ -170,6 +186,7 @@ export async function extractMessages(
       dependencies,
       priorSummaries,
     );
+    ensureActive(signal);
     result.actionItems.push(...chunk.actionItems);
     result.conversationSummaries.push(...chunk.conversationSummaries);
     result.memoryContext.push(...chunk.memoryContext);
@@ -203,17 +220,21 @@ async function extractMessageChunk(
   dependencies: MessageExtractionDependencies,
   priorSummaries: Map<string, string>,
 ): Promise<MessageExtractionChunkResult> {
+  const signal = dependencies.signal ?? NEVER_ABORTED;
+  ensureActive(signal);
   const intakeAgent = dependencies.intake ?? createImessageConversationAgent(runtimeConfig);
   const extraction = await runIsolated({
     items: conversations,
     key: (conversation) => conversation.id,
     concurrency: 8,
     name: "imessage-conversation-extraction",
-    execute: (conversation) => intakeAgent.run(
+    execute: (conversation) => intakeAgent.runWithSignal(
+      signal,
       conversationExtractionPrompt(conversation),
       imessageIntakeSchema,
     ),
   });
+  ensureActive(signal);
 
   if (extraction.failed > 0) {
     log.warn("messageExtraction: conversation extraction failures", {
@@ -253,12 +274,14 @@ async function extractMessageChunk(
     key: (_output, index) => index,
     concurrency: 8,
     name: "message-memory-grading",
-    execute: (output) => (dependencies.grader ?? memoryGraderAgent).run(
+    execute: (output) => (dependencies.grader ?? memoryGraderAgent).runWithSignal(
+      signal,
       memoryGraderPrompt,
       { output },
       memoryGraderSchema,
     ),
   });
+  ensureActive(signal);
   if (graded.failed > 0 || graded.quarantined > 0) {
     log.warn("messageExtraction: memory grades withheld", {
       failed: graded.failed,
@@ -275,6 +298,7 @@ async function extractMessageChunk(
   let quarantinedMemoryUpdates = 0;
   let memoryOffset = 0;
   for (const { value: conversation } of successful) {
+    ensureActive(signal);
     const memories = conversation.memoryContext.filter((_, index) => {
       const grade = graded.results[memoryOffset + index];
       if (grade?.status !== "fulfilled") return false;
@@ -284,10 +308,12 @@ async function extractMessageChunk(
     if (memories.length === 0) continue;
     try {
       // Await every writer: separate conversations may update the same OKF entry.
-      const update = await (dependencies.okfManager ?? okfManagerAgent).run(
+      const update = await (dependencies.okfManager ?? okfManagerAgent).runWithSignal(
+        signal,
         `Update the okf with these memories:\n${memories.map((memory) => `- ${memory}`).join("\n")}`,
         okfManagerResultSchema,
       );
+      ensureActive(signal);
       memoryContext.push(...memories);
       if (okfUpdate === "none") okfUpdate = update;
       else {

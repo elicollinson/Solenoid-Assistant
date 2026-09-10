@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import {
   Agent,
+  AgentCancelledError,
+  AgentContextLimitError,
+  AgentRouteError,
   AgentTimeoutError,
   ContentSafetyDetectedError,
   DEFAULT_AGENT_TIMEOUT_MS,
@@ -182,6 +185,95 @@ describe("deadline and continuation", () => {
 
     expect(await agent.run("grade it", schema)).toEqual({ ok: true });
     expect(calls).toBe(2);
+  });
+
+  test("context overflow is typed and terminal instead of replayed on another route", async () => {
+    const primary: ChatProvider = {
+      traced: true,
+      providerName: "small-context",
+      chat: async () => {
+        throw Object.assign(new Error("maximum context length exceeded"), {
+          status: 400,
+          code: "context_length_exceeded",
+        });
+      },
+    };
+    const fallback = new ScriptedProvider([{ content: "must not receive oversized input" }]);
+    const agent = new Agent({
+      routes: [
+        { client: primary, model: "small" },
+        { client: fallback, model: "also-small" },
+      ],
+      promptInjectionScreening: false,
+    });
+
+    const error = await agent.run("oversized").catch((caught) => caught);
+    expect(error).toBeInstanceOf(AgentContextLimitError);
+    expect((error as AgentContextLimitError).code).toBe("AGENT_CONTEXT_LIMIT");
+    expect(fallback.calls).toHaveLength(0);
+  });
+
+  test("provider cancellation is typed and never retried or sent to fallback", async () => {
+    let calls = 0;
+    const primary: ChatProvider = {
+      traced: true,
+      providerName: "cancelled",
+      chat: async () => {
+        calls++;
+        throw Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
+      },
+    };
+    const fallback = new ScriptedProvider([{ content: "must not run" }]);
+    const agent = new Agent({
+      routes: [
+        { client: primary, model: "cancelled" },
+        { client: fallback, model: "fallback" },
+      ],
+      promptInjectionScreening: false,
+    });
+
+    const error = await agent.run("cancelled").catch((caught) => caught);
+    expect(error).toBeInstanceOf(AgentCancelledError);
+    expect((error as AgentCancelledError).code).toBe("AGENT_CANCELLED");
+    expect(calls).toBe(1);
+    expect(fallback.calls).toHaveLength(0);
+  });
+
+  test("an exhausted route chain retains timeout and connection causes", async () => {
+    const primary: ChatProvider = {
+      traced: true,
+      providerName: "timed-out",
+      chat: async () => {
+        throw new AgentTimeoutError(20);
+      },
+    };
+    let fallbackCalls = 0;
+    const fallback: ChatProvider = {
+      traced: true,
+      providerName: "offline",
+      chat: async () => {
+        fallbackCalls++;
+        throw Object.assign(new Error("Connection error."), { code: "ECONNREFUSED" });
+      },
+    };
+    const agent = new Agent({
+      routes: [
+        { client: primary, model: "slow" },
+        { client: fallback, model: "offline" },
+      ],
+      timeoutMs: 1_000,
+      promptInjectionScreening: false,
+    });
+
+    const error = await agent.run("retain causes").catch((caught) => caught);
+    expect(error).toBeInstanceOf(AgentRouteError);
+    expect((error as AgentRouteError).failures.map(({ kind }) => kind)).toEqual([
+      "timeout",
+      "provider_connection",
+    ]);
+    expect((error as Error).message).toContain("Agent run timed out after 20ms");
+    expect((error as Error).message).toContain("Connection error.");
+    expect(fallbackCalls).toBe(2);
   });
 
   test("keeps an unstructured empty answer valid when there is no reasoning", async () => {

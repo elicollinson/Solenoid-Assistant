@@ -323,6 +323,70 @@ describe("message extraction isolation", () => {
 
 
 describe("message extraction chunks", () => {
+  test("cancellation during an in-flight intake starts no fallback, later chunk, grade, or write", async () => {
+    const controller = new AbortController();
+    let release!: (message: ChatMessage) => void;
+    const held = new Promise<ChatMessage>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let primaryCalls = 0;
+    let fallbackCalls = 0;
+    const primary: ChatProvider = {
+      providerName: "held-primary",
+      traced: true,
+      chat: async () => {
+        primaryCalls++;
+        entered();
+        return held;
+      },
+    };
+    const fallback: ChatProvider = {
+      providerName: "forbidden-fallback",
+      traced: true,
+      chat: async () => {
+        fallbackCalls++;
+        return { role: "assistant", content: "must not run" };
+      },
+    };
+    const intake = new Agent({
+      routes: [
+        { client: primary, model: "primary" },
+        { client: fallback, model: "fallback" },
+      ],
+      promptInjectionScreening: false,
+    });
+    const grader = new PromptProvider(() => ({ memoryRelevance: 10, memoryActionability: 10 }));
+    const writer = new PromptProvider(() => ({ actionsTaken: ["write"], resultSummary: "write" }));
+    const messages = Array.from({ length: 51 }, (_, index) =>
+      message("one-conversation", `message-${index}`, "2026-08-01T00:00:00.000Z")
+    );
+
+    const pending = extractMessages({}, {
+      signal: controller.signal,
+      retrieveMessages: retrieval(messages),
+      intake,
+      grader: agent(grader),
+      okfManager: agent(writer),
+    });
+    await started;
+    controller.abort(new Error("stopped by user"));
+    await expect(pending).rejects.toThrow("stopped by user");
+    release({
+      role: "assistant",
+      content: JSON.stringify({
+        actionItems: [],
+        conversationSummaries: ["late"],
+        memoryContext: ["late"],
+      }),
+    });
+    await Promise.resolve();
+
+    expect(primaryCalls).toBe(1);
+    expect(fallbackCalls).toBe(0);
+    expect(grader.prompts).toHaveLength(0);
+    expect(writer.prompts).toHaveLength(0);
+  });
+
   test("covers more than 200 messages in hard-capped batches and waits for each OKF write", async () => {
     const messages = Array.from({ length: 205 }, (_, index) => message(
       `conversation-${Math.floor(index / 50)}`, `message-${index}`, new Date(Date.UTC(2026, 7, 1, 0, index)).toISOString(),

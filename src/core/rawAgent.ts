@@ -64,6 +64,7 @@ export function extractJson(raw: string): string {
 
 export const DEFAULT_AGENT_TIMEOUT_MS = 5 * 60_000;
 const SUBMIT_RESULT_TOOL_NAME = "submit_result";
+const MAX_TRANSIENT_PROVIDER_ATTEMPTS = 2;
 
 export class AgentTimeoutError extends Error {
   readonly code = "AGENT_TIMEOUT";
@@ -75,11 +76,57 @@ export class AgentTimeoutError extends Error {
 }
 
 export class AgentRunError extends Error {
-  readonly code = "AGENT_RUN_FAILED";
+  readonly code: string = "AGENT_RUN_FAILED";
 
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "AgentRunError";
+  }
+}
+
+export type AgentFailureKind =
+  | "timeout"
+  | "cancelled"
+  | "context_limit"
+  | "provider_connection"
+  | "provider_error";
+
+export interface AgentRouteFailure {
+  provider: string;
+  model: string;
+  kind: AgentFailureKind;
+  message: string;
+}
+
+export class AgentRouteError extends AgentRunError {
+  override readonly code = "AGENT_ROUTES_FAILED";
+
+  constructor(readonly failures: readonly AgentRouteFailure[]) {
+    super(
+      "All model routes failed: " + failures.map((failure, index) =>
+        `${index + 1}. ${failure.provider}/${failure.model} [${failure.kind}]: ${failure.message}`
+      ).join("; "),
+      { cause: failures.at(-1) },
+    );
+    this.name = "AgentRouteError";
+  }
+}
+
+export class AgentContextLimitError extends AgentRunError {
+  override readonly code = "AGENT_CONTEXT_LIMIT";
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AgentContextLimitError";
+  }
+}
+
+export class AgentCancelledError extends AgentRunError {
+  override readonly code = "AGENT_CANCELLED";
+
+  constructor(message = "Agent run was cancelled", options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AgentCancelledError";
   }
 }
 
@@ -346,6 +393,7 @@ export class Agent {
     // arrow-function-field behavior) despite `run` now being an overloaded
     // method with a generic signature.
     this.run = this.run.bind(this);
+    this.runWithSignal = this.runWithSignal.bind(this);
     this.runMessages = this.runMessages.bind(this);
   }
 
@@ -389,6 +437,28 @@ export class Agent {
     varsOrSchema?: unknown,
     maybeSchema?: z.ZodType,
   ): Promise<unknown> {
+    return this.runWithOptionalSignal(undefined, promptOrTemplate, varsOrSchema, maybeSchema);
+  }
+
+  runWithSignal(signal: AbortSignal, prompt: string): Promise<string>;
+  runWithSignal<S extends z.ZodType>(signal: AbortSignal, prompt: string, schema: S): Promise<z.infer<S>>;
+  runWithSignal<V>(signal: AbortSignal, template: PromptTemplate<V>, vars: V): Promise<string>;
+  runWithSignal<V, S extends z.ZodType>(signal: AbortSignal, template: PromptTemplate<V>, vars: V, schema: S): Promise<z.infer<S>>;
+  async runWithSignal(
+    signal: AbortSignal,
+    promptOrTemplate: string | PromptTemplate<any>,
+    varsOrSchema?: unknown,
+    maybeSchema?: z.ZodType,
+  ): Promise<unknown> {
+    return this.runWithOptionalSignal(signal, promptOrTemplate, varsOrSchema, maybeSchema);
+  }
+
+  private runWithOptionalSignal(
+    signal: AbortSignal | undefined,
+    promptOrTemplate: string | PromptTemplate<any>,
+    varsOrSchema?: unknown,
+    maybeSchema?: z.ZodType,
+  ): Promise<unknown> {
     const schema =
       maybeSchema ?? (varsOrSchema instanceof z.ZodType ? varsOrSchema : undefined);
     const vars = varsOrSchema instanceof z.ZodType ? undefined : varsOrSchema;
@@ -405,6 +475,7 @@ export class Agent {
       schema,
       prompt,
       "text/plain",
+      signal,
     );
   }
 
@@ -434,6 +505,7 @@ export class Agent {
     schema: z.ZodType | undefined,
     inputValue: string,
     inputMimeType: "text/plain" | "application/json",
+    externalSignal?: AbortSignal,
   ): Promise<unknown> {
     // Traced entry: one AGENT root span per invocation. Subclasses customize
     // behavior by overriding runInner/loop — never run or runMessages — so the
@@ -456,9 +528,13 @@ export class Agent {
         ...this.getTraceAttributes(),
       },
       async (span) => {
+        if (externalSignal?.aborted) {
+          throw this.cancellationFrom(externalSignal);
+        }
         // Route attempts restart from the opening transcript. Side effects do
         // not, so keep their journal at invocation scope.
         const writes: WriteJournal = { started: 0 };
+        const routeFailures: AgentRouteFailure[] = [];
         // Grouped by declared origin, not by position. Everything defaults to
         // external, so the message-extraction and screenshot workflows — which
         // put a stranger's text into the opening transcript — keep aborting on
@@ -475,6 +551,7 @@ export class Agent {
         }
         for (const [origin, parts] of byOrigin) {
           await this.screenPromptInjection(parts, "input", actionFor(origin));
+          if (externalSignal?.aborted) throw this.cancellationFrom(externalSignal);
         }
         for (let index = 0; index < this.routes.length; index++) {
           const route = this.routes[index]!;
@@ -485,6 +562,7 @@ export class Agent {
               messages,
               schema,
               writes,
+              externalSignal,
             );
             span.setAttribute("agent.completed_route_index", index);
             span.setAttribute(
@@ -499,13 +577,29 @@ export class Agent {
             ) {
               throw error;
             }
+            const normalized = this.normalizeProviderFailure(error);
+            if (
+              normalized instanceof AgentContextLimitError ||
+              normalized instanceof AgentCancelledError
+            ) {
+              throw normalized;
+            }
+            routeFailures.push({
+              provider: route.client.providerName ?? "unknown",
+              model: route.model,
+              kind: this.failureKind(normalized),
+              message: normalized instanceof Error ? normalized.message : String(normalized),
+            });
             const nextRoute = this.routes[index + 1];
-            if (!nextRoute) throw error;
+            if (!nextRoute) {
+              if (routeFailures.length === 1) throw normalized;
+              throw new AgentRouteError(routeFailures);
+            }
             if (writes.started > 0) {
               span.addEvent("agent.route_fallback_suppressed", {
                 "agent.started_writes": writes.started,
               });
-              throw error;
+              throw normalized;
             }
             span.addEvent("agent.route_advanced", {
               "route.failed_index": index,
@@ -513,7 +607,8 @@ export class Agent {
               "route.failed_model": route.model,
               "route.next_provider": nextRoute.client.providerName ?? "unknown",
               "route.next_model": nextRoute.model,
-              "route.error": error instanceof Error ? error.message : String(error),
+              "route.error": normalized instanceof Error ? normalized.message : String(normalized),
+              "route.failure_kind": this.failureKind(normalized),
             });
             log.warn("[route] task failed; requeueing on the next model route", {
               failedRouteIndex: index,
@@ -522,7 +617,8 @@ export class Agent {
               nextRouteIndex: index + 1,
               nextProvider: nextRoute.client.providerName ?? "unknown",
               nextModel: nextRoute.model,
-              error: error instanceof Error ? error.message : String(error),
+              failureKind: this.failureKind(normalized),
+              error: normalized instanceof Error ? normalized.message : String(normalized),
             });
           }
         }
@@ -537,13 +633,17 @@ export class Agent {
     originalMessages: ChatMessage[],
     schema: z.ZodType | undefined,
     writes: WriteJournal,
+    externalSignal?: AbortSignal,
   ): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(
       () => controller.abort(new AgentTimeoutError(this.timeoutMs)),
       this.timeoutMs,
     );
+    const cancel = () => controller.abort(this.cancellationFrom(externalSignal!));
+    externalSignal?.addEventListener("abort", cancel, { once: true });
     try {
+      if (externalSignal?.aborted) cancel();
       // The loop mutates its transcript. Each provider attempt starts from the
       // same original task rather than inheriting a failed model trajectory.
       const messages = originalMessages.map((message) => ({
@@ -557,6 +657,7 @@ export class Agent {
       throw error;
     } finally {
       clearTimeout(timer);
+      externalSignal?.removeEventListener("abort", cancel);
     }
   }
 
@@ -742,6 +843,7 @@ export class Agent {
 
     let turn = 0;
     let retryDelayMs = 250;
+    let transientAttempts = 0;
     while (true) {
       if (options.signal.aborted) throw abortReason(options.signal);
       turn++;
@@ -772,14 +874,19 @@ export class Agent {
           options.signal,
         );
         retryDelayMs = 250;
+        transientAttempts = 0;
       } catch (error) {
         if (options.signal.aborted) throw abortReason(options.signal);
-        if (!this.isTransientProviderError(error)) throw error;
+        const normalized = this.normalizeProviderFailure(error);
+        if (!this.isTransientProviderError(normalized)) throw normalized;
+        transientAttempts++;
+        if (transientAttempts >= MAX_TRANSIENT_PROVIDER_ATTEMPTS) throw normalized;
         log.warn("[retry] transient model call failure", {
           turn,
           phase: options.phase,
+          failureKind: this.failureKind(normalized),
           retryInMs: retryDelayMs,
-          error: error instanceof Error ? error.message : String(error),
+          error: normalized instanceof Error ? normalized.message : String(normalized),
         });
         await this.waitFor(retryDelayMs, options.signal);
         retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
@@ -993,6 +1100,70 @@ export class Agent {
     ].includes(candidate?.name ?? "") || (
       candidate?.name === "TypeError" && candidate?.message?.includes("fetch failed") === true
     );
+  }
+
+  private normalizeProviderFailure(error: unknown): unknown {
+    if (
+      error instanceof AgentTimeoutError ||
+      error instanceof AgentContextLimitError ||
+      error instanceof AgentCancelledError
+    ) return error;
+    const candidate = error as {
+      status?: number;
+      statusCode?: number;
+      code?: string;
+      name?: string;
+      message?: string;
+      cause?: { code?: string };
+    };
+    const status = candidate?.status ?? candidate?.statusCode;
+    const code = String(candidate?.code ?? candidate?.cause?.code ?? "").toLowerCase();
+    const message = error instanceof Error ? error.message : String(error);
+    const lowered = message.toLowerCase();
+    if (
+      code === "context_length_exceeded" ||
+      code === "prompt_too_long" ||
+      ((status === 400 || status === 413) && [
+        "context length",
+        "context window",
+        "maximum context",
+        "too many tokens",
+        "prompt is too long",
+      ].some((part) => lowered.includes(part)))
+    ) {
+      return new AgentContextLimitError(message, {
+        cause: error instanceof Error ? error : undefined,
+      });
+    }
+    if (
+      candidate?.name === "AbortError" ||
+      code === "abort_err" ||
+      code === "err_canceled" ||
+      lowered === "the operation was aborted" ||
+      lowered === "request was cancelled"
+    ) {
+      return new AgentCancelledError(message, {
+        cause: error instanceof Error ? error : undefined,
+      });
+    }
+    return error;
+  }
+
+  private cancellationFrom(signal: AbortSignal): AgentCancelledError {
+    const reason = signal.reason;
+    const detail = reason instanceof Error ? reason.message : String(reason ?? "cancelled");
+    return new AgentCancelledError(`Agent run was cancelled: ${detail}`, {
+      cause: reason,
+    });
+  }
+
+  private failureKind(error: unknown): AgentFailureKind {
+    if (error instanceof AgentTimeoutError) return "timeout";
+    if (error instanceof AgentCancelledError) return "cancelled";
+    if (error instanceof AgentContextLimitError) return "context_limit";
+    return this.isTransientProviderError(error)
+      ? "provider_connection"
+      : "provider_error";
   }
 
   private awaitWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

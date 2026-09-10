@@ -21,6 +21,7 @@
 import {
   Agent,
   isGuardrailDetectedError,
+  isPromptInjectionScreeningError,
   type AgentOptions,
   type ToolOutcome,
   type WriteJournal,
@@ -123,7 +124,7 @@ export class ChatAgent extends Agent {
     try {
       result = await super.invokeTool(name, rawArgs, signal, session, writes);
     } catch (error) {
-      if (gated && tool.kind === "write" && isGuardrailDetectedError(error)) {
+      if (gated && tool.kind === "write" && (isGuardrailDetectedError(error) || isPromptInjectionScreeningError(error))) {
         // The write completed before its response was screened. Record the act
         // without retaining or displaying the quarantined response, then keep
         // the typed detection terminal so the model cannot replay the write.

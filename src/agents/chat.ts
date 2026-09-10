@@ -18,7 +18,14 @@
 // message this agent reads out of iMessage was written by somebody else, and
 // ../core/rawAgent.ts screens every tool result for injection whether or not
 // this file is involved.
-import { Agent, type AgentOptions, type ToolOutcome } from "../core/rawAgent";
+import {
+  Agent,
+  isPromptInjectionDetectedError,
+  isPromptInjectionScreeningError,
+  type AgentOptions,
+  type ToolOutcome,
+  type WriteJournal,
+} from "../core/rawAgent";
 import type { ChatMessage } from "../core/providers";
 import type { z } from "zod";
 import { loaderName, type ToolSession } from "../core/toolGroups";
@@ -85,6 +92,7 @@ export class ChatAgent extends Agent {
     rawArgs: unknown,
     signal: AbortSignal | undefined,
     session: ToolSession,
+    writes?: WriteJournal,
   ): Promise<ToolOutcome> {
     const turn = currentTurn();
     const tool = this.tools.get(name) ?? session.resolve(name);
@@ -92,7 +100,7 @@ export class ChatAgent extends Agent {
     // Not in a chat, or a name that resolves to nothing. Either way there is
     // nobody to ask and nothing to report: hand it back to the base class,
     // which has the right words for an unopened group and an unknown tool.
-    if (!turn || !tool) return super.invokeTool(name, rawArgs, signal, session);
+    if (!turn || !tool) return super.invokeTool(name, rawArgs, signal, session, writes);
 
     let gated: string | undefined;
     if (this.policy(tool)) {
@@ -112,7 +120,28 @@ export class ChatAgent extends Agent {
     }
 
     const started = performance.now();
-    const result = await super.invokeTool(name, rawArgs, signal, session);
+    let result: ToolOutcome;
+    try {
+      result = await super.invokeTool(name, rawArgs, signal, session, writes);
+    } catch (error) {
+      if (gated && tool.kind === "write" && (isPromptInjectionDetectedError(error) || isPromptInjectionScreeningError(error))) {
+        // The write completed before its response was screened. Record the act
+        // without retaining or displaying the quarantined response, then keep
+        // the typed detection terminal so the model cannot replay the write.
+        this.report(
+          turn,
+          name,
+          rawArgs,
+          tool,
+          { ok: true, output: "" },
+          performance.now() - started,
+          session,
+          true,
+        );
+        turn.settled(gated, null, displayName(name), "response_quarantined");
+      }
+      throw error;
+    }
     this.report(turn, name, rawArgs, tool, result, performance.now() - started, session);
     // The second sentence of the approval's outcome line. Only now is it true:
     // until this point the only honest thing to write was which button was
@@ -174,6 +203,7 @@ export class ChatAgent extends Agent {
     result: ToolOutcome,
     elapsedMs: number,
     session: ToolSession,
+    responseQuarantined = false,
   ): void {
     // A group's loader answers to the group's own name, so this is how one is
     // told apart from a member of the group it opens. Drawing "10 tool calls ·
@@ -190,6 +220,7 @@ export class ChatAgent extends Agent {
       arg: displayArg(rawArgs),
       duration: displayDuration(elapsedMs),
       ok: result.ok,
+      ...(responseQuarantined ? { responseQuarantined: true } : {}),
     });
   }
 }

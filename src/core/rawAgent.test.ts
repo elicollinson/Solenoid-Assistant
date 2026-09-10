@@ -358,6 +358,118 @@ describe("prompt-injection screening", () => {
     expect(toolMessage?.content).not.toContain("unsafe tool result");
   });
 
+  test("a quarantined completed write terminates before the model can retry with variant arguments", async () => {
+    let writes = 0;
+    const tool = defineTool({
+      name: "store_memory",
+      kind: "write",
+      description: "store memory",
+      schema: z.object({ value: z.string() }),
+      execute: () => {
+        writes++;
+        return "unsafe write receipt";
+      },
+    });
+    const call = (id: string, value: string): Partial<ChatMessage> => ({
+      finishReason: "tool_calls",
+      toolCalls: [{ id, name: "store_memory", arguments: { value } }],
+    });
+    const client = new ScriptedProvider([
+      call("write-1", "one"),
+      call("write-2", "same source, varied operation"),
+      { content: "continued safely" },
+    ]);
+    const agent = new Agent({
+      routes: routes(client),
+      tools: [tool],
+      promptInjectionScreening: async ([text]) => ({
+        flagged: text === "unsafe write receipt",
+      }),
+    });
+
+    const error = await agent.run("source one").catch((caught) => caught);
+    expect(isPromptInjectionDetectedError(error)).toBe(true);
+    expect((error as PromptInjectionDetectedError).boundary).toBe("tool_output");
+    expect(writes).toBe(1);
+    expect(client.calls).toHaveLength(1);
+  });
+
+  test("a completed write prevents route fallback, while the next invocation stays isolated", async () => {
+    let writes = 0;
+    const tool = defineTool({
+      name: "store_memory",
+      kind: "write",
+      description: "store memory",
+      schema: z.object({}),
+      execute: () => {
+        writes++;
+        return "safe receipt";
+      },
+    });
+    const primaryCalls: ChatMessage[][] = [];
+    const primary: ChatProvider = {
+      providerName: "scoped-primary",
+      traced: true,
+      async chat(messages) {
+        primaryCalls.push(messages.map((message) => ({ ...message })));
+        const hasReceipt = messages.some((message) => message.role === "tool");
+        if (!hasReceipt) return {
+          role: "assistant",
+          content: "",
+          finishReason: "tool_calls",
+          toolCalls: [{ id: "write", name: "store_memory", arguments: {} }],
+        };
+        const source = messages.find((message) => message.role === "user")?.content;
+        if (source === "first source") throw new Error("provider failed after write");
+        return { role: "assistant", content: "done", finishReason: "stop" };
+      },
+    };
+    const fallback = new ScriptedProvider([{ content: "fallback must not run" }]);
+    const agent = new Agent({
+      routes: [
+        { client: primary, model: "primary" },
+        { client: fallback, model: "fallback" },
+      ],
+      tools: [tool],
+      promptInjectionScreening: false,
+    });
+
+    await expect(agent.run("first source")).rejects.toThrow("provider failed after write");
+    expect(writes).toBe(1);
+    expect(fallback.calls).toHaveLength(0);
+
+    expect(await agent.run("second source")).toBe("done");
+    expect(writes).toBe(2);
+    expect(primaryCalls).toHaveLength(4);
+  });
+
+  test("intentional identical successful writes in one invocation both execute", async () => {
+    let writes = 0;
+    const tool = defineTool({
+      name: "increment_counter",
+      kind: "write",
+      description: "increment counter",
+      schema: z.object({ amount: z.number() }),
+      execute: () => ++writes,
+    });
+    const repeated = (id: string): Partial<ChatMessage> => ({
+      finishReason: "tool_calls",
+      toolCalls: [{ id, name: "increment_counter", arguments: { amount: 1 } }],
+    });
+    const agent = new Agent({
+      routes: routes(new ScriptedProvider([
+        repeated("first"),
+        repeated("second"),
+        { content: "done" },
+      ])),
+      tools: [tool],
+      promptInjectionScreening: false,
+    });
+
+    expect(await agent.run("increment twice")).toBe("done");
+    expect(writes).toBe(2);
+  });
+
   test("scanner failure is typed, safe, and terminal", async () => {
     const primary = new ScriptedProvider([{ content: "unused" }]);
     const fallback = new ScriptedProvider([{ content: "unused" }]);

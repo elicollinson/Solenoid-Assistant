@@ -180,11 +180,18 @@ export async function* runChatTurn(
       emit(event);
     },
     decide: (request: ApprovalRequest) => ask(db, conversationId, request, said, emit, approvalMs),
-    settled(decisionId: string, error: string | null, called: string) {
+    settled(
+      decisionId: string,
+      error: string | null,
+      called: string,
+      completion?: "response_quarantined",
+    ) {
       noteApprovalOutcome(
         db,
         decisionId,
-        error
+        completion === "response_quarantined"
+          ? `${called} ran and finished, but its response was quarantined.`
+          : error
           ? `${called} was allowed and failed: ${error}`
           : `${called} ran and finished.`,
       );

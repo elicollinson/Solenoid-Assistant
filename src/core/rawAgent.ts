@@ -213,6 +213,11 @@ interface LoopOptions {
    * invariant; this is the type carrying it rather than the comment.
    */
   session: ToolSession;
+  writes: WriteJournal;
+}
+
+export interface WriteJournal {
+  started: number;
 }
 
 export interface AgentOptions {
@@ -420,6 +425,9 @@ export class Agent {
         ...this.getTraceAttributes(),
       },
       async (span) => {
+        // Route attempts restart from the opening transcript. Side effects do
+        // not, so keep their journal at invocation scope.
+        const writes: WriteJournal = { started: 0 };
         // Grouped by declared origin, not by position. Everything defaults to
         // external, so the message-extraction and screenshot workflows — which
         // put a stranger's text into the opening transcript — keep aborting on
@@ -445,6 +453,7 @@ export class Agent {
               route.model,
               messages,
               schema,
+              writes,
             );
             span.setAttribute("agent.completed_route_index", index);
             span.setAttribute(
@@ -461,6 +470,12 @@ export class Agent {
             }
             const nextRoute = this.routes[index + 1];
             if (!nextRoute) throw error;
+            if (writes.started > 0) {
+              span.addEvent("agent.route_fallback_suppressed", {
+                "agent.started_writes": writes.started,
+              });
+              throw error;
+            }
             span.addEvent("agent.route_advanced", {
               "route.failed_index": index,
               "route.failed_provider": route.client.providerName ?? "unknown",
@@ -490,6 +505,7 @@ export class Agent {
     model: string,
     originalMessages: ChatMessage[],
     schema: z.ZodType | undefined,
+    writes: WriteJournal,
   ): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(
@@ -504,7 +520,7 @@ export class Agent {
         ...(message.images ? { images: [...message.images] } : {}),
         ...(message.toolCalls ? { toolCalls: [...message.toolCalls] } : {}),
       }));
-      return await this.runInner(messages, schema, controller.signal, client, model);
+      return await this.runInner(messages, schema, controller.signal, client, model, writes);
     } catch (error) {
       if (controller.signal.aborted) throw abortReason(controller.signal);
       throw error;
@@ -519,6 +535,7 @@ export class Agent {
     signal: AbortSignal,
     client: ChatProvider = this.routes[0].client,
     model: string = this.routes[0].model,
+    writes: WriteJournal = { started: 0 },
   ): Promise<unknown> {
     // One session per attempt. A route that fails replays the original task, so
     // it should also replay from the same set of unopened groups.
@@ -529,6 +546,7 @@ export class Agent {
         think: this.think,
         phase: "work",
         session,
+        writes,
       }, client, model);
     }
     const format = toOutputFormat("agent_output", schema);
@@ -541,6 +559,7 @@ export class Agent {
         think: this.think,
         phase: "work",
         session,
+        writes,
       }, client, model);
       raw = await this.loop(
         [
@@ -562,6 +581,7 @@ export class Agent {
           // Its own, and it stays shut: this pass has no tools at all, so what
           // the work phase opened is neither available here nor wanted.
           session: this.groups.session(),
+          writes,
         },
         client,
         model,
@@ -583,6 +603,7 @@ export class Agent {
           schema,
           submitResult: true,
           session,
+          writes,
         },
         client,
         model,
@@ -809,6 +830,7 @@ export class Agent {
             call.arguments,
             options.signal,
             session,
+            options.writes,
           );
           messages.push({
             role: "tool",
@@ -980,6 +1002,7 @@ export class Agent {
     rawArgs: unknown,
     signal: AbortSignal | undefined,
     session: ToolSession,
+    writes: WriteJournal = { started: 0 },
   ): Promise<ToolOutcome> {
     const tool = this.tools.get(name) ?? session.resolve(name);
     if (!tool) {
@@ -1033,6 +1056,9 @@ export class Agent {
           }
 
           log.info(`[tool] ${name}(${JSON.stringify(args)})`);
+          // Once dispatched, a write may finish even if our await is cancelled.
+          // A fresh route cannot safely infer that no side effect happened.
+          if (tool.kind === "write") writes.started++;
           const result = await this.awaitWithSignal(
             Promise.resolve(tool.execute(args, { signal })),
             signal ?? new AbortController().signal,
@@ -1072,6 +1098,12 @@ export class Agent {
               tool: name,
               boundary: err.boundary,
             });
+            if (tool.kind === "write") {
+              // The side effect is complete, so returning an ordinary failed
+              // result would invite another call. End only this invocation;
+              // workflow fanout contains the typed detection to its source.
+              throw err;
+            }
             return failed("Prompt injection detected in tool output; output blocked.");
           }
           span.recordException(err instanceof Error ? err : new Error(String(err)));

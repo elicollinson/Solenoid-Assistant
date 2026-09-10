@@ -288,7 +288,7 @@ describe("message extraction isolation", () => {
 
 
 describe("message extraction chunks", () => {
-  test("covers more than 200 messages in whole-conversation batches and waits for each OKF write", async () => {
+  test("covers more than 200 messages in hard-capped batches and waits for each OKF write", async () => {
     const messages = Array.from({ length: 205 }, (_, index) => message(
       `conversation-${Math.floor(index / 50)}`, `message-${index}`, new Date(Date.UTC(2026, 7, 1, 0, index)).toISOString(),
     ));
@@ -344,7 +344,7 @@ describe("message extraction chunks", () => {
     expect(result.screening).toEqual({ processedConversations: 5, quarantinedConversations: 0, failedConversations: 0 });
   });
 
-  test("groups interleaved conversations once and packs whole conversations, including an oversized one", async () => {
+  test("splits oversized interleaved conversations with complete ordered coverage", async () => {
     const sizes = [20, 30, 205, 25, 26];
     // Interleave messages so each conversation crosses raw 50-message boundaries.
     const messages = Array.from({ length: 205 }, (_, index) => sizes.flatMap((size, conversation) =>
@@ -368,15 +368,99 @@ describe("message extraction chunks", () => {
         return { actionsTaken: ["updated"], resultSummary: "updated" };
       })),
     });
-    expect(writes).toEqual([
-      ["message-0-0", "message-1-0"], [], ["message-2-0"], ["message-3-0"], ["message-4-0"],
+    expect(seen.every((part) => part.length <= 50)).toBe(true);
+    expect(seen.flat()).toEqual([
+      ...Array.from({ length: 20 }, (_, index) => `message-0-${index}`),
+      ...Array.from({ length: 30 }, (_, index) => `message-1-${index}`),
+      ...Array.from({ length: 205 }, (_, index) => `message-2-${index}`),
+      ...Array.from({ length: 25 }, (_, index) => `message-3-${index}`),
+      ...Array.from({ length: 26 }, (_, index) => `message-4-${index}`),
     ]);
-    expect(seen).toEqual(sizes.map((size, conversation) =>
-      Array.from({ length: size }, (_, index) => `message-${conversation}-${index}`)
-    ));
-    expect(result.actionItems.slice().sort()).toEqual(messages.map((m) => m.body).sort());
-    expect(result.conversationSummaries).toEqual(sizes.map((_, conversation) => `message-${conversation}-0`));
+    expect(writes).toHaveLength(9);
+    expect(result.actionItems).toEqual(seen.flat());
+    expect(result.conversationSummaries).toEqual(seen.map((part) => part[0]!));
     expect(result.screening).toEqual({ processedConversations: 5, quarantinedConversations: 0, failedConversations: 0 });
+  });
+
+  test("keeps 50 messages in one extraction and splits 51 into 50 plus 1", async () => {
+    for (const count of [50, 51]) {
+      const intake = new PromptProvider((prompt) => ({
+        actionItems: [...prompt.matchAll(/"body":\s*"(boundary-\d+)"/g)].map((match) => match[1]!),
+        conversationSummaries: ["chunk summary"],
+        memoryContext: [],
+      }));
+      const messages = Array.from({ length: count }, (_, index) =>
+        message("boundary-chat", `boundary-${index}`, "2026-08-01T00:00:00.000Z")
+      );
+      const result = await extractMessages({}, {
+        retrieveMessages: retrieval(messages), intake: agent(intake), grader: passGrader(),
+      });
+      expect(intake.prompts).toHaveLength(count === 50 ? 1 : 2);
+      expect(intake.prompts.map((prompt) =>
+        [...prompt.matchAll(/"body":\s*"boundary-\d+"/g)].length
+      )).toEqual(count === 50 ? [50] : [50, 1]);
+      expect(result.actionItems).toEqual(messages.map(({ body }) => body));
+    }
+  });
+
+  test("carries a bounded summary only from prior chunks of the same conversation", async () => {
+    const longSummary = `FIRST-${"x".repeat(2_100)}-TAIL`;
+    const intake = new PromptProvider((prompt) => {
+      const body = prompt.match(/"body":\s*"([^"]+)"/)?.[1] ?? "";
+      return {
+        actionItems: [],
+        conversationSummaries: [
+          body === "a-0"
+            ? longSummary
+            : body === "a-50"
+            ? "cumulative-first-and-second"
+            : `summary-${body}`,
+        ],
+        memoryContext: [],
+      };
+    });
+    const messages = [
+      ...Array.from({ length: 101 }, (_, index) => message("chat-a", `a-${index}`, "2026-08-01T00:00:00.000Z")),
+      ...Array.from({ length: 49 }, (_, index) => message("chat-b", `b-${index}`, "2026-08-01T00:00:00.000Z")),
+    ];
+    await extractMessages({}, {
+      retrieveMessages: retrieval(messages), intake: agent(intake), grader: passGrader(),
+    });
+
+    const firstA = intake.prompts.find((prompt) => prompt.includes('"body":"a-0"'))!;
+    const secondA = intake.prompts.find((prompt) => prompt.includes('"body":"a-50"'))!;
+    const thirdA = intake.prompts.find((prompt) => prompt.includes('"body":"a-100"'))!;
+    const firstB = intake.prompts.find((prompt) => prompt.includes('"body":"b-0"'))!;
+    expect(firstA).not.toContain("Earlier Context From This Conversation");
+    expect(secondA).toContain("Earlier Context From This Conversation");
+    expect(secondA).toContain("FIRST-");
+    expect(secondA).toContain("-TAIL");
+    expect(secondA).toContain("[…summary bounded…]");
+    expect(thirdA).toContain("cumulative-first-and-second");
+    expect(thirdA).not.toContain(longSummary);
+    expect(firstB).not.toContain("Earlier Context From This Conversation");
+    expect(firstB).not.toContain("-TAIL");
+  });
+
+  test("does not carry output from a quarantined chunk into later context", async () => {
+    const prompts: string[] = [];
+    const intake = new PromptProvider((prompt) => {
+      prompts.push(prompt);
+      const body = prompt.match(/"body":\s*"([^"]+)"/)?.[1] ?? "";
+      return { actionItems: [], conversationSummaries: [`safe-summary-${body}`], memoryContext: [] };
+    });
+    const messages = Array.from({ length: 101 }, (_, index) =>
+      message("quarantine-chat", index === 50 ? "QUARANTINE-ME" : `q-${index}`, "2026-08-01T00:00:00.000Z")
+    );
+    await extractMessages({}, {
+      retrieveMessages: retrieval(messages),
+      intake: agent(intake, async (parts) => ({ flagged: parts.some((part) => part.includes("QUARANTINE-ME")) })),
+      grader: passGrader(),
+    });
+    const third = prompts.find((prompt) => prompt.includes('"body":"q-100"'))!;
+    expect(third).toContain("safe-summary-q-0");
+    expect(third).not.toContain("QUARANTINE-ME");
+    expect(third).not.toContain("safe-summary-QUARANTINE-ME");
   });
 
   test("an OKF write failure stops the run before later chunks", async () => {

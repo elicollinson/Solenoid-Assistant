@@ -156,14 +156,14 @@ describe("a turn that wants to write", () => {
     expect(chat.waiting).toBe(0);
   });
 
-  test.each([false, true])("settles an approved completed write with blocked response (scanner failure=%s)", async (scannerFailure) => {
+  test.each([true, false, "scanner_failure"])("settles an approved completed write whose response is quarantined (PI=%s)", async (pi) => {
     let writes = 0;
     const agent = agentFor([
       call("record_external_receipt", { title: "Call the plumber" }),
       { content: "must not continue after the quarantined write" },
     ], async ([part]) => {
-      if (scannerFailure && part === "unsafe external receipt") throw new Error("scanner unavailable");
-      return { flagged: part === "unsafe external receipt" };
+      if (pi === "scanner_failure" && part === "unsafe external receipt") throw new Error("scanner unavailable");
+      return { flagged: pi === true && part === "unsafe external receipt", blocked: part === "unsafe external receipt" };
     }).addTool(
       defineTool({
         name: "record_external_receipt",

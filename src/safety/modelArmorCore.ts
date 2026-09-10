@@ -3,13 +3,24 @@ import { GoogleAuth, type JWTInput } from "google-auth-library";
 export type PromptTextParts = readonly [string, ...string[]];
 
 export interface ModelArmorAssessment {
+  /** True only when the PI/jailbreak filter matched. */
   flagged: boolean;
-  label: "BENIGN" | "MALICIOUS";
+  /** True when any configured safety filter matched. */
+  blocked: boolean;
+  label: "BENIGN" | "MALICIOUS" | "CONTENT_BLOCKED";
   score: number;
   filterMatchState: "MATCH_FOUND" | "NO_MATCH_FOUND" | string;
   invocationResult: "SUCCESS" | string;
   confidenceLevel?: string;
-  filterResults?: Record<string, unknown>;
+  matchedFilters: string[];
+  filterVerdicts: ModelArmorFilterVerdict[];
+}
+
+export interface ModelArmorFilterVerdict {
+  filter: string;
+  matchState?: string;
+  executionState?: string;
+  confidenceLevel?: string;
 }
 
 export type FetchLike = (
@@ -43,11 +54,59 @@ interface ResolvedModelArmorScannerOptions {
 
 const EMPTY_ASSESSMENT: ModelArmorAssessment = {
   flagged: false,
+  blocked: false,
   label: "BENIGN",
   score: 0,
   filterMatchState: "NO_MATCH_FOUND",
   invocationResult: "SUCCESS",
+  matchedFilters: [],
+  filterVerdicts: [],
 };
+
+const FILTER_RESULT_FIELDS = [
+  "raiFilterResult",
+  "sdpFilterResult",
+  "piAndJailbreakFilterResult",
+  "maliciousUriFilterResult",
+  "csamFilterFilterResult",
+  "virusScanFilterResult",
+] as const;
+
+const KNOWN_FILTERS = new Set(["rai", "sdp", "pi_and_jailbreak", "malicious_uris", "csam", "virus_scan"]);
+
+function object(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function filterPayload(value: unknown): Record<string, unknown> | undefined {
+  const entry = object(value);
+  if (!entry) return undefined;
+  for (const field of FILTER_RESULT_FIELDS) {
+    const payload = object(entry[field]);
+    if (!payload) continue;
+    if (field === "sdpFilterResult") {
+      return object(payload.inspectResult) ?? object(payload.deidentifyResult) ??
+        object(payload.redactResult) ?? payload;
+    }
+    return payload;
+  }
+  return entry;
+}
+
+function summarizeFilterVerdicts(filterResults: Record<string, unknown> | undefined): ModelArmorFilterVerdict[] {
+  if (!filterResults) return [];
+  return Object.entries(filterResults).map(([name, result]) => {
+    const payload = filterPayload(result);
+    return {
+      filter: KNOWN_FILTERS.has(name) ? name : "unknown",
+      ...(typeof payload?.matchState === "string" ? { matchState: payload.matchState } : {}),
+      ...(typeof payload?.executionState === "string" ? { executionState: payload.executionState } : {}),
+      ...(typeof payload?.confidenceLevel === "string" ? { confidenceLevel: payload.confidenceLevel } : {}),
+    };
+  });
+}
 
 function combineParts(parts: readonly string[]): string {
   if (!Array.isArray(parts) || parts.length === 0) {
@@ -202,24 +261,46 @@ export class ModelArmorScanner {
       throw new Error("Model Armor response did not contain sanitizationResult");
     }
 
-    const filterMatchState = sanitizationResult.filterMatchState ?? "NO_MATCH_FOUND";
-    const flagged = filterMatchState === "MATCH_FOUND";
-    const rawFilterResults = sanitizationResult.filterResults as
-      | Record<string, Record<string, Record<string, unknown>>>
-      | undefined;
-    const confidenceLevel =
-      typeof rawFilterResults?.pi_and_jailbreak?.piAndJailbreakFilterResult?.confidenceLevel === "string"
-        ? (rawFilterResults.pi_and_jailbreak.piAndJailbreakFilterResult.confidenceLevel as string)
-        : undefined;
+    const invocationResult = sanitizationResult.invocationResult ?? "INVOCATION_RESULT_UNSPECIFIED";
+    const filterVerdicts = summarizeFilterVerdicts(sanitizationResult.filterResults);
+    const conclusiveMatchStates = new Set(["MATCH_FOUND", "NO_MATCH_FOUND"]);
+    const incompleteFilters = filterVerdicts.filter(({ executionState, matchState }) =>
+      executionState !== "EXECUTION_SUCCESS" ||
+      !matchState ||
+      !conclusiveMatchStates.has(matchState)
+    ).map(({ filter }) => filter);
+    const filterMatchState = sanitizationResult.filterMatchState;
+    const piVerdict = filterVerdicts.find(({ filter }) => filter === "pi_and_jailbreak");
+    if (
+      invocationResult !== "SUCCESS" ||
+      !filterMatchState ||
+      !conclusiveMatchStates.has(filterMatchState) ||
+      filterVerdicts.length === 0 ||
+      incompleteFilters.length > 0 ||
+      !piVerdict
+    ) {
+      throw new Error(
+        `Model Armor screening incomplete (invocation=${invocationResult}, filters=${incompleteFilters.join(",") || "unknown"})`,
+      );
+    }
+
+    const flagged = piVerdict?.matchState === "MATCH_FOUND";
+    const matchedFilters = filterVerdicts
+      .filter(({ matchState }) => matchState === "MATCH_FOUND")
+      .map(({ filter }) => filter);
+    const blocked = filterMatchState === "MATCH_FOUND" || matchedFilters.length > 0;
+    if (blocked && matchedFilters.length === 0) matchedFilters.push("unknown");
 
     return {
       flagged,
-      label: flagged ? "MALICIOUS" : "BENIGN",
+      blocked,
+      label: flagged ? "MALICIOUS" : blocked ? "CONTENT_BLOCKED" : "BENIGN",
       score: flagged ? 1 : 0,
       filterMatchState,
-      invocationResult: sanitizationResult.invocationResult ?? "SUCCESS",
-      confidenceLevel,
-      filterResults: sanitizationResult.filterResults,
+      invocationResult,
+      confidenceLevel: piVerdict?.confidenceLevel,
+      matchedFilters,
+      filterVerdicts,
     };
   }
 

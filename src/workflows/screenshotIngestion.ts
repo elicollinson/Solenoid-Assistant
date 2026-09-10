@@ -217,7 +217,9 @@ export async function ingestRecentScreenshots(
         ? {
             ...base,
             status: "quarantined",
-            error: "Screenshot quarantined by prompt-injection screening",
+            error: result.reason === "prompt_injection"
+              ? "Screenshot quarantined by prompt-injection screening"
+              : "Screenshot quarantined by content-safety screening",
           }
         : { ...base, status: "failed", error: result.reason.message };
     });

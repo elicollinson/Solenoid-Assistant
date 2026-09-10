@@ -523,6 +523,34 @@ describe("message extraction chunks", () => {
 
 
 describe("message memory write isolation", () => {
+  test("a non-PI content block stops only its memory update", async () => {
+    const writes = new PromptProvider((prompt) => ({
+      actionsTaken: [prompt.includes("blocked-memory") ? "blocked-result" : "safe-write"],
+      resultSummary: "done",
+    }));
+    const result = await extractMessages({}, {
+      retrieveMessages: retrieval([
+        message("blocked", "blocked-source", "2026-08-01T00:00:00.000Z"),
+        message("safe", "safe-source", "2026-08-01T00:01:00.000Z"),
+      ]),
+      intake: agent(new PromptProvider((prompt) => ({
+        actionItems: [], conversationSummaries: [],
+        memoryContext: [prompt.includes("blocked-source") ? "blocked-memory" : "safe-memory"],
+      }))),
+      grader: passGrader(),
+      okfManager: agent(writes, async (parts) => ({
+        flagged: false,
+        blocked: parts.some((part) => part.includes("blocked-result")),
+        matchedFilters: ["rai"],
+      })),
+    });
+
+    expect(result.okfUpdate).toEqual({ actionsTaken: ["safe-write"], resultSummary: "done" });
+    expect(result.memoryContext).toEqual(["safe-memory"]);
+    expect(result.screening.quarantinedMemoryUpdates).toBe(1);
+    expect(writes.prompts).toHaveLength(2);
+  });
+
   test("a model-output detection stops only its conversation and later writes and batches remain sequential", async () => {
     const messages = [25, 25, 50].flatMap((size, conversation) =>
       Array.from({ length: size }, (_, index) => message(`chat-${conversation}`, `source-${conversation}-${index}`, "2026-08-01T00:00:00.000Z"))

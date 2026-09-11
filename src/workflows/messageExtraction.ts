@@ -1,4 +1,4 @@
-import { Agent, AgentCancelledError, isGuardrailDetectedError, isPromptInjectionDetectedError } from "../core/rawAgent";
+import { Agent, AgentCancelledError, isPromptInjectionScreeningError, isGuardrailDetectedError, isPromptInjectionDetectedError } from "../core/rawAgent";
 import { createModelRoutes } from "../core/providerFactory";
 import { loadRuntimeConfig } from "../core/config";
 import { log } from "../core/logger";
@@ -43,6 +43,7 @@ export interface MessageExtractionResult extends Omit<ImessageIntakeResult, "mem
     quarantinedConversations: number;
     failedConversations: number;
     quarantinedMemoryUpdates?: number;
+    failedMemoryUpdates?: number;
   };
 }
 
@@ -199,6 +200,9 @@ export async function extractMessages(
     if (chunk.screening.quarantinedMemoryUpdates) {
       result.screening.quarantinedMemoryUpdates = (result.screening.quarantinedMemoryUpdates ?? 0) + chunk.screening.quarantinedMemoryUpdates;
     }
+    if (chunk.screening.failedMemoryUpdates) {
+      result.screening.failedMemoryUpdates = (result.screening.failedMemoryUpdates ?? 0) + chunk.screening.failedMemoryUpdates;
+    }
     if (chunk.okfUpdate !== "none") {
       if (result.okfUpdate === "none") result.okfUpdate = chunk.okfUpdate;
       else {
@@ -297,7 +301,9 @@ async function extractMessageChunk(
   let okfUpdate: OkfManagerResult | "none" = "none";
   let quarantinedMemoryUpdates = 0;
   let memoryOffset = 0;
-  for (const { value: conversation } of successful) {
+  let failedMemoryUpdates = 0;
+  const failedWrites = new Set<string>();
+  for (const { conversation: source, value: conversation } of successful) {
     ensureActive(signal);
     const memories = conversation.memoryContext.filter((_, index) => {
       const grade = graded.results[memoryOffset + index];
@@ -321,9 +327,19 @@ async function extractMessageChunk(
         okfUpdate.resultSummary += "\n" + update.resultSummary;
       }
     } catch (error) {
-      // A detection ends only this invocation. Scanner outages and ordinary
-      // write failures still halt; retrying writes here could duplicate effects.
-      if (!isGuardrailDetectedError(error)) throw error;
+      ensureActive(signal);
+      // Do not retry a writer invocation: it may have already changed files.
+      // Preserve cancellation and fail closed when screening is unavailable.
+      if (error instanceof AgentCancelledError || isPromptInjectionScreeningError(error)) throw error;
+      if (!isGuardrailDetectedError(error)) {
+        failedMemoryUpdates++;
+        failedWrites.add(source.id);
+        log.warn("messageExtraction: conversation memory update failed; continuing without replay", {
+          errorType: error instanceof Error ? error.name : "UnknownError",
+          partialWritesPossible: true,
+        });
+        continue;
+      }
       quarantinedMemoryUpdates++;
       log.warn("messageExtraction: conversation memory update quarantined", {
         boundary: error.boundary,
@@ -341,10 +357,13 @@ async function extractMessageChunk(
       quarantinedConversations: extraction.quarantined,
       failedConversations: extraction.failed,
       ...(quarantinedMemoryUpdates ? { quarantinedMemoryUpdates } : {}),
+      ...(failedMemoryUpdates ? { failedMemoryUpdates } : {}),
     },
     conversationOutcomes: extraction.results.map((result) => ({
       id: conversations[result.index]!.id,
-      outcome: result.status === "fulfilled"
+      outcome: failedWrites.has(conversations[result.index]!.id)
+        ? "failed"
+        : result.status === "fulfilled"
         ? "processed"
         : result.status === "quarantined"
         ? "quarantined"

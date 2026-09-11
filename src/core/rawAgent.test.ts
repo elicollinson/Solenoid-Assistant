@@ -1,3 +1,4 @@
+import { ProviderResponseError } from "./providers";
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import {
@@ -929,4 +930,30 @@ describe("what a tool call came back with", () => {
     expect(outcome.ok).toBe(false);
     expect(outcome.output).toContain("unknown tool");
   });
+});
+
+ test("invalid completion retries the current transcript without replaying a completed write", async () => {
+  let calls = 0;
+  let writes = 0;
+  const client: ChatProvider = {
+    traced: true, providerName: "flaky-empty",
+    chat: async (messages) => {
+      calls++;
+      if (calls === 1) return { role: "assistant", content: "", toolCalls: [{ id: "w1", name: "write_once", arguments: {} }] };
+      if (calls === 2) throw new ProviderResponseError("flaky-empty", "empty message");
+      expect(messages.some(m => m.role === "tool")).toBe(true);
+      return { role: "assistant", content: "done", finishReason: "stop" };
+    },
+  };
+  const agent = new Agent({ routes: routes(client), promptInjectionScreening: false }).addTool(defineTool({ name: "write_once", description: "Write once", kind: "write", schema: z.object({}), execute: () => { writes++; return "written"; } }));
+  expect(await agent.run("write")).toBe("done");
+  expect(calls).toBe(3);
+  expect(writes).toBe(1);
+});
+
+test("persistent invalid completions are bounded to two calls per route", async () => {
+  let calls = 0;
+  const client: ChatProvider = { traced: true, providerName: "empty", chat: async () => { calls++; throw new ProviderResponseError("empty", "empty message"); } };
+  await expect(new Agent({ routes: routes(client), promptInjectionScreening: false }).run("read")).rejects.toBeInstanceOf(ProviderResponseError);
+  expect(calls).toBe(2);
 });

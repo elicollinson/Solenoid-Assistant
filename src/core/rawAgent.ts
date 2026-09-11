@@ -7,6 +7,7 @@ import { currentConsent } from "./consent";
 import { ToolBelt, ToolSession, loaderName, type ToolGroup } from "./toolGroups";
 import {
   OllamaProvider,
+  ProviderResponseError,
   type ChatMessage,
   type ChatProvider,
   type OutputFormat,
@@ -878,7 +879,7 @@ export class Agent {
       } catch (error) {
         if (options.signal.aborted) throw abortReason(options.signal);
         const normalized = this.normalizeProviderFailure(error);
-        if (!this.isTransientProviderError(normalized)) throw normalized;
+        if (!(normalized instanceof ProviderResponseError) && !this.isTransientProviderError(normalized)) throw normalized;
         transientAttempts++;
         if (transientAttempts >= MAX_TRANSIENT_PROVIDER_ATTEMPTS) throw normalized;
         log.warn("[retry] transient model call failure", {

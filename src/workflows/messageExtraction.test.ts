@@ -562,16 +562,19 @@ describe("message extraction chunks", () => {
     expect(third).not.toContain("safe-summary-QUARANTINE-ME");
   });
 
-  test("an OKF write failure stops the run before later chunks", async () => {
+  test("OKF write failures are counted across later chunks without replay", async () => {
     const intake = new PromptProvider(() => ({ actionItems: [], conversationSummaries: [], memoryContext: ["memory"] }));
     const messages = Array.from({ length: 51 }, (_, index) => message(`chat-${Math.floor(index / 50)}`, `message-${index}`, "2026-08-01T00:00:00.000Z"));
-    await expect(extractMessages({}, {
+    const result = await extractMessages({}, {
       retrieveMessages: retrieval(messages),
       intake: agent(intake),
       grader: passGrader(),
       okfManager: agent(new PromptProvider(() => new Error("write failed"))),
-    })).rejects.toThrow("write failed");
-    expect(intake.prompts).toHaveLength(1);
+    });
+    expect(result.screening.failedMemoryUpdates).toBe(2);
+    expect(result.screening.failedConversations).toBe(2);
+    expect(result.okfUpdate).toBe("none");
+    expect(intake.prompts).toHaveLength(2);
   });
 
   test("an empty window invokes no extraction or writes", async () => {
@@ -695,4 +698,23 @@ describe("message memory write isolation", () => {
     })).rejects.toThrow("Prompt injection screening failed");
     expect(intake.prompts).toHaveLength(1);
   });
+});
+
+test("an exhausted writer fails only its source and later 50-message chunks continue without replay", async () => {
+  const messages = Array.from({ length: 150 }, (_, i) => message(`chat-${Math.floor(i / 50)}`, `source-${Math.floor(i / 50)}`, "2026-08-01T00:00:00.000Z"));
+  const writer = new PromptProvider((prompt) => {
+    if (prompt.includes("memory-1")) throw new Error("All model routes failed: invalid completion; Connection error.");
+    return { actionsTaken: [prompt.includes("memory-0") ? "first" : "last"], resultSummary: "done" };
+  });
+  const result = await extractMessages({}, {
+    retrieveMessages: retrieval(messages),
+    intake: agent(new PromptProvider((prompt) => ({ actionItems: [], conversationSummaries: [], memoryContext: [prompt.includes("source-0") ? "memory-0" : prompt.includes("source-1") ? "memory-1" : "memory-2"] }))),
+    grader: passGrader(), okfManager: agent(writer),
+  });
+  expect(writer.prompts).toHaveLength(3);
+  expect(result.memoryContext).toEqual(["memory-0", "memory-2"]);
+  expect(result.screening.failedMemoryUpdates).toBe(1);
+  expect(result.screening.failedConversations).toBe(1);
+  expect(result.screening.processedConversations).toBe(2);
+  expect(result.okfUpdate).toEqual({ actionsTaken: ["first", "last"], resultSummary: "done\ndone" });
 });

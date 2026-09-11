@@ -1,3 +1,4 @@
+import { ProviderResponseError } from "./providers";
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import {
@@ -929,4 +930,52 @@ describe("what a tool call came back with", () => {
     expect(outcome.ok).toBe(false);
     expect(outcome.output).toContain("unknown tool");
   });
+});
+
+ test("invalid completion retries the current transcript without replaying a completed write", async () => {
+  let calls = 0;
+  let writes = 0;
+  const client: ChatProvider = {
+    traced: true, providerName: "flaky-empty",
+    chat: async (messages) => {
+      calls++;
+      if (calls === 1) return { role: "assistant", content: "", toolCalls: [{ id: "w1", name: "write_once", arguments: {} }] };
+      if (calls === 2) throw new ProviderResponseError("flaky-empty", "empty message");
+      expect(messages.some(m => m.role === "tool")).toBe(true);
+      return { role: "assistant", content: "done", finishReason: "stop" };
+    },
+  };
+  const agent = new Agent({ routes: routes(client), promptInjectionScreening: false }).addTool(defineTool({ name: "write_once", description: "Write once", kind: "write", schema: z.object({}), execute: () => { writes++; return "written"; } }));
+  expect(await agent.run("write")).toBe("done");
+  expect(calls).toBe(3);
+  expect(writes).toBe(1);
+});
+
+test("persistent invalid completions allow three primary retries", async () => {
+  let calls = 0;
+  const client: ChatProvider = { traced: true, providerName: "empty", chat: async () => { calls++; throw new ProviderResponseError("empty", "empty message"); } };
+  await expect(new Agent({ routes: routes(client), promptInjectionScreening: false }).run("read")).rejects.toBeInstanceOf(ProviderResponseError);
+  expect(calls).toBe(4);
+});
+
+test("primary recovers on its third retry without advancing routes", async () => {
+  let calls = 0;
+  let fallbackCalls = 0;
+  const primary: ChatProvider = { traced: true, providerName: "primary", chat: async () => {
+    if (++calls <= 3) throw Object.assign(new Error("temporarily unavailable"), { status: 503 });
+    return { role: "assistant", content: "recovered", finishReason: "stop" };
+  } };
+  const fallback: ChatProvider = { traced: true, providerName: "fallback", chat: async () => { fallbackCalls++; throw new Error("must not reach"); } };
+  const agent = new Agent({ routes: [{ client: primary, model: "primary" }, { client: fallback, model: "fallback" }], promptInjectionScreening: false });
+  expect(await agent.run("read")).toBe("recovered");
+  expect(calls).toBe(4);
+  expect(fallbackCalls).toBe(0);
+});
+
+test("exhausted primary has four attempts and fallback retains two", async () => {
+  const calls = [0, 0];
+  const providers = [0, 1].map(i => ({ traced: true, providerName: `route-${i}`, chat: async () => { calls[i] = (calls[i] ?? 0) + 1; throw new ProviderResponseError(`route-${i}`, "empty"); } }));
+  const agent = new Agent({ routes: [{ client: providers[0]!, model: "model-0" }, { client: providers[1]!, model: "model-1" }], promptInjectionScreening: false });
+  await expect(agent.run("read")).rejects.toBeInstanceOf(AgentRouteError);
+  expect(calls).toEqual([4, 2]);
 });

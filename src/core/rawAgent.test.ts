@@ -951,9 +951,31 @@ describe("what a tool call came back with", () => {
   expect(writes).toBe(1);
 });
 
-test("persistent invalid completions are bounded to two calls per route", async () => {
+test("persistent invalid completions allow three primary retries", async () => {
   let calls = 0;
   const client: ChatProvider = { traced: true, providerName: "empty", chat: async () => { calls++; throw new ProviderResponseError("empty", "empty message"); } };
   await expect(new Agent({ routes: routes(client), promptInjectionScreening: false }).run("read")).rejects.toBeInstanceOf(ProviderResponseError);
-  expect(calls).toBe(2);
+  expect(calls).toBe(4);
+});
+
+test("primary recovers on its third retry without advancing routes", async () => {
+  let calls = 0;
+  let fallbackCalls = 0;
+  const primary: ChatProvider = { traced: true, providerName: "primary", chat: async () => {
+    if (++calls <= 3) throw Object.assign(new Error("temporarily unavailable"), { status: 503 });
+    return { role: "assistant", content: "recovered", finishReason: "stop" };
+  } };
+  const fallback: ChatProvider = { traced: true, providerName: "fallback", chat: async () => { fallbackCalls++; throw new Error("must not reach"); } };
+  const agent = new Agent({ routes: [{ client: primary, model: "primary" }, { client: fallback, model: "fallback" }], promptInjectionScreening: false });
+  expect(await agent.run("read")).toBe("recovered");
+  expect(calls).toBe(4);
+  expect(fallbackCalls).toBe(0);
+});
+
+test("exhausted primary has four attempts and fallback retains two", async () => {
+  const calls = [0, 0];
+  const providers = [0, 1].map(i => ({ traced: true, providerName: `route-${i}`, chat: async () => { calls[i] = (calls[i] ?? 0) + 1; throw new ProviderResponseError(`route-${i}`, "empty"); } }));
+  const agent = new Agent({ routes: [{ client: providers[0]!, model: "model-0" }, { client: providers[1]!, model: "model-1" }], promptInjectionScreening: false });
+  await expect(agent.run("read")).rejects.toBeInstanceOf(AgentRouteError);
+  expect(calls).toEqual([4, 2]);
 });

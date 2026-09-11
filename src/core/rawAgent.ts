@@ -65,7 +65,8 @@ export function extractJson(raw: string): string {
 
 export const DEFAULT_AGENT_TIMEOUT_MS = 5 * 60_000;
 const SUBMIT_RESULT_TOOL_NAME = "submit_result";
-const MAX_TRANSIENT_PROVIDER_ATTEMPTS = 2;
+const PRIMARY_PROVIDER_ATTEMPTS = 4; // Initial call plus three retries.
+const FALLBACK_PROVIDER_ATTEMPTS = 2;
 
 export class AgentTimeoutError extends Error {
   readonly code = "AGENT_TIMEOUT";
@@ -845,6 +846,9 @@ export class Agent {
     let turn = 0;
     let retryDelayMs = 250;
     let transientAttempts = 0;
+    const maxAttempts = client === this.routes[0].client && model === this.routes[0].model
+      ? PRIMARY_PROVIDER_ATTEMPTS
+      : FALLBACK_PROVIDER_ATTEMPTS;
     while (true) {
       if (options.signal.aborted) throw abortReason(options.signal);
       turn++;
@@ -881,7 +885,7 @@ export class Agent {
         const normalized = this.normalizeProviderFailure(error);
         if (!(normalized instanceof ProviderResponseError) && !this.isTransientProviderError(normalized)) throw normalized;
         transientAttempts++;
-        if (transientAttempts >= MAX_TRANSIENT_PROVIDER_ATTEMPTS) throw normalized;
+        if (transientAttempts >= maxAttempts) throw normalized;
         log.warn("[retry] transient model call failure", {
           turn,
           phase: options.phase,

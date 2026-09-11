@@ -23,7 +23,7 @@ export function ThingsIKnowView({ knowledge, onOpen }: { knowledge: KnowledgePay
   const [group, setGroup] = useState<string | null>(null);
   const [query, setQuery] = useState("");
 
-  const shown = knowledge.rows.filter((row) => (group === null || row.group === group) && matches(row, query));
+  const shown = knowledge.rows.filter((row) => (group === null || row.group === group) && matches(row, query.trim()));
 
   return (
     <main style={{ gridColumn: "2 / span 2", display: "flex", flexDirection: "column", minHeight: 0 }}>
@@ -68,7 +68,11 @@ export function ThingsIKnowView({ knowledge, onOpen }: { knowledge: KnowledgePay
       <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "0 var(--sp-10) var(--sp-10)" }}>
         {shown.length === 0 ? (
           <p style={{ margin: 0, padding: "var(--sp-9) 0", font: "var(--text-body)", color: "var(--text-3)" }}>
-            {`Nothing here matches "${query}". I only search what I've written down, not what I could work out.`}
+            {knowledge.rows.length === 0
+              ? "I haven't written down any memories yet."
+              : query.trim()
+                ? `Nothing here matches "${query}". I only search what I've written down, not what I could work out.`
+                : "No memories in this group yet."}
           </p>
         ) : (
           knowledge.groups.map((name) => {

@@ -60,7 +60,10 @@ import {
  */
 const answering = new Set<string>();
 
-export function createUiRoutes(resolveDb: () => Db = getDb) {
+export function createUiRoutes(
+  resolveDb: () => Db = getDb,
+  refreshKnowledge: (db: Db) => Promise<unknown> = async () => {},
+) {
   /**
    * Which frame is asking.
    *
@@ -449,14 +452,20 @@ export function createUiRoutes(resolveDb: () => Db = getDb) {
         detail: { summary: "One thing on the canvas: why it is there, and the way through to whatever it projects" },
       },
     )
-    .get("/api/knowledge", ({ query }) => loadKnowledge(resolveDb(), new Date(), asked(query)), {
+    .get("/api/knowledge", async ({ query }) => {
+      const db = resolveDb();
+      await refreshKnowledge(db);
+      return loadKnowledge(db, new Date(), asked(query));
+    }, {
       query: surface,
       detail: { summary: "The OKF store: every memory I hold, grouped by what it is about" },
     })
     .get(
       "/api/knowledge/:id",
-      ({ params, set }) => {
-        const detail = loadKnowledgeObject(resolveDb(), params.id);
+      async ({ params, set }) => {
+        const db = resolveDb();
+        await refreshKnowledge(db);
+        const detail = loadKnowledgeObject(db, params.id);
         if (!detail) {
           set.status = 404;
           return { error: `No memory with id ${params.id}` };

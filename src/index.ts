@@ -1,3 +1,4 @@
+import { createKnowledgeRefresh } from "./db/okf/refresh";
 import { createSourceRoutes } from "./http/routes/sources";
 import { Elysia, t } from "elysia";
 import { openapi } from "@elysiajs/openapi";
@@ -42,7 +43,7 @@ export const app = new Elysia({
   .use(agentRoutes)
   .use(messageRoutes)
   .use(safetyRoutes)
-  .use(createUiRoutes())
+  .use(createUiRoutes(undefined, createKnowledgeRefresh()))
   .use(createChatRoutes())
   .use(createLogRoutes())
   // Last, and only if built: its wildcard would otherwise answer for routes

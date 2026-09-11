@@ -80,6 +80,9 @@ export function MemoryPhone({
       </div>
 
       <PhoneBody style={{ borderTop: "var(--border)", background: "var(--surface-panel)" }}>
+        {shown.length === 0 ? <p style={{ font: "var(--text-body)", color: "var(--text-3)" }}>
+          {knowledge.rows.length === 0 ? "I haven't written down any memories yet." : "No memories in this group yet."}
+        </p> : null}
         {knowledge.groups.map((name) => {
           const rows = shown.filter((row) => row.group === name);
           if (!rows.length) return null;

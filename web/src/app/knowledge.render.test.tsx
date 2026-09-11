@@ -177,3 +177,10 @@ describe("one memory", () => {
     expect(html).toContain("deprecated");
   });
 });
+
+ test("an empty store is not described as an empty-string search", () => {
+  const empty = { ...list, rows: [], groups: [], filters: [{ label: "All", group: null, count: 0 }] };
+  const html = renderToStaticMarkup(<ThingsIKnowView knowledge={empty} onOpen={noop} />);
+  expect(html).toContain("written down any memories yet");
+  expect(html).not.toContain("Nothing here matches");
+});

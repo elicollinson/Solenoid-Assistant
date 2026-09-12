@@ -31,6 +31,7 @@ import { remindersGroup } from "./reminders";
 import { logsGroup } from "./logs";
 import { githubGroup } from "./github";
 import { workflowsGroup } from "./workflows";
+import { pushoverGroup } from "./pushover";
 
 /**
  * How much of a group an agent may open.
@@ -114,6 +115,7 @@ export const TOOL_GROUP_CATALOG: Readonly<Record<string, ToolGroupFactory>> = {
   imessage: imessageGroup,
   photos: photosGroup,
   contacts: contactsGroup,
+  pushover: pushoverGroup,
 };
 
 

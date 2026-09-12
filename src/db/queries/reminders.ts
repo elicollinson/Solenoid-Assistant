@@ -9,7 +9,7 @@
 // What is not derivable is the agent's writing: the account, the why on each
 // piece of evidence, the trail, and the pairs it wrote that count things the
 // database holds no rows for. Those are read as written.
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "../index";
 import * as s from "../schema";
 import type {
@@ -25,6 +25,7 @@ import type { HomeState } from "../../shared/home";
 import { capitalise, daysAway, dueStamp, spell, stampLong } from "./_format";
 import { surfaceNote } from "./_surface";
 import { evidenceFor } from "./_evidence";
+import { pushoverStatus } from "../../pushover/config";
 
 export type * from "../../shared/reminders";
 
@@ -204,6 +205,20 @@ function metaFor(db: Db, r: Reminder, now: Date): ReminderMeta[] {
   else meta.push({ label: "Due", value: r.dueAt ? stampLong(r.dueAt, now) : "No date" });
   if (r.originLabel) meta.push({ label: "Source", value: r.originLabel.replace(/^from /, "") });
 
+  const pushes = db.select().from(s.pushDeliveries).where(eq(s.pushDeliveries.reminderId, r.id)).orderBy(desc(s.pushDeliveries.updatedAt)).all();
+  const scheduledFor = r.dueAt ? Math.max(r.dueAt.getTime(), r.snoozedUntil?.getTime() ?? r.dueAt.getTime()) : null;
+  const push = pushes.find(p => p.state === "pending" && p.scheduledFor === scheduledFor) ?? pushes.find(p => p.state !== "cancelled");
+  if (push) {
+    const value = push.state === "accepted" ? "Accepted by Pushover; device delivery unverified"
+      : push.state === "unknown" || (push.state === "submitting" && push.updatedAt <= now.getTime() - 60_000) ? "Acceptance unknown; not automatically resent"
+      : push.state === "submitting" ? "Submitting; cannot be recalled"
+      : push.state === "rejected" ? "Not accepted; check setup and reschedule to retry"
+      : !pushoverStatus().remindersReady ? "Pending; Pushover reminder delivery is disabled or unconfigured"
+      : push.errorCode === "quota_exceeded" ? "Pending; waiting for Pushover quota reset"
+      : "Scheduled for the reminder's due time";
+    meta.push({ label: "Push", value });
+  }
+
   for (const link of db.select().from(s.links).where(eq(s.links.fromId, r.id)).orderBy(asc(s.links.rel)).all()) {
     const [workflow] = db.select({ name: s.workflows.name }).from(s.workflows).where(eq(s.workflows.id, link.toId)).limit(1).all();
     if (workflow) meta.push({ label: link.rel === "blocks" ? "Blocks" : "About", value: workflow.name });
@@ -219,4 +234,3 @@ function metaFor(db: Db, r: Reminder, now: Date): ReminderMeta[] {
   }
   return meta;
 }
-

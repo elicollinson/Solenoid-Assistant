@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { loadPushoverConfig, type PushoverConfig } from "../pushover/config";
 
 const optionalEnvString = z.preprocess(
   (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
@@ -84,6 +85,7 @@ const runtimeConfigSchema = z.object({
 });
 
 export interface RuntimeConfig {
+  pushover: PushoverConfig;
   port: number;
   /** The interface to bind. Loopback unless HOST says otherwise. */
   host: string;
@@ -226,6 +228,7 @@ export function loadRuntimeConfig(
       ];
   const primaryRoute = modelRoutes[0]!;
   return {
+    pushover: loadPushoverConfig(env),
     port: parsed.PORT,
     host: parsed.HOST,
     llmProvider: primaryRoute.provider,

@@ -117,6 +117,7 @@ describe("one reminder", () => {
       { label: "Set by", value: "me · Aug 15, 09:20" },
       { label: "Due", value: "Yesterday 17:00" },
       { label: "Source", value: "okf:vendor/ferris-terms" },
+      { label: "Push", value: "Pending; Pushover reminder delivery is disabled or unconfigured" },
       { label: "Blocks", value: "Q3 vendor reconciliation" },
       { label: "Holding", value: "2 invoices" },
     ]);

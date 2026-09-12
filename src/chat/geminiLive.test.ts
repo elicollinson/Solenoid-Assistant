@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   GeminiLiveSession,
+  buildGeminiLiveConfig,
   convertToWav,
   createWavHeader,
   parseMimeType,
@@ -207,6 +208,17 @@ describe("GeminiLiveSession tool initialization", () => {
         assertNoForbiddenKeys(decl.parameters);
       }
     }
+  });
+
+  test("keeps Gemini-side persistence features out of Live requests", () => {
+    const config = buildGeminiLiveConfig("system prompt", [], "Sulafat");
+    const raw = config as Record<string, unknown>;
+
+    expect(raw).not.toHaveProperty("sessionResumption");
+    expect(raw).not.toHaveProperty("store");
+    expect(raw).not.toHaveProperty("cachedContent");
+    expect(config.tools).toEqual([{ functionDeclarations: [] }]);
+    expect(JSON.stringify(config)).not.toContain("googleSearch");
   });
 
   test("tracks conversation voice invocation in database", () => {

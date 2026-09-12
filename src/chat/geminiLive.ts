@@ -4,6 +4,7 @@ import {
   MediaResolution,
   ThinkingLevel,
   type FunctionDeclaration,
+  type LiveConnectConfig,
   type LiveServerMessage,
   type Session,
 } from "@google/genai";
@@ -257,6 +258,40 @@ export function sanitizeGeminiSchema(schema: unknown): unknown {
   return clean;
 }
 
+export function buildGeminiLiveConfig(
+  systemInstruction: string,
+  declarations: FunctionDeclaration[],
+  voiceName: string,
+): LiveConnectConfig {
+  return {
+    responseModalities: [Modality.AUDIO],
+    mediaResolution: MediaResolution.MEDIA_RESOLUTION_MEDIUM,
+    thinkingConfig: {
+      thinkingLevel: ThinkingLevel.MINIMAL,
+    },
+    speechConfig: {
+      voiceConfig: {
+        prebuiltVoiceConfig: { voiceName },
+      },
+    },
+    contextWindowCompression: {
+      triggerTokens: "104857",
+      slidingWindow: { targetTokens: "52428" },
+    },
+    systemInstruction: {
+      parts: [{ text: systemInstruction }],
+    },
+    // Privacy invariants:
+    // - Do not add `sessionResumption`; Gemini stores resumable Live session
+    //   content for up to 24 hours when it is enabled.
+    // - Do not add the built-in `googleSearch` tool; Search grounding has its
+    //   own unavoidable server-side retention. The app's ordinary tool belt
+    //   remains available for web access without enabling Gemini grounding.
+    // - `store: false` is an Interactions API option, not a Live API option.
+    tools: [{ functionDeclarations: declarations }],
+  };
+}
+
 export class GeminiLiveSession {
   private readonly db: Db;
   private readonly conversationId: string;
@@ -337,31 +372,11 @@ export class GeminiLiveSession {
     // Mark conversation as voice-invoked in the DB
     markConversationVoiceInvoked(this.db, this.conversationId, model);
 
-    const liveConfig = {
-      responseModalities: [Modality.AUDIO],
-      mediaResolution: MediaResolution.MEDIA_RESOLUTION_MEDIUM,
-      thinkingConfig: {
-        thinkingLevel: ThinkingLevel.MINIMAL,
-      },
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: {
-            voiceName: this.config.gemini.voice || "Sulafat",
-          },
-        },
-      },
-      contextWindowCompression: {
-        triggerTokens: "104857",
-        slidingWindow: { targetTokens: "52428" },
-      },
-      systemInstruction: {
-        parts: [{ text: datedPrompt }],
-      },
-      tools: [
-        { functionDeclarations: this.declarations },
-        { googleSearch: {} },
-      ],
-    };
+    const liveConfig = buildGeminiLiveConfig(
+      datedPrompt,
+      this.declarations,
+      this.config.gemini.voice || "Sulafat",
+    );
 
     try {
       this.session = await ai.live.connect({

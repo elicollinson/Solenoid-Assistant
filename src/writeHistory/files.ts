@@ -100,9 +100,10 @@ export class FileHistory {
     const call = currentWriteCall() ?? newWriteCall({ actor, origin: "okf-store" });
     if (!this.history.get(call.id)) this.history.begin(call, tool);
     this.lock(root, call.id);
-    const dir = await mkdtemp(join(tmpdir(), "solenoid-write-"));
+    let dir: string | undefined;
     let captured = false;
     try {
+      dir = await mkdtemp(join(tmpdir(), "solenoid-write-"));
       const before = await snapshot(root);
       for (const [path, text] of before) await writeFileAtomic(safe(dir, path), text);
       const result = await stage(dir);
@@ -126,7 +127,7 @@ export class FileHistory {
       this.history.outcome(call.id, captured ? "partial" : "no_effect", captured ? "adapter:recovery_required" : "adapter:prepare_failed");
       throw error;
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      if (dir) await rm(dir, { recursive: true, force: true });
       // Partial changes keep their durable lock; only recovery may clear it.
       if (this.history.get(call.id)?.execution !== "partial") this.unlock(root, call.id);
     }

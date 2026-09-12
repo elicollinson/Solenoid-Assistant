@@ -220,7 +220,8 @@ export async function reindexOkf(db: Db, options: ReindexOptions = {}): Promise<
     }
     // Only this indexer's namespaced edges can be reconciled. Manual/evidence
     // links retain their independent ownership.
-    t.delete(s.links).where(sql`${s.links.id} like 'okfl_%'`).run();
+    if (!problems.length) t.delete(s.links).where(sql`substr(${s.links.id},1,5) = 'okfl_'`).run();
+    else for (const item of prepared) t.delete(s.links).where(and(eq(s.links.fromId, item.id), sql`substr(${s.links.id},1,5) = 'okfl_'`)).run();
     for (const item of prepared) {
       const { concept, uri, id, chronology } = item;
       const frontmatter = concept.frontmatter;

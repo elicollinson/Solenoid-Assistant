@@ -185,7 +185,11 @@ export class DreamWorkflow {
       hashes[path] = hash(files.get(path)!);
       const entity = source.frontmatter.entity_id;
       if (typeof entity !== "string") { uncertain += result.candidates.length; continue; }
-      const related = result.candidates.filter(c => parseConcept(c.id, files.get(`${c.id}.md`)!).frontmatter.entity_id === entity).slice(0, 5);
+      const related = result.candidates.filter(c => {
+        const text = files.get(`${c.id}.md`); if (!text) return false;
+        const fm = parseConcept(c.id, text).frontmatter;
+        return fm.entity_id === entity && !fm.overview_kind && fm.status !== "deprecated";
+      }).slice(0, 5);
       if (!related.length) continue;
       const canonical = [...files].find(([path, text]) => !["index.md", "log.md"].includes(path.split("/").at(-1)!) && parseConcept(path.slice(0, -3), text).frontmatter.overview_kind === canonicalMarker && parseConcept(path.slice(0, -3), text).frontmatter.entity_id === entity);
       let proposal;

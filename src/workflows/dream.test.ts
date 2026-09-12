@@ -86,7 +86,7 @@ test("review API authenticates, checks origin and explicit identity approval", a
   expect((await app.handle(new Request("http://localhost/api/write-history"))).status).toBe(401);
   expect((await request("/api/dream/proposals", input, { origin: "https://untrusted.example" })).status).toBe(401);
   const response = await request("/api/dream/proposals", input); expect(response.status).toBe(200);
-  const plan = await response.json();
+  const plan = await response.json() as { id: string; digest: string };
   expect((await request(`/api/write-plans/${plan.id}/apply`, { digest: plan.digest, approved: true })).status).toBe(409);
   expect((await request(`/api/write-plans/${plan.id}/apply`, { digest: plan.digest, approved: true, confirmIdentity: true })).status).toBe(200);
 }, 20_000);

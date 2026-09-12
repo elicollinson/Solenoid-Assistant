@@ -16,7 +16,10 @@ export function createHistoryRuntime(db: Db, root: string, key?: Buffer,
     if (result.problems.length) throw new Error("Knowledge refresh incomplete");
     knowledgeIndex(root, () => db).reconcile({ enroll: concepts });
   }));
-  return { history, files, rows: new RowHistory(history), root, neighbors: async (id: string, sha: string, limit: number) => index.neighbors(id, sha, limit), captureEnabled: !!key };
+  return { history, files, rows: new RowHistory(history), root, neighbors: async (id: string, sha: string, limit: number) => {
+    const result = index.neighbors(id, sha, limit);
+    return { ...result, status: result.status === "ready" ? "ready" as const : "unavailable" as const };
+  }, captureEnabled: !!key };
 }
 export type HistoryRuntime = ReturnType<typeof createHistoryRuntime>;
 let runtime: HistoryRuntime | undefined;
@@ -38,5 +41,7 @@ export function installHistoryRuntime() {
     configureRowMutation((table, id, fields, fn) => runtime.rows.mutate(table, id, fields, fn));
   }
   runtime.history.prune();
+  // Retry projections only. Interrupted authoritative writes require review.
+  void runtime.files.refreshPending();
   return runtime;
 }

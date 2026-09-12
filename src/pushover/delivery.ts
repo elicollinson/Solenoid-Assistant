@@ -1,3 +1,4 @@
+import { recordWriteOutcome } from "../core/writeExecution";
 import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { Db } from "../db";
@@ -6,6 +7,7 @@ import * as s from "../db/schema";
 import type { PushClient, PushMessage, PushResult } from "./client";
 import { PushoverClient, messageSchema } from "./client";
 import { loadPushoverConfig, pushoverStatus, type PushoverConfig } from "./config";
+import { reservePushHistory, finishPushHistory } from "./history";
 
 type Delivery = typeof s.pushDeliveries.$inferSelect;
 export const STALE_SUBMISSION_MS = 60_000; // greater than the maximum HTTP deadline
@@ -22,6 +24,7 @@ export function expireSubmissions(db: Db, now: number) {
     const expired = db.$client.query<{ id: string; reminder_id: string | null }, [number]>(
       "SELECT id, reminder_id FROM push_deliveries WHERE state = 'submitting' AND updated_at <= ?").all(now - STALE_SUBMISSION_MS);
     for (const row of expired) {
+      finishPushHistory(db, row.id, { status: "unknown", code: "interrupted_submission", providerRequestId: null });
       db.update(s.pushDeliveries).set({ state: "unknown", errorCode: "interrupted_submission", updatedAt: now }).where(eq(s.pushDeliveries.id, row.id)).run();
       event(db, row.reminder_id, "Push acceptance is unknown after an interrupted attempt. It will not be automatically resent.", now);
     }
@@ -35,6 +38,8 @@ function busy(db: Db, now: number): boolean {
 
 function finish(db: Db, id: string, result: PushResult, now: number) {
   db.$client.transaction(() => {
+    finishPushHistory(db, id, result);
+    recordWriteOutcome(result.status === "accepted" ? "committed" : result.status === "unknown" ? "outcome_unknown" : "no_effect", `push_${result.status}`);
     const row = db.select().from(s.pushDeliveries).where(eq(s.pushDeliveries.id, id)).get();
     // A late acceptance may resolve an expired reservation without another send.
     if (!row || !["submitting", "unknown"].includes(row.state)) return;
@@ -90,6 +95,7 @@ export async function deliverDueReminder(db: Db, options: {
       ORDER BY p.scheduled_for, p.id LIMIT 1`).get(now, now);
     if (!row) return null;
     db.$client.query("UPDATE push_deliveries SET state = 'submitting', updated_at = ?, attempts = attempts + 1 WHERE id = ? AND state = 'pending'").run(now, row.id);
+    reservePushHistory(db, row.id);
     return row;
   }).immediate();
   if (!claimed) return null;
@@ -122,6 +128,7 @@ export async function sendPush(db: Db, requestId: string, message: PushMessage, 
       // Unlike unknown submissions, they can safely use the same ID again.
       if (old.state === "pending" && old.nextAttemptAt <= now && !options.signal?.aborted && !busy(db, now)) {
         db.update(s.pushDeliveries).set({ state: "submitting", updatedAt: now, attempts: old.attempts + 1 }).where(eq(s.pushDeliveries.id, id)).run();
+        reservePushHistory(db, id);
         return null;
       }
       return old;
@@ -129,10 +136,12 @@ export async function sendPush(db: Db, requestId: string, message: PushMessage, 
     if (options.signal?.aborted) throw new Error("Cancelled before sending; no notification was sent.");
     if (busy(db, now)) throw new Error("Pushover is busy or its quota is exhausted; no notification was sent. Retry later with this requestId.");
     db.insert(s.pushDeliveries).values({ id, scheduledFor: now, state: "submitting", payloadHash: hash, attempts: 1, updatedAt: now }).run();
+    reservePushHistory(db, id);
     return null;
   }).immediate();
   if (reservation) {
     if (reservation.state !== "accepted") throw new Error(`Pushover request ${requestId}: ${reservation.state}; no duplicate submitted. Unknown/submitting outcomes must not be automatically resent with a new ID.`);
+    recordWriteOutcome("no_effect", "push_duplicate_suppressed");
     return { provider: "pushover", status: "accepted", requestId, providerRequestId: reservation.providerRequestId,
       delivery: "unverified", acknowledgement: "unavailable", duplicateSuppressed: true };
   }

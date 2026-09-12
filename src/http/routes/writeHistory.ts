@@ -17,6 +17,10 @@ export function createWriteHistoryRoutes(resolveRuntime: () => HistoryRuntime = 
     return !origin || origin === new URL(request.url).origin;
   }
   function requireDream() { if (!dreamEnabled()) throw new HistoryConflict("Memory reflection is disabled. Configure DREAM_ENABLED explicitly before preparing or applying dream proposals."); }
+  function permitDream(runtime: HistoryRuntime) {
+    const row = runtime.history.db.$client.query("SELECT id FROM workflows WHERE slug='okf-reflection'").get() as { id: string } | null;
+    if (resolvePermission(runtime.history.db, row?.id, "okf.write").mode === "deny") throw new HistoryConflict("Current permission denies memory reflection");
+  }
   function permit(runtime: HistoryRuntime, capability: string, operationId?: string | null) {
     const row = operationId ? runtime.history.db.$client.query("SELECT workflow_id FROM write_operations WHERE id=?").get(operationId) as { workflow_id: string | null } | null : null;
     if (resolvePermission(runtime.history.db, row?.workflow_id ?? undefined, capability).mode === "deny") throw new HistoryConflict(`Current permission denies ${capability}`);
@@ -60,7 +64,7 @@ export function createWriteHistoryRoutes(resolveRuntime: () => HistoryRuntime = 
       const plan = r.history.readPlan<{ record?: { table?: string } }>(id!);
       const capability = plan.kind === "row-inverse" ? (plan.value.record?.table === "reminders" ? "reminders.write" : "collections.write") : "okf.write";
       permit(r, capability, plan.operationId);
-      if (plan.kind === "dream") { requireDream(); return new DreamWorkflow(r, neighbors).apply(id!, body.digest, body.confirmIdentity === true); }
+      if (plan.kind === "dream") { requireDream(); permitDream(r); return new DreamWorkflow(r, neighbors).apply(id!, body.digest, body.confirmIdentity === true); }
       return plan.kind === "okf-inverse" ? r.files.applyInverse(id!, body.digest) : r.rows.applyInverse(id!, body.digest);
     }), { parse: "none" })
     .post("/api/write-history/:id/recover", run(async (r, request, { id }) => {
@@ -71,12 +75,12 @@ export function createWriteHistoryRoutes(resolveRuntime: () => HistoryRuntime = 
     }), { parse: "none" })
     .get("/api/dream/candidates/:id", run((r, _request, { id }) => new DreamWorkflow(r, neighbors).candidates(decodeURIComponent(id!))))
     .post("/api/dream/proposals", run(async (r, request) => {
-      requireDream();
+      requireDream(); permitDream(r);
       const body = await request.json();
       const input = proposalSchema.parse(body);
       return new DreamWorkflow(r, neighbors).propose(input);
     }), { parse: "none" })
-    .post("/api/dream/run", run(r => { requireDream(); return new DreamWorkflow(r, neighbors).run(); }));
+    .post("/api/dream/run", run(r => { requireDream(); permitDream(r); return new DreamWorkflow(r, neighbors).run(); }));
 }
 import { z } from "zod";
 const proposalSchema = z.object({ sourceIds: z.array(z.string()).min(2).max(6), canonicalId: z.string().min(1),

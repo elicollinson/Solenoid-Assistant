@@ -50,6 +50,13 @@ export class RowHistory {
     if (record.kind !== "row-v1" || this.history.get(original)?.execution !== "committed") throw new HistoryConflict("No supported row inverse");
     if (this.history.db.$client.query("SELECT 1 FROM write_operations WHERE inverse_of=? AND execution IN ('committed','dispatch_started','partial')").get(original)) throw new HistoryConflict("Already reversed; redo the recorded inverse");
     const current = this.read(record.table, record.id, Object.keys(record.after));
+    if (record.table === "reminders" && "due_at" in record.after) {
+      const sent = this.history.db.$client.query(`SELECT 1 FROM write_operations o JOIN write_events e ON e.operation_id=o.id
+        WHERE o.origin='pushover' AND o.execution IN ('committed','dispatch_started','outcome_unknown')
+        AND e.kind='target' AND e.code=? LIMIT 1`).get(`reminder:${record.id}`);
+      const reserved = this.history.db.$client.query("SELECT 1 FROM push_deliveries WHERE reminder_id=? AND state IN ('accepted','unknown','submitting') LIMIT 1").get(record.id);
+      if (sent || reserved) throw new HistoryConflict("This reminder has a submitted notification; changing its due time needs a new explicit edit, not undo");
+    }
     if (Object.keys(record.after).some(f => current[f] !== record.after[f])) throw new HistoryConflict("A changed field was edited later; undo requires a new reviewed edit");
   }
   planInverse(original: string) {

@@ -16,6 +16,9 @@ import { today } from "../agents/chat";
 import { appendAgentMessage, appendUserMessage, markConversationVoiceInvoked } from "../db/mutations/chat";
 import { displayArg, displayDuration, displayName, summarize } from "./turn";
 import { log } from "../core/logger";
+import { withConsent } from "../core/consent";
+import { directConsent } from "../workflows/permissions";
+import { newWriteCall, withWriteCall, recordWriteResponse } from "../core/writeExecution";
 
 export interface WavConversionOptions {
   numChannels: number;
@@ -400,6 +403,7 @@ export class GeminiLiveSession {
         if (!call.id || !call.name) continue;
         const tool = this.toolsByName.get(call.name);
         const started = performance.now();
+        const audit = newWriteCall({ origin: "voice", actor: "agent", deferResponse: true });
         let result: unknown;
         let ok = true;
 
@@ -413,7 +417,8 @@ export class GeminiLiveSession {
             result = { error: `Tool "${call.name}" is not registered` };
             ok = false;
           } else {
-            result = await tool.execute(call.args);
+            result = await withConsent(directConsent({ db: this.db, slug: "voice" }),
+              () => withWriteCall(audit, () => tool.execute(call.args)));
           }
         } catch (err) {
           ok = false;
@@ -444,7 +449,9 @@ export class GeminiLiveSession {
               },
             ],
           });
+          if (tool?.kind === "write") recordWriteResponse(audit, "delivered");
         } catch (err) {
+          if (tool?.kind === "write") recordWriteResponse(audit, "failed");
           log.warn("Failed to send tool response to Gemini Live", {
             tool: call.name,
             error: err instanceof Error ? err.message : String(err),

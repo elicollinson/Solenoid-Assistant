@@ -94,7 +94,7 @@ export class WriteHistory implements WriteRecorder {
     if (!row || (!recovery && row.expires <= this.now())) throw new HistoryUnavailable("Undo data is unavailable or expired");
     return this.decrypt<T>(row.cipher);
   }
-  plan(kind: string, value: unknown, operationId?: string) {
+  plan<T>(kind: string, value: T, operationId?: string) {
     const id = randomUUID(), digest = hash(JSON.stringify(value));
     this.db.$client.query("INSERT INTO write_plans(id,kind,operation_id,digest,cipher,state,created_at,expires_at) VALUES(?,?,?,?,?,'proposed',?,?)")
       .run(id, kind, operationId ?? null, digest, this.encrypt(value), this.now(), this.now() + 86400_000);

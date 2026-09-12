@@ -9,6 +9,7 @@
 // forge the top trust tier (§5.3) on its own output.
 import { rm, rmdir, readdir } from "node:fs/promises";
 import pLimit from "p-limit";
+import type { KnowledgeIndex, IndexStatus } from "../knowledgeSearch";
 import { join } from "node:path";
 import {
   OkfError,
@@ -86,6 +87,8 @@ export interface OkfStoreOptions {
   defaultStaleAfterDays?: number | null;
   /** Require provenance on create from non-human actors. */
   requireSources?: boolean;
+  /** Application-owned local projection; remote work is handled by the worker. */
+  index?: KnowledgeIndex;
 }
 
 export interface ConceptSummary {
@@ -97,6 +100,7 @@ export interface ConceptSummary {
   tags?: string[];
   trust: TrustTier;
   stale: boolean;
+  indexing?: IndexStatus | { error: string };
 }
 
 export interface ReadResult extends ConceptSummary {
@@ -154,6 +158,7 @@ export class OkfStore {
   readonly actor: string;
   private readonly defaultStaleAfterDays: number | null;
   private readonly requireSources: boolean;
+  private readonly index?: KnowledgeIndex;
   // Index regeneration and log appends are read-modify-write over shared files,
   // and `fanout` runs agents concurrently. One writer at a time per store.
   private readonly gate = pLimit(1);
@@ -161,6 +166,7 @@ export class OkfStore {
   constructor(opts: OkfStoreOptions) {
     this.bundle = openBundle(opts.root, { now: opts.now });
     this.actor = opts.actor;
+    this.index = opts.index;
     this.defaultStaleAfterDays =
       opts.defaultStaleAfterDays === undefined ? 90 : opts.defaultStaleAfterDays;
     this.requireSources = opts.requireSources ?? true;
@@ -224,7 +230,15 @@ export class OkfStore {
     matched: number;
     returned: number;
     results: (ConceptSummary & { snippet?: string })[];
+    mode?: string;
+    reason?: string;
+    indexing?: IndexStatus;
   }> {
+    if (this.index) {
+      const found = await this.index.search(input);
+      return { ...found, returned: found.results.length,
+        results: found.results.map(row => ({ ...row, id: row.conceptId })) };
+    }
     const { concepts } = await scanConcepts(this.bundle);
     const query = input.query?.trim().toLowerCase();
     const wantedTags = input.tags?.map((t) => t.toLowerCase());
@@ -281,6 +295,7 @@ export class OkfStore {
 
   create(input: CreateInput): Promise<ConceptSummary & { path: string }> {
     return this.gate(async () => {
+      this.prepareIndexWrite();
       const id = normalizeConceptId(input.id);
       const path = conceptPath(this.bundle, id);
       if (await Bun.file(path).exists()) {
@@ -322,12 +337,13 @@ export class OkfStore {
         "Creation",
         `Established [${input.title ?? titleFromId(id)}](/${id}.md).`,
       );
-      return { ...this.summarize(id, frontmatter), path };
+      return { ...this.summarize(id, frontmatter), path, ...this.indexWritten([id]) };
     });
   }
 
   patch(input: PatchInput): Promise<ConceptSummary> {
     return this.gate(async () => {
+      this.prepareIndexWrite();
       const id = normalizeConceptId(input.id);
       const concept = await this.load(id);
 
@@ -361,7 +377,7 @@ export class OkfStore {
       await writeFileAtomic(conceptPath(this.bundle, id), serializeConcept({ frontmatter, body }));
       await regenerateIndexChain(this.bundle, parentDirId(id));
       await appendLogEntry(this.bundle, "Update", `Updated [${displayTitle(id, frontmatter)}](/${id}.md).`);
-      return this.summarize(id, frontmatter);
+      return { ...this.summarize(id, frontmatter), ...this.indexWritten([id]) };
     });
   }
 
@@ -369,8 +385,9 @@ export class OkfStore {
     from: string,
     to: string,
     opts: { updateLinks?: boolean } = {},
-  ): Promise<{ from: string; to: string; rewrittenIn: string[] }> {
+  ): Promise<{ from: string; to: string; rewrittenIn: string[]; indexing?: IndexStatus | { error: string } }> {
     return this.gate(async () => {
+      this.prepareIndexWrite();
       const fromId = normalizeConceptId(from);
       const toId = normalizeConceptId(to);
       if (fromId === toId) throw new OkfError("Source and destination are the same concept", "noop_move");
@@ -420,7 +437,7 @@ export class OkfStore {
         "Move",
         `Moved [${displayTitle(toId, concept.frontmatter)}](/${toId}.md) from \`${fromId}\`.`,
       );
-      return { from: fromId, to: toId, rewrittenIn: rewrittenIn.sort() };
+      return { from: fromId, to: toId, rewrittenIn: rewrittenIn.sort(), ...this.indexWritten([toId, ...rewrittenIn]) };
     });
   }
 
@@ -435,6 +452,7 @@ export class OkfStore {
     opts: { reason?: string; supersededBy?: string } = {},
   ): Promise<ConceptSummary & { supersededByExists?: boolean }> {
     return this.gate(async () => {
+      this.prepareIndexWrite();
       const conceptId = normalizeConceptId(id);
       const concept = await this.load(conceptId);
 
@@ -471,11 +489,22 @@ export class OkfStore {
         supersededByExists?: boolean;
       };
       if (supersededByExists !== undefined) summary.supersededByExists = supersededByExists;
-      return summary;
+      return { ...summary, ...this.indexWritten([conceptId]) };
     });
   }
 
   // --- internals ----------------------------------------------------------
+
+  private indexWritten(ids: string[]): { indexing?: IndexStatus | { error: string } } {
+    if (!this.index) return {};
+    try { return { indexing: this.index.reconcile({ enroll: ids }) }; }
+    catch { return { indexing: { error: "Memory saved; search indexing unavailable. Worker reconciliation will retry." } }; }
+  }
+  private prepareIndexWrite() {
+    // A database outage cannot make a memory write fail. The post-write result
+    // reports indexing failure and a subsequent worker pass repairs the index.
+    try { this.index?.prepareWrite(); } catch { /* reported by indexWritten */ }
+  }
 
   private async load(id: string): Promise<Concept> {
     const path = conceptPath(this.bundle, id);

@@ -1,4 +1,5 @@
 import { consumeScreenshot } from "./sources/consumer";
+import { knowledgeIndex, startEmbeddingWorker } from "./knowledgeSearch/runtime";
 // The cron worker: runs what the DATABASE says to run, when it says to.
 //
 // Runs as its own process (`bun run start:worker`), separate from the HTTP
@@ -46,6 +47,8 @@ const scheduler = log.child("scheduler");
 const RELOAD_MS = 30_000;
 
 const db = getDb();
+const stopEmbeddings = startEmbeddingWorker(knowledgeIndex(undefined, () => db),
+  state => scheduler.warn(`Knowledge embedding worker: ${state}`));
 let jobs: Cron[] = [];
 let fingerprint = "";
 
@@ -161,6 +164,7 @@ const poll = setInterval(() => {
 }, RELOAD_MS);
 
 installShutdownHandler(async () => {
+  await stopEmbeddings();
   clearInterval(poll);
   clearInterval(sourceTimer);
   for (const job of jobs) job.stop();

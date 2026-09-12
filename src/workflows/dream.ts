@@ -123,8 +123,13 @@ export class DreamWorkflow {
       const verdict = await gate({ tool: tool.definition.function.name, kind: "write", args: update, description: tool.definition.function.description });
       if (!verdict.allow) { deferred++; continue; }
       signal?.throwIfAborted();
-      const saved = await tool.execute(update) as { id: string; title: string; operationId: string };
-      updates.push(saved);
+      try {
+        const saved = await tool.execute(update) as { id: string; title: string; operationId: string };
+        updates.push(saved);
+        // Backlinks changed source versions; subsequent seeds must use current
+        // bytes and wait for their refreshed vectors, not retry a stale read set.
+        files.clear(); for (const [path, text] of await snapshot(this.runtime.root)) files.set(path, text);
+      } catch (e) { if (e instanceof HistoryConflict) { uncertain++; continue; } throw e; }
     }
     db.query("INSERT INTO dream_checkpoints(root,cursor) VALUES(?,?) ON CONFLICT(root) DO UPDATE SET cursor=excluded.cursor")
       .run(this.runtime.root, (offset + seeds.length) % Math.max(1, eligible.length));

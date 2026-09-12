@@ -6,9 +6,11 @@
 // and so the tab bar's destinations are named in exactly one place — a screen
 // that disagreed with the others about what the phone can reach would be a bug
 // nobody notices until they tap it.
-import type { CSSProperties, ReactNode } from "react";
+import { useContext, type CSSProperties, type ReactNode } from "react";
 import { AskDock, Chip, TabBar } from "../../kit";
 import { useInstalled } from "../frame";
+import { ChatSessionContext } from "../ChatSession";
+import { VoiceIndicator } from "../VoiceIndicator";
 
 /**
  * The five destinations, in the order the bar draws them.
@@ -121,6 +123,8 @@ export function PhoneScreen({
   children?: ReactNode;
 }) {
   const installed = useInstalled();
+  const session = useContext(ChatSessionContext);
+  const voiceBusy = session && (session.voice.active || session.voice.status === "connecting");
   return (
     <div data-frame="phone" data-installed={installed ? "" : undefined} style={phoneFrame(installed)}>
       <header
@@ -156,7 +160,8 @@ export function PhoneScreen({
 
       {children}
 
-      {onAsk ? <AskDock onSend={onAsk} /> : null}
+      {onAsk && !voiceBusy ? <AskDock onSend={onAsk} /> : null}
+      {session && tab !== "Chat" ? <VoiceIndicator voice={session.voice} phone onReturn={() => onTab("Chat")} /> : null}
 
       <TabBar
         items={PHONE_TABS.map((label) => ({ label: TAB_LABEL[label], selected: label === BAR_OF[tab] }))}

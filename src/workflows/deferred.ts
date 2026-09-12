@@ -1,3 +1,5 @@
+import { withConsent } from "../core/consent";
+import { newWriteCall, withWriteCall } from "../core/writeExecution";
 // Doing, hours later, the thing a run stopped to ask about.
 //
 // `ask` defers rather than blocks — see ./permissions.ts for why a 3am run has
@@ -88,7 +90,7 @@ export async function resolveDeferredTool(
  */
 export async function runDeferredWrite(
   db: Db,
-  call: { runId: string; tool: string; args: unknown },
+  call: { runId: string; tool: string; args: unknown; requestId?: string },
   context: ToolGroupContext,
   /** Where a tool comes back from. The catalog plus the MCP cache, everywhere
    *  but a test — what is worth checking here is the bookkeeping around a call,
@@ -143,7 +145,8 @@ export async function runDeferredWrite(
     // Timed, because the step this becomes claims a duration and "0ms" is a
     // claim about the call rather than an absence of one.
     const startedAt = Date.now();
-    const result = await tool.execute(args);
+    const audit = newWriteCall({ origin: "deferred-review", actor: "user", runId: call.runId, workflowId: run.workflowId, ...(call.requestId ? { idempotencyKey: `deferred:${call.requestId}` } : {}) });
+    const result = await withConsent(() => ({ allow: true }), async () => withWriteCall(audit, () => tool.execute(args)));
     const rendered = typeof result === "string" ? result : JSON.stringify(result);
     return {
       ran: true,
@@ -197,7 +200,7 @@ export async function autoSettleWorkflowWrites(
     const toolCap = capabilityFor(call.tool);
     if (toolCap !== capability) continue;
 
-    const result = await runDeferredWrite(db, { runId: call.runId, tool: call.tool, args: call.args }, context);
+    const result = await runDeferredWrite(db, { runId: call.runId, tool: call.tool, args: call.args, requestId: action.id }, context);
     settleDeferredWrite(db, {
       decisionId: call.decisionId,
       actionId: action.id,

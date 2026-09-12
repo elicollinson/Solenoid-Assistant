@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { authoredText } from "../safety/authoredText";
+import { executeWrite } from "./writeExecution";
 
 export interface FunctionToolDefinition {
   type: "function";
@@ -34,6 +35,8 @@ export type ToolKind = "read" | "write";
 export interface AgentTool<S extends z.ZodType = z.ZodType> {
   definition: FunctionToolDefinition;
   kind: ToolKind;
+  /** Execution already traverses the shared write boundary. */
+  audited?: boolean;
   schema: S;
   execute: (
     args: z.infer<S>,
@@ -46,6 +49,8 @@ export function defineTool<S extends z.ZodType>(config: {
   description: string;
   /** See ToolKind. Required: an unclassified tool has to be assumed a write. */
   kind: ToolKind;
+  /** Execution already traverses the shared write boundary. */
+  audited?: boolean;
   schema: S;
   execute: (
     args: z.infer<S>,
@@ -60,8 +65,14 @@ export function defineTool<S extends z.ZodType>(config: {
   authoredText.offer(`tool:${config.name}`, config.description);
   return {
     kind: config.kind,
+    audited: true,
     schema: config.schema,
-    execute: config.execute,
+    execute: (raw, context) => {
+      const args = config.schema.parse(raw);
+      return config.kind === "write"
+        ? executeWrite({ tool: config.name, kind: "write", args, description: config.description }, () => config.execute(args, context))
+        : config.execute(args, context);
+    },
     definition: {
       type: "function",
       function: {

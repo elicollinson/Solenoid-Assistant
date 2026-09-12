@@ -64,6 +64,13 @@
       "when": 1789173773108,
       "tag": "0008_log_monitoring",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1789236472885,
+      "tag": "0013_write_history",
+      "breakpoints": true
     }
   ]
 }

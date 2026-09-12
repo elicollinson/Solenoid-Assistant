@@ -12,6 +12,7 @@
 
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { z } from "zod";
+import { executeWrite, recordWriteOutcome } from "../core/writeExecution";
 import type { AgentTool, FunctionToolDefinition } from "../core/tools";
 
 // ---------------------------------------------------------------------------
@@ -69,6 +70,7 @@ export function mcpToolToAgentTool(
 
     // MCP results come back as content blocks. Concatenate text blocks into
     // a single string; non-text blocks are stringified so the model sees them.
+    recordWriteOutcome("outcome_unknown", "remote_response_unclassified");
     const content = (result as { content?: Array<{ type: string; text?: string; data?: string }> }).content;
     if (!content || content.length === 0) return "";
 
@@ -88,7 +90,7 @@ export function mcpToolToAgentTool(
   // tell us whether the call changes anything, and nothing here can work it
   // out — so every MCP tool is a write. That is the safe direction: it keeps
   // them out of any group filtered down to reads for an untrusted context.
-  return { definition, kind: "write", schema, execute };
+  return { definition, kind: "write", audited: true, schema, execute: (args) => executeWrite({ tool: mcpTool.name, kind: "write", args, description: mcpTool.description ?? "" }, () => execute(args)) };
 }
 
 // ---------------------------------------------------------------------------

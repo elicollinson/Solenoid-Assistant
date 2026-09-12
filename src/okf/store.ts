@@ -7,6 +7,7 @@
 // `index.md`/`log.md` are side effects, and `verified` is not writable here at
 // all — a generating agent that could stamp `verified: { by: human:... }` could
 // forge the top trust tier (§5.3) on its own output.
+import { fileMutationHandler } from "../core/writeExecution";
 import { rm, rmdir, readdir } from "node:fs/promises";
 import pLimit from "p-limit";
 import { join } from "node:path";
@@ -158,7 +159,7 @@ export class OkfStore {
   // and `fanout` runs agents concurrently. One writer at a time per store.
   private readonly gate = pLimit(1);
 
-  constructor(opts: OkfStoreOptions) {
+  constructor(private readonly opts: OkfStoreOptions, private readonly stageOnly = false) {
     this.bundle = openBundle(opts.root, { now: opts.now });
     this.actor = opts.actor;
     this.defaultStaleAfterDays =
@@ -280,6 +281,8 @@ export class OkfStore {
   // --- write --------------------------------------------------------------
 
   create(input: CreateInput): Promise<ConceptSummary & { path: string }> {
+    const handler = !this.stageOnly && fileMutationHandler();
+    if (handler) return handler(this.bundle.root, this.actor, "okf_create", root => new OkfStore({ ...this.opts, root }, true).create(input));
     return this.gate(async () => {
       const id = normalizeConceptId(input.id);
       const path = conceptPath(this.bundle, id);
@@ -327,6 +330,8 @@ export class OkfStore {
   }
 
   patch(input: PatchInput): Promise<ConceptSummary> {
+    const handler = !this.stageOnly && fileMutationHandler();
+    if (handler) return handler(this.bundle.root, this.actor, "okf_patch", root => new OkfStore({ ...this.opts, root }, true).patch(input));
     return this.gate(async () => {
       const id = normalizeConceptId(input.id);
       const concept = await this.load(id);
@@ -370,6 +375,8 @@ export class OkfStore {
     to: string,
     opts: { updateLinks?: boolean } = {},
   ): Promise<{ from: string; to: string; rewrittenIn: string[] }> {
+    const handler = !this.stageOnly && fileMutationHandler();
+    if (handler) return handler(this.bundle.root, this.actor, "okf_move", root => new OkfStore({ ...this.opts, root }, true).move(from, to, opts));
     return this.gate(async () => {
       const fromId = normalizeConceptId(from);
       const toId = normalizeConceptId(to);
@@ -434,6 +441,8 @@ export class OkfStore {
     id: string,
     opts: { reason?: string; supersededBy?: string } = {},
   ): Promise<ConceptSummary & { supersededByExists?: boolean }> {
+    const handler = !this.stageOnly && fileMutationHandler();
+    if (handler) return handler(this.bundle.root, this.actor, "okf_deprecate", root => new OkfStore({ ...this.opts, root }, true).deprecate(id, opts));
     return this.gate(async () => {
       const conceptId = normalizeConceptId(id);
       const concept = await this.load(conceptId);

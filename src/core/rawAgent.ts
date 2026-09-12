@@ -3,7 +3,7 @@
 import { Ollama } from "ollama";
 import { z } from "zod";
 import { type AgentTool } from "./tools";
-import { currentConsent } from "./consent";
+import { newWriteCall, withWriteCall, recordWriteResponse, executeWrite } from "./writeExecution";
 import { applyRunGuidance } from "./runGuidance";
 import { ToolBelt, ToolSession, loaderName, type ToolGroup } from "./toolGroups";
 import {
@@ -1238,45 +1238,22 @@ export class Agent {
         [SemanticConventions.TOOL_PARAMETERS]: safeJson(tool.definition.function.parameters),
       },
       async (span) => {
+        let activeCall: ReturnType<typeof newWriteCall> | undefined;
         // try/catch stays INSIDE the span callback: errors mark the span but
         // are still returned to the model so it can self-correct, not thrown.
         try {
           const args = tool.schema.parse(rawArgs); // validate at the boundary
           span.setAttribute(SemanticConventions.INPUT_VALUE, safeJson(args));
 
-          // Whoever is behind this run gets asked before anything changes.
-          // After the parse, so a call that cannot be made is refused on its
-          // own terms rather than put to somebody; before the execute, which
-          // is the only ordering that means anything. Reads are never gated:
-          // there is nothing to authorise about looking.
-          if (tool.kind === "write") {
-            const gate = currentConsent();
-            const verdict = await gate?.({
-              tool: name,
-              kind: tool.kind,
-              args,
-              description: tool.definition.function.description,
-            });
-            if (verdict && !verdict.allow) {
-              span.setAttributes({
-                "consent.allowed": false,
-                [SemanticConventions.OUTPUT_VALUE]: verdict.tell,
-              });
-              // Not an error. Nothing failed and nothing ran — the same shape
-              // a declined approval takes in ../agents/chat.ts, and for the
-              // same reason: a refused write is a turn of the conversation.
-              return { ok: true, output: verdict.tell };
-            }
-          }
-
-          log.info(`[tool] ${name}(${JSON.stringify(args)})`);
-          // Once dispatched, a write may finish even if our await is cancelled.
-          // A fresh route cannot safely infer that no side effect happened.
-          if (tool.kind === "write") writes.started++;
-          const result = await this.awaitWithSignal(
-            Promise.resolve(tool.execute(args, { signal })),
-            signal ?? new AbortController().signal,
-          );
+          const call = newWriteCall({ origin: "agent", actor: "agent", deferResponse: true,
+            onDispatch: () => { writes.started++; } });
+          activeCall = call;
+          log.info(`[tool] ${name}`);
+          const invoke = () => tool.execute(args, { signal });
+          const pending = withWriteCall(call, () => tool.kind === "write" && !tool.audited
+            ? executeWrite({ tool: name, kind: "write", args, description: tool.definition.function.description }, invoke)
+            : invoke());
+          const result = await this.awaitWithSignal(Promise.resolve(pending), signal ?? new AbortController().signal);
           const output = typeof result === "string" ? result : JSON.stringify(result);
           // Every tool result is screened. There is no exemption list, because
           // a tool is the wrong unit to exempt: the interesting cases return
@@ -1285,6 +1262,7 @@ export class Agent {
           // that is entirely ours costs nothing and one that is half ours is
           // judged on the half that is not.
           await this.screenPromptInjection([output], "tool_output");
+          if (tool.kind === "write") recordWriteResponse(call, "delivered");
           span.setAttributes({
             [SemanticConventions.OUTPUT_VALUE]: output,
             [SemanticConventions.OUTPUT_MIME_TYPE]:
@@ -1292,6 +1270,7 @@ export class Agent {
           });
           return { ok: true, output };
         } catch (err) {
+          if (activeCall && tool.kind === "write") recordWriteResponse(activeCall, signal?.aborted ? "caller_cancelled" : isGuardrailDetectedError(err) || isPromptInjectionScreeningError(err) ? "blocked" : "failed");
           if (isPromptInjectionScreeningError(err)) {
             throw err;
           }

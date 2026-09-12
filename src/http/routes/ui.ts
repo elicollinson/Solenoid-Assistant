@@ -348,7 +348,7 @@ export function createUiRoutes(
           // write that never did.
           const result = await runDeferredWrite(
             db,
-            { runId: call.runId, tool: call.tool, args: call.args },
+            { runId: call.runId, tool: call.tool, args: call.args, requestId: body.actionId },
             // Just the handle, as ../routes/chat.ts builds its agent. The OKF
             // group falls back to the bundle this module ships beside, which
             // is the same one the run that deferred this was writing to.

@@ -1,3 +1,4 @@
+import { installHistoryRuntime } from "./writeHistory/runtime";
 import { loadRuntimeConfig } from "./core/config";
 import { getDb } from "./db";
 import { configureLogging, flushLogs, log, shutdownLogging } from "./core/logger";
@@ -24,6 +25,7 @@ initTracing(config);
 //
 // What is left is a report, and both halves of it are failures that are
 // otherwise invisible from the screen.
+installHistoryRuntime();
 const drift = describeDrift(getDb(), isRunnable);
 if (drift.unseeded.length) {
   log.warn(

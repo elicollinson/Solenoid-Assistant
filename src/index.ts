@@ -1,3 +1,4 @@
+import { createWriteHistoryRoutes } from "./http/routes/writeHistory";
 import { createKnowledgeRefresh } from "./db/okf/refresh";
 import { createSourceRoutes } from "./http/routes/sources";
 import { Elysia, t } from "elysia";
@@ -38,6 +39,7 @@ export const app = new Elysia({
     detail: { summary: "Health check" },
     response: t.Object({ status: t.Literal("ok") }),
   })
+  .use(createWriteHistoryRoutes())
   .use(createSourceRoutes())
   .use(screenshotRoutes)
   .use(agentRoutes)

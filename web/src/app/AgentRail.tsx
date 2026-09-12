@@ -75,6 +75,7 @@ export function AgentRail({
           />
           {rail.agent.line}
         </div>
+        <a href="/history" style={{ display: "block", padding: "8px 0" }}>Write history &amp; dreams</a>
         <Button variant="danger" size="sm" style={{ width: "100%" }}>
           Stop everything
         </Button>

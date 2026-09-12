@@ -1,3 +1,4 @@
+import { rowMutationHandler } from "../../core/writeExecution";
 // The Reminders surface, written to.
 //
 // ../queries/reminders.ts answers "what does this screen draw". This is the
@@ -210,7 +211,13 @@ export function createReminder(db: Db, draft: ReminderDraft, now: Date = new Dat
  * merged — there is no sensible way to patch the third paragraph of an
  * explanation in place.
  */
-export function reviseReminder(db: Db, id: string, patch: ReminderRevision, now: Date = new Date()): void {
+export function reviseReminder(db: Db, id: string, patch: ReminderRevision, now: Date = new Date(), captured = false): void {
+  const history = !captured && rowMutationHandler();
+  const keys = Object.keys(patch).filter(k => patch[k as keyof ReminderRevision] !== undefined);
+  if (history && keys.length && keys.every(k => ["title", "dueAt", "allDay"].includes(k))) {
+    const columns: Record<string, string> = { title: "title", dueAt: "due_at", allDay: "all_day" };
+    return history("reminders", id, keys.map(k => columns[k]!), () => reviseReminder(db, id, patch, now, true));
+  }
   const row = require_(db, id);
   if (isClosed(row)) throw new ReminderSettledError(id, closedAs(row), "revise");
 

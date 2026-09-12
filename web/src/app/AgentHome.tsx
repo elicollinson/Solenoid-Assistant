@@ -1,3 +1,4 @@
+import { WriteHistoryView } from "./WriteHistoryView";
 import { useEffect, useState, type CSSProperties } from "react";
 import { MonoLabel } from "../kit";
 import { useInstalled, usePhoneFrame } from "./frame";
@@ -97,7 +98,9 @@ interface Route {
  * copy underneath it is written twice for the same reason.
  */
 export function AgentHome() {
-  return usePhoneFrame() ? <PhoneHome /> : <DesktopHome />;
+  const phone = usePhoneFrame();
+  if (typeof window !== "undefined" && window.location.pathname === "/history") return <WriteHistoryView />;
+  return phone ? <PhoneHome /> : <DesktopHome />;
 }
 
 function DesktopHome() {

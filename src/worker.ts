@@ -1,3 +1,4 @@
+import { installHistoryRuntime } from "./writeHistory/runtime";
 import { consumeScreenshot } from "./sources/consumer";
 // The cron worker: runs what the DATABASE says to run, when it says to.
 //
@@ -46,6 +47,7 @@ const scheduler = log.child("scheduler");
 const RELOAD_MS = 30_000;
 
 const db = getDb();
+installHistoryRuntime();
 let jobs: Cron[] = [];
 let fingerprint = "";
 

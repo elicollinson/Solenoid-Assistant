@@ -73,3 +73,40 @@ These share the configured log endpoint and GitHub repository/token with the
 workflow, without requiring a scan or monitoring activation. See
 [chat diagnostic access](chat-workflow-execution.md#investigating-logs-and-issues-from-chat)
 for pagination, sanitization, approval and outcome-verification behavior.
+
+## Evidence references and overlapping executions
+
+`logs_recent` gives each evidence group a short scan-local `id` (`e1`, `e2`, ...).
+Use that ID in context/incident calls and the final review. The full `fingerprint`
+remains available as metadata and remains the durable database/GitHub marker key;
+existing mappings need no migration. Exact full fingerprints are also accepted
+for compatibility. References from another scan must not be reused. Context
+queries preserve the initial IDs; newly ingested patterns found only in a later
+context query have `id: null` and `contextOnly: true`, and are outside the original
+review set.
+
+An unknown evidence reference is rejected before any incident mutation with
+instructions to reread `logs_recent`. Correcting that validation mistake can finish
+the same scan; every original group must still be reviewed and every incident must
+have a verified create/link result. Source/API failures and ambiguous POSTs remain
+fatal to completion, preserving the checkpoint and duplicate-prevention rules.
+
+A scan lease lasts two minutes and renews every 30 seconds. A second execution is
+refused while the lease is unexpired; its error reports the expiry time if renewal
+stops. Completion, failure and cooperative cancellation release the owning lease
+in `finally`. A crashed process stops renewal, allowing acquisition after expiry;
+an expired owner cannot renew, checkpoint, or release a replacement owner's lease.
+A busy response is not by itself evidence of deadlock, and does not authorize
+resetting live state. Compare execution start/end times before attributing it to
+an earlier scheduled run. Failed scans retain the pending window for recovery.
+
+Read-only investigation of [issue #50](https://github.com/elicollinson/Solenoid-Assistant/issues/50)
+on 2026-09-12 found scheduled Run 3 ended at 04:00:27 UTC, manual Run 4 ran from
+04:31:48 to 04:32:12 UTC, and manual Run 5 received its lease refusal at 04:31:53
+UTC, during Run 4. Run 4 twice submitted a Notion fingerprint missing one character;
+the bounded stored window confirmed the correct fingerprint. The code also made
+that validation error permanently fatal even after correction; this is the defect
+addressed by short references and recoverable validation. The timing supports
+legitimate Run 4/5 overlap, not a Run 3 deadlock. The live SQLite lease row was not
+accessible from the investigation environment, and Phoenix required authentication;
+no live lease reset, workflow rerun or incident write was performed.

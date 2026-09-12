@@ -226,3 +226,98 @@ test("normal Agent consent denial prevents writes and scan completion", async ()
   expect(fake.count()).toBe(0);
   expect(new MonitorState(db, scope).acquire(now + 1000).completedTo).toBeNull();
 });
+
+test("the reported Notion fingerprint typo can be corrected without poisoning the scan", async () => {
+  const row = { _time: at, service: "solenoid-server", level: "warn", _msg: "Notion authentication required — Notion-dependent agents are unavailable until a person reconnects" };
+  const fingerprint = evidenceOf(row).id;
+  expect(fingerprint).toBe("7ee6baf4d153d4a9aa1fc97fb17f0f7b4f266b96ac159d87cd49d6545f467e8d");
+  const typo = "7ee6baf4d153d4a9aa1fc97fb17f0f7b4f266b96ac159d87cd49d654f467e8d";
+  const fake = fakeGitHub();
+  const result = await scanLogs({}, { ...options(fake.github), query: queryFor([row]), analyze: async tools => {
+    const logs = await call(tools, "logs_recent");
+    expect(logs.groups[0]).toMatchObject({ id: "e1", fingerprint });
+    await call(tools, "github_find_issues", { terms: [], page: 1 });
+    for (let retry = 0; retry < 2; retry++) await expect(call(tools, "github_create_incident", incident([typo]))).rejects.toThrow("copy its short id");
+    expect(fake.count()).toBe(0);
+    expect(new MonitorState(db, scope).unresolved()).toBe(0);
+    const reread = await call(tools, "logs_recent");
+    expect(reread.groups).toEqual(logs.groups);
+    await call(tools, "github_create_incident", incident([reread.groups[0].id]));
+    return { reviewed: [{ id: "e1", disposition: "incident", reason: "Reviewed the original evidence after correcting the ID" }] };
+  } });
+  expect(result.checkpointAdvanced).toBe(true);
+  expect(fake.count()).toBe(1);
+  expect(fake.issues[0]!.body).toContain(marker(scope, fingerprint));
+  expect(new MonitorState(db, scope).incident(fingerprint)?.status).toBe("linked");
+});
+
+test("overlapping manual scans exclude the second and release the first lease after Unknown evidence ID", async () => {
+  const fake = fakeGitHub();
+  let started!: () => void, finish!: () => void;
+  const entered = new Promise<void>(resolve => { started = resolve; });
+  const held = new Promise<void>(resolve => { finish = resolve; });
+  const first = scanLogs({}, { ...options(fake.github), analyze: async tools => {
+    await call(tools, "logs_recent"); await call(tools, "github_find_issues", { terms: [], page: 1 });
+    started(); await held;
+    await call(tools, "github_create_incident", incident(["unknown"]));
+    return { reviewed: [] };
+  } });
+  const failed = first.catch(error => error);
+  await entered;
+  let secondCollected = false;
+  await expect(scanLogs({}, { ...options(fake.github), query: async () => { secondCollected = true; return []; }, analyze })).rejects.toThrow("concurrent scan");
+  expect(secondCollected).toBe(false);
+  const state = new MonitorState(db, scope);
+  expect(() => state.acquire(Date.now())).toThrow("expires at");
+  finish(); expect((await failed).message).toContain("Unknown evidence ID");
+  const lease = state.acquire(Date.now());
+  expect(lease.completedTo).toBeNull();
+  state.release(lease.owner);
+  const recovery = await scanLogs({}, { ...options(fake.github), analyze });
+  expect(recovery.checkpointAdvanced).toBe(true);
+  expect(fake.count()).toBe(1);
+});
+
+test("cancellation releases the scan lease and retains the pending window for recovery", async () => {
+  const fake = fakeGitHub(), controller = new AbortController();
+  let entered!: () => void;
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  const pending = scanLogs({}, { ...options(fake.github), signal: controller.signal, analyze: async (_tools, signal) => {
+    entered();
+    await new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    return { reviewed: [] };
+  } });
+  const failed = pending.catch(error => error);
+  await ready; controller.abort(new Error("cancel test")); expect((await failed).message).toContain("cancel test");
+  const state = new MonitorState(db, scope), lease = state.acquire(Date.now());
+  expect(lease.completedTo).toBeNull(); state.release(lease.owner);
+  const recovery = await scanLogs({}, { ...options(fake.github), now: now + 3600000, analyze });
+  expect(recovery.window?.to).toBe(new Date(now - 60000).toISOString());
+});
+
+test("renewal extends exclusivity; abandoned expiry allows recovery without stale-owner release", () => {
+  const state = new MonitorState(db, scope);
+  const first = state.acquire(now);
+  state.renew(first.owner, now + 30000);
+  expect(() => state.acquire(now + 120001)).toThrow("concurrent scan");
+  const second = state.acquire(now + 150001);
+  expect(() => state.renew(first.owner, now + 150002)).toThrow("lease lost");
+  state.release(first.owner);
+  expect(() => state.acquire(now + 150002)).toThrow("concurrent scan");
+  state.complete(second.owner, now, now + 150002);
+});
+
+test("context evidence keeps initial short IDs and identifies new context-only patterns", async () => {
+  const fake = fakeGitHub(), state = new MonitorState(db, scope);
+  const { owner } = state.acquire(now);
+  const collection = await collect(now - 3600000, now, { signal: new AbortController().signal, maxRows: 100, maxGroups: 100, expectedServices: [], query: queryFor(records) });
+  const late = { _time: at, service: "late", _msg: "Late arriving context" };
+  const session = createMonitorTools({ collection, state, owner, dryRun: true, signal: new AbortController().signal, github: fake.github, query: queryFor([...records, late]) });
+  const recent = await call(session.tools, "logs_recent");
+  await expect(call(session.tools, "logs_context", { evidenceId: "typo", seconds: 30 })).rejects.toThrow("Unknown evidence ID");
+  const context = await call(session.tools, "logs_context", { evidenceId: recent.groups[0].id, seconds: 30 });
+  for (const group of recent.groups) expect(context.groups.find((e: any) => e.fingerprint === group.fingerprint)?.id).toBe(group.id);
+  expect(context.groups.find((e: any) => e.service === "late")).toMatchObject({ id: null, contextOnly: true });
+  expect(() => session.verify({ reviewed: recent.groups.map((e: any) => ({ id: e.id, disposition: "not_actionable", reason: "Reviewed" })) })).not.toThrow();
+  expect(() => session.verify({ reviewed: [...recent.groups.map((e: any) => ({ id: e.id, disposition: "not_actionable" as const, reason: "Reviewed" })), { id: recent.groups[0].fingerprint, disposition: "not_actionable", reason: "Duplicate alias" }] })).toThrow("every log pattern");
+});

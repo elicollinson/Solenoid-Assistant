@@ -10,7 +10,10 @@ export class MonitorState {
       this.db.$client.query("INSERT OR IGNORE INTO log_monitor_scans(scope) VALUES(?)").run(this.scope);
       const result = this.db.$client.query("UPDATE log_monitor_scans SET owner=?,lease_until=? WHERE scope=? AND lease_until<=?")
         .run(owner, now + 120000, this.scope, now);
-      if (!result.changes) throw new Error("Another log scan holds the lease");
+      if (!result.changes) {
+        const held = this.db.$client.query("SELECT lease_until FROM log_monitor_scans WHERE scope=?").get(this.scope) as { lease_until: number };
+        throw new Error(`Another log scan holds the lease (concurrent scan). Wait for it to finish; if it stops renewing, this lease expires at ${new Date(held.lease_until).toISOString()}. No scan was started by this request.`);
+      }
       const row = this.db.$client.query("SELECT completed_to FROM log_monitor_scans WHERE scope=?").get(this.scope) as { completed_to: number | null };
       return { owner, completedTo: row.completed_to };
     }).immediate();

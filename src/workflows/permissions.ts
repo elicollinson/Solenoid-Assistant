@@ -62,7 +62,7 @@ export type PermissionMode = (typeof s.PERMISSION_MODE)[number];
 export const DEFAULT_MODE: PermissionMode = "ask";
 
 /**
- * `okf_create` → `okf.write`, `notion-create-pages` → `notion.write`.
+ * `okf_create` → `okf.write`, `remote-create-pages` → `remote.write`.
  *
  * Derived rather than declared per tool, and the derivation is the family a
  * tool belongs to: everything up to the first separator. That is the vocabulary
@@ -73,7 +73,7 @@ export const DEFAULT_MODE: PermissionMode = "ask";
  *
  * Both separators, because two naming conventions genuinely reach this: our own
  * tools are `group_verb` and MCP servers hand back `server-verb`
- * (`notion-create-pages`). A name with neither is its own family, which is the
+ * (`remote-create-pages`). A name with neither is its own family, which is the
  * right answer for a one-off.
  *
  * Only writes have capabilities. A read changes nothing a later read would see,

@@ -1,10 +1,9 @@
 import { getDb } from "../db";
 /**
- * Tracks which screenshots have already been ingested into Notion.
+ * Preserves historical screenshot ingestion receipts from before Collections.
  *
  * Prevents duplicate processing when `/screenshots/ingest` is called multiple
- * times with overlapping time windows. Uses a simple JSON file in the same
- * `.screenshots` directory where materialized images are stored.
+ * times with overlapping time windows. The runtime reads SQLite; an explicit directory supports historical JSON files.
  */
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";

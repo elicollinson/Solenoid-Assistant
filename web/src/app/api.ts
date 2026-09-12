@@ -269,3 +269,13 @@ export function saveWorkflowPermission(
 ): Promise<{ ok: boolean }> {
   return send(`/api/workflows/${encodeURIComponent(slug)}/permissions`, "PUT", { capability, mode });
 }
+
+export function useCollections(query: string, nonce = 0) {
+  return useJson<import("../../../src/shared/collections").CollectionsPayload>(`/api/collections?${query}`, nonce);
+}
+export async function saveCollectionItem(id: string, patch: { name?: string; description?: string; notes?: string; archived?: boolean }) {
+  const response = await fetch(`/api/collections/${encodeURIComponent(id)}`, {
+    method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(patch),
+  });
+  if (!response.ok) throw new Error(`Could not save item (${response.status})`);
+}

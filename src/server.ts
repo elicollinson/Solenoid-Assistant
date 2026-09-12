@@ -2,7 +2,6 @@ import { loadRuntimeConfig } from "./core/config";
 import { getDb } from "./db";
 import { configureLogging, flushLogs, log, shutdownLogging } from "./core/logger";
 import { initTracing, shutdownTracing } from "./core/tracing";
-import { getNotionMcpHealth, initNotionMcpCache, shutdownNotionMcpCache } from "./mcp/notionCache";
 import { installShutdownHandler } from "./core/shutdown";
 import { disposeModelArmor } from "./safety/modelArmor";
 import { describeDrift } from "./workflows/sync";
@@ -38,22 +37,6 @@ for (const slug of drift.unrunnable) {
   });
 }
 
-await initNotionMcpCache().catch((error) => {
-  const health = getNotionMcpHealth();
-  if (health.status === "authentication_required") {
-    log.warn("Notion authentication required — Notion-dependent agents are unavailable until a person reconnects", {
-      notion_status: health.status,
-      reason: health.reason,
-      recovery: health.recovery,
-    });
-    return;
-  }
-  log.warn("Notion MCP cache init failed — Notion-dependent agents will retry at call time", {
-    notion_status: health.status,
-    error_type: error instanceof Error ? error.name : "UnknownError",
-  });
-});
-
 const { app } = await import("./index");
 app.listen({ port: config.port, hostname: config.host });
 
@@ -72,7 +55,6 @@ log.info(`API docs at http://localhost:${app.server?.port}/openapi`);
 installShutdownHandler(async () => {
   await app.stop();
   await disposeModelArmor();
-  await shutdownNotionMcpCache();
   await shutdownTracing();
   // Last, so it carries whatever the four lines above had to say.
   await flushLogs();

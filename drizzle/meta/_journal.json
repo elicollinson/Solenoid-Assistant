@@ -64,6 +64,20 @@
       "when": 1789173773108,
       "tag": "0008_log_monitoring",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1789236267656,
+      "tag": "0009_collections",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1789236469885,
+      "tag": "0010_collection_imports",
+      "breakpoints": true
     }
   ]
 }

@@ -38,7 +38,7 @@ export type PhoneBarTab = (typeof PHONE_TABS)[number];
  * one bar entry with a segment row under the header to move between them. A
  * navigation effect naming either is followed, not dropped.
  */
-export type PhoneTab = PhoneBarTab | "Reminders" | "Recommendations";
+export type PhoneTab = PhoneBarTab | "Reminders" | "Recommendations" | "Collections";
 
 /** Which bar entry lights for each destination. */
 export const BAR_OF: Record<PhoneTab, PhoneBarTab> = {
@@ -48,6 +48,7 @@ export const BAR_OF: Record<PhoneTab, PhoneBarTab> = {
   Reminders: "Calendar",
   "Things I know": "Things I know",
   Recommendations: "Things I know",
+  Collections: "Things I know",
   Workflows: "Workflows",
 };
 

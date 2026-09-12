@@ -241,6 +241,7 @@ export function loadHome(db: Db, now: Date = new Date(), surface: Surface = "des
           // Not how many I hold — how many I am still asking about. Something
           // you already answered is not a number the rail should keep showing.
           { label: "Recommendations", count: unanswered || null, dot: null },
+          { label: "Collections", count: null, dot: null },
         ],
       },
       {

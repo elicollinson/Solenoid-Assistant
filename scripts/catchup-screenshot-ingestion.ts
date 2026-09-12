@@ -1,4 +1,4 @@
-// Catch up screenshot-to-Notion ingestion without going through the HTTP
+// Catch up screenshot collection ingestion without going through the HTTP
 // server. The workflow can legitimately run longer than Bun's maximum server
 // idle timeout, so this CLI calls it in-process and has no whole-job deadline.
 // Each configured model route still retains its own five-minute safety timeout.
@@ -10,10 +10,6 @@
 
 import { initTracing, shutdownTracing } from "../src/core/tracing";
 import { installShutdownHandler } from "../src/core/shutdown";
-import {
-  initNotionMcpCache,
-  shutdownNotionMcpCache,
-} from "../src/mcp/notionCache";
 import { ingestRecentScreenshots } from "../src/workflows/screenshotIngestion";
 import { withWorkflowPermissions } from "../src/workflows/permissions";
 import { getDb } from "../src/db";
@@ -101,7 +97,6 @@ let cleanedUp = false;
 async function cleanup(): Promise<void> {
   if (cleanedUp) return;
   cleanedUp = true;
-  await shutdownNotionMcpCache();
   await shutdownTracing();
 }
 
@@ -109,7 +104,6 @@ initTracing();
 installShutdownHandler(cleanup);
 
 try {
-  await initNotionMcpCache();
   const range = options.fromTime
     ? `from ${new Date(options.fromTime).toISOString()}`
     : `from the last ${options.hoursBack} hour(s)`;
@@ -133,7 +127,7 @@ try {
       const classification = item.classification
         ? `${item.classification.classification}: ${item.classification.name}`
         : "unclassified";
-      const page = item.ingestion?.page_url ? ` -> ${item.ingestion.page_url}` : "";
+      const page = item.ingestion?.itemId ? ` -> ${item.ingestion.itemId}` : "";
       const error = item.error ? ` (${item.error})` : "";
       console.log(`[${item.status}] ${item.filename} — ${classification}${page}${error}`);
     }

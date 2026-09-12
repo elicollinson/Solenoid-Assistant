@@ -1,3 +1,4 @@
+import { CollectionsView } from "../CollectionsView";
 // The app below 700px.
 //
 // The desktop's seven destinations and no rail. Five of them are the tab bar,
@@ -243,6 +244,14 @@ export function PhoneHome() {
           onRecommendations={goto("Recommendations")}
         />
       ) : null}
+      {tab === "Collections" ? <PhoneScreen tab={tab} onTab={setTab} onAsk={ask}>
+        <PhoneSegments items={[
+          { label: "Memories", selected: false, onSelect: goto("Things I know") },
+          { label: "Suggestions", selected: false, onSelect: goto("Recommendations") },
+          { label: "Collections", selected: true, onSelect: () => {} },
+        ]} />
+        <CollectionsView phone />
+      </PhoneScreen> : null}
       {tab === "Recommendations" ? (
         <Recommendations
           tab={tab}
@@ -487,6 +496,7 @@ function Memory({
         items={[
           { label: "Memories", selected: true, onSelect: () => {} },
           { label: "Suggestions", selected: false, onSelect: onRecommendations },
+          { label: "Collections", selected: false, onSelect: () => onTab("Collections") },
         ]}
       />
       {list.status === "loading" ? <PhoneNotice label="Reading" text="Going through what I've written down." /> : null}
@@ -522,6 +532,7 @@ function Recommendations({
         items={[
           { label: "Memories", selected: false, onSelect: onMemory },
           { label: "Suggestions", selected: true, onSelect: () => {} },
+          { label: "Collections", selected: false, onSelect: () => onTab("Collections") },
         ]}
       />
       {list.status === "loading" ? <PhoneNotice label="Reading" text="Listing what I'd change about how I work." /> : null}

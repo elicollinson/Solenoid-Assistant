@@ -13,11 +13,17 @@ const schema = z.object({
   expectedServices: z.array(z.string()),
 });
 export type MonitorConfig = z.infer<typeof schema>;
+/** Shared repository/credential binding, independent of scheduled scan settings. */
+export function loadMonitorGitHubConfig(env = process.env) {
+  return schema.pick({ repository: true, token: true }).parse({
+    repository: env.LOG_MONITOR_GITHUB_REPOSITORY || "elicollinson/Solenoid-Assistant",
+    token: env.LOG_MONITOR_GITHUB_TOKEN || "",
+  });
+}
 export function loadMonitorConfig(env = process.env): MonitorConfig {
   return schema.parse({
     enabled: env.LOG_MONITOR_ENABLED === "true",
-    repository: env.LOG_MONITOR_GITHUB_REPOSITORY || "elicollinson/Solenoid-Assistant",
-    token: env.LOG_MONITOR_GITHUB_TOKEN || "",
+    ...loadMonitorGitHubConfig(env),
     lookbackMinutes: env.LOG_MONITOR_LOOKBACK_MINUTES || undefined,
     overlapMinutes: env.LOG_MONITOR_OVERLAP_MINUTES || undefined,
     lagSeconds: env.LOG_MONITOR_LAG_SECONDS || undefined,

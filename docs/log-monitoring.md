@@ -67,3 +67,9 @@ Protocol references: [VictoriaLogs querying API](https://docs.victoriametrics.co
 ## Running from chat
 
 Chat can discover and run `log-monitoring` through `workflows_run({slug: "log-monitoring", args: {dryRun: true}, guidance: "Explain downstream symptoms carefully"})`, then read its state with `workflows_read_run`. Optional guidance reaches the standard Agent as user context for this execution only. It cannot narrow mandatory all-service coverage, omit evidence reviews, bypass permissions, or advance an incomplete checkpoint. See [chat workflow execution](chat-workflow-execution.md).
+
+Chat can investigate independently through the lazy `logs` and `github` groups.
+These share the configured log endpoint and GitHub repository/token with the
+workflow, without requiring a scan or monitoring activation. See
+[chat diagnostic access](chat-workflow-execution.md#investigating-logs-and-issues-from-chat)
+for pagination, sanitization, approval and outcome-verification behavior.

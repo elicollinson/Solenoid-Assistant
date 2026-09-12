@@ -94,7 +94,7 @@ describe("GET /api/runs/:runId/logs", () => {
       const { status, body } = await logsFor(runId);
       expect(status).toBe(200);
       expect(body.source).toBe("victorialogs");
-      expect(body.note).toContain("Sanitized stored records");
+      expect(body.note).toContain("Complete stored records");
       // Oldest first, and carrying the component the run record has no column for.
       expect(body.lines.map((l) => l.text)).toEqual(["Run 1 started by you.", "asked the model"]);
       expect(body.lines[1]).toMatchObject({ component: "llm", service: "solenoid-server" });
@@ -107,6 +107,23 @@ describe("GET /api/runs/:runId/logs", () => {
     } finally {
       fake.stop();
     }
+  });
+
+  test("returns exact tool arguments and structured results to the UI", async () => {
+    const record = { _time: "2026-08-26T10:00:01.000Z", run_id: runId,
+      _msg: '[tool] github_find_issues({"terms":["Notion authentication"],"page":1})',
+      arguments: { terms: ["Notion authentication"], page: 1 },
+      result: { issues: [{ number: 123, body: 'Original "quoted" evidence' }] },
+      payload: { nested: [false, null, { token: "example-value" }] },
+    };
+    const fake = collector(() => ndjson([record]));
+    process.env.VICTORIALOGS_ENDPOINT = fake.url;
+    try {
+      const { body } = await logsFor(runId);
+      expect(body.source).toBe("victorialogs");
+      expect(body.lines[0]!.text).toBe(record._msg);
+      expect(body.lines[0]!.record).toEqual(record);
+    } finally { fake.stop(); }
   });
 
   test("falls back to the run record when the store does not answer, and never fails the read", async () => {

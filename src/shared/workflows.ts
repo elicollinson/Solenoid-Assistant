@@ -122,6 +122,8 @@ export interface WorkflowLogLine {
   component?: string;
   /** Which process said it: "solenoid-server", "solenoid-worker". */
   service?: string;
+  /** Complete stored record, including structured tool arguments/results. */
+  record?: Record<string, unknown>;
 }
 
 /**

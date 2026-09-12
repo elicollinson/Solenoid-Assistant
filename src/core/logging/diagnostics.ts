@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { loadRuntimeConfig, type RuntimeConfig } from "../config";
 import { runRawQuery, type RawLog } from "./query";
-import { sanitize } from "../../logMonitoring/sanitize";
 import { serviceOf } from "../../logMonitoring/collection";
 
 export const logPageSchema = z.object({
@@ -25,21 +24,14 @@ export function logBounds(input: Pick<LogPageInput, "from" | "to">) {
 }
 
 export function diagnosticLine(row: RawLog) {
-  const original = String(row._msg ?? row.message ?? "");
-  // Tool invocation arguments may contain arbitrary user data. Keep the call's
-  // identity even when the whole argument payload must be withheld.
-  const tool = original.match(/^\s*\[tool\] ([A-Za-z0-9_]+)\(/)?.[1];
-  const invocation = original.startsWith("Invocation: ");
-  const text = invocation ? "Invocation: [private arguments and guidance redacted]" : tool ? `[tool] ${tool}([arguments redacted])` : sanitize(original);
-  const metadata: Record<string, string | number | boolean> = {};
-  for (const key of ["component", "workflow", "trace_id", "span_id", "request_id", "session_id", "run_id", "tool", "toolName", "status", "durationMs", "seq", "error", "error.message", "stack"]) {
-    const value = row[key];
-    if (typeof value === "number" || typeof value === "boolean") metadata[key] = value;
-    else if (typeof value === "string") metadata[key] = sanitize(value);
-  }
-  return { at: String(row._time ?? row.timestamp ?? ""), level: sanitize(String(row.level ?? "info")),
-    service: sanitize(serviceOf(row)), text, ...metadata, ...(tool ? { tool, event: "invocation" } : {}),
-    redacted: text !== original };
+  const text = String(row._msg ?? row.message ?? "");
+  const tool = text.match(/^\s*\[tool\] ([A-Za-z0-9_]+)\(/)?.[1];
+  // Keep the complete stored record, including fields that collide with the
+  // display aliases below. Diagnostic reads do not rewrite source content.
+  return { ...row, at: String(row._time ?? row.timestamp ?? ""),
+    level: String(row.level ?? "info"), service: serviceOf(row), text,
+    component: typeof row.component === "string" ? row.component : undefined,
+    ...(tool ? { tool, event: "invocation" } : {}), record: row };
 }
 
 export async function queryLogPage(input: LogPageInput, options: {
@@ -74,6 +66,6 @@ export async function queryLogPage(input: LogPageInput, options: {
   return { source: "victorialogs" as const, scope: { ...bounds, runId: options.runId ?? null, service: input.service ?? null, level: input.level ?? null, search: input.search ?? null },
     order: input.order, offset: input.offset, limit: input.limit, count: Math.min(rows.length, input.limit), truncated,
     nextOffset: truncated && input.offset + input.limit <= 100000 ? input.offset + input.limit : null,
-    note: "Sanitized stored records only; private arguments and arbitrary payload fields are omitted. Reuse bounds/filters/order with nextOffset, or narrow the time range. Late ingestion can shift pages; this is not an immutable snapshot.",
+    note: "Complete stored records, with original text and structured fields. Reuse bounds/filters/order with nextOffset, or narrow the time range. Late ingestion can shift pages; this is not an immutable snapshot.",
     lines: rows.slice(0, input.limit).map(diagnosticLine) };
 }

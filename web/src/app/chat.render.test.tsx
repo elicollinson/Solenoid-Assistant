@@ -25,6 +25,7 @@ import { zonedTime } from "../../../src/db/seed/time";
 import type { ChatListPayload, ChatPayload } from "../../../src/shared/chat";
 import { ChatView } from "./ChatView";
 import { ChatPhone } from "./phone/ChatPhone";
+import type { VoiceModeState } from "./useVoiceMode";
 import type { ChatState, LiveTurn } from "./chat";
 
 let dir: string;
@@ -70,8 +71,13 @@ const EMPTY_LIVE: LiveTurn = {
   error: null,
 };
 
-const desktop = (state: ChatState) => renderToStaticMarkup(<ChatView chat={state} />);
-const phone = (state: ChatState) => renderToStaticMarkup(<ChatPhone chat={state} onTab={noop} />);
+const voice: VoiceModeState = {
+  active: false, status: "idle", isSpeaking: false, isMuted: false,
+  error: null, analyserNode: null, startVoice: async () => {}, stopVoice: noop, toggleMute: noop,
+};
+
+const desktop = (state: ChatState) => renderToStaticMarkup(<ChatView chat={state} voice={voice} />);
+const phone = (state: ChatState) => renderToStaticMarkup(<ChatPhone chat={state} voice={voice} onTab={noop} />);
 
 /** The two payloads a screen needs, read together as the client reads them. */
 const both = (live: LiveTurn | null = null) =>

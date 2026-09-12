@@ -32,11 +32,14 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
   const queuedSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const nextPlayTimeRef = useRef<number>(0);
   const isMutedRef = useRef(false);
+  // Invalidate async microphone setup when stopped or switched to another chat.
+  const generation = useRef(0);
 
   // Sync ref
   isMutedRef.current = isMuted;
 
   const cleanup = useCallback(() => {
+    generation.current += 1;
     // 1. Stop mic tracks
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((track) => track.stop());
@@ -45,6 +48,7 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
 
     // 2. Disconnect processor
     if (processorRef.current) {
+      processorRef.current.onaudioprocess = null;
       processorRef.current.disconnect();
       processorRef.current = null;
     }
@@ -100,18 +104,20 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
   const startVoice = useCallback(async () => {
     if (!conversationId) return;
 
+    cleanup();
+    const attempt = generation.current;
     try {
-      cleanup();
       setError(null);
       setStatus("connecting");
 
       // 1. Initialize AudioContext
       const AudioCtxClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const audioCtx = new AudioCtxClass();
+      audioCtxRef.current = audioCtx;
       if (audioCtx.state === "suspended") {
         await audioCtx.resume();
       }
-      audioCtxRef.current = audioCtx;
+      if (generation.current !== attempt) return;
       nextPlayTimeRef.current = audioCtx.currentTime;
 
       // 2. Analyser for retro wiggly line visualizer
@@ -128,6 +134,11 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
           autoGainControl: true,
         },
       });
+      if (generation.current !== attempt) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      stream.getAudioTracks().forEach((track) => { track.enabled = !isMutedRef.current; });
       mediaStreamRef.current = stream;
 
       const micSource = audioCtx.createMediaStreamSource(stream);
@@ -238,6 +249,7 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
         setStatus("error");
       };
     } catch (err) {
+      if (generation.current !== attempt) return;
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
       cleanup();

@@ -11,7 +11,7 @@
 // The render tests pass components a payload directly, so they could not see
 // it. These can.
 import { describe, expect, test } from "bun:test";
-import { detailPath } from "./api";
+import { detailPath, saveCollectionItem } from "./api";
 
 describe("asking for one member of a collection", () => {
   test("asks for nothing when there is no member to ask about", () => {
@@ -29,4 +29,21 @@ describe("asking for one member of a collection", () => {
     expect(detailPath("/api/workflows", "a/b")).toBe("/api/workflows/a%2Fb");
     expect(detailPath("/api/reminders", "a b?c")).toBe("/api/reminders/a%20b%3Fc");
   });
+});
+
+test("collection edits send PATCH and preserve validation and missing-item errors", async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const [status, error] of [[422, "An item needs a name"], [404, "Collection item not found"]] as const) {
+      globalThis.fetch = (async (path, options) => {
+        expect(path).toBe("/api/collections/a%2Fb");
+        expect(options?.method).toBe("PATCH");
+        expect(JSON.parse(options?.body as string)).toEqual({ name: " " });
+        return Response.json({ error }, { status });
+      }) as typeof fetch;
+      await expect(saveCollectionItem("a/b", { name: " " })).rejects.toThrow(error);
+    }
+    globalThis.fetch = (async () => Response.json({ ok: true })) as unknown as typeof fetch;
+    await expect(saveCollectionItem("book", { notes: "Read next" })).resolves.toBeUndefined();
+  } finally { globalThis.fetch = original; }
 });

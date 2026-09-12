@@ -182,7 +182,7 @@ export function useKnowledgeObject(id: string | null): Load<KnowledgeDetailPaylo
  * reaching for the button. The server writes those sentences; this only
  * carries them.
  */
-async function send<T>(path: string, method: "POST" | "PUT", body?: unknown): Promise<T> {
+async function send<T>(path: string, method: "POST" | "PUT" | "PATCH", body?: unknown): Promise<T> {
   const response = await fetch(path, {
     method,
     headers: { "content-type": "application/json", accept: "application/json" },
@@ -268,4 +268,11 @@ export function saveWorkflowPermission(
   mode: "allow" | "ask" | "deny",
 ): Promise<{ ok: boolean }> {
   return send(`/api/workflows/${encodeURIComponent(slug)}/permissions`, "PUT", { capability, mode });
+}
+
+export function useCollections(query: string, nonce = 0) {
+  return useJson<import("../../../src/shared/collections").CollectionsPayload>(`/api/collections?${query}`, nonce);
+}
+export async function saveCollectionItem(id: string, patch: { name?: string; description?: string; notes?: string; archived?: boolean }) {
+  await send(`/api/collections/${encodeURIComponent(id)}`, "PATCH", patch);
 }

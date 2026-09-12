@@ -1,6 +1,6 @@
 # Solenoid Assistant
 
-A local Bun service for experimenting with tool-using agents and personal-assistant workflows. The current workflows cover weather/tool demos, iMessage extraction, prompt-injection classification, screenshot classification and Notion ingestion, scheduled tasks, and an OKF-backed memory store.
+A local Bun service for experimenting with tool-using agents and personal-assistant workflows. The current workflows cover weather/tool demos, iMessage extraction, prompt-injection classification, screenshot classification and app-owned collections, scheduled tasks, and an OKF-backed memory store.
 
 ## Requirements
 
@@ -8,7 +8,7 @@ A local Bun service for experimenting with tool-using agents and personal-assist
 - An Ollama-native or OpenAI-compatible model endpoint
 - macOS with Full Disk Access for the iMessage, Contacts, and Photos workflows
 - `osxphotos` for screenshot workflows
-- Optional Notion and Tavily credentials for their respective MCP-backed agents
+- Optional Tavily credentials for live web search
 - Optional [Pushover reminder notifications](docs/pushover-reminders.md), delivered at the reminder's due time
 
 ## Setup
@@ -34,7 +34,7 @@ bun run start:worker
 bun run dev:web
 ```
 
-Catch up screenshot-to-Notion ingestion directly, without the HTTP server's
+Catch up screenshot collection ingestion directly, without the HTTP server's
 255-second idle-timeout ceiling:
 
 ```bash
@@ -92,9 +92,6 @@ The application reads and validates runtime settings through `src/core/config.ts
 | `VICTORIALOGS_QUEUE_LIMIT` | `10000` | Records held while the collector is down |
 | `VICTORIALOGS_TIMEOUT_MS` | `5000` | Timeout for ingestion and for queries |
 | `TAVILY_API_KEY` | unset | Search-backed agents |
-| `NOTION_API_TOKEN` | unset | Deterministic Notion REST search |
-| `NOTION_MCP_*` | unset | Notion OAuth/MCP connection |
-| `NOTION_DS_*` | unset | Recommendation target databases |
 
 See `.env.example` for the complete list.
 
@@ -140,7 +137,7 @@ set `structuredOutputStrategy` to `native` or `two-stage`; the global
 | GET | `/screenshots` | List recent local screenshots |
 | GET | `/screenshots/describe` | Describe screenshots with a vision model |
 | GET | `/screenshots/classify` | Classify described screenshots |
-| GET | `/screenshots/ingest` | Run the existing screenshot-to-Notion ingestion workflow |
+| GET | `/screenshots/ingest` | Run the existing screenshot collection ingestion workflow |
 | GET | `/message-extraction` | Extract actions, summaries, and memory from trusted iMessages |
 | POST | `/safety-classifier` | Score text for prompt-injection risk |
 | POST | `/api/workflows/:slug/run` | Start a workflow and answer with the run it opened |
@@ -228,7 +225,6 @@ src/
   workflows/    Multi-step application workflows, plus the catalog that lists
                 them, the registry that runs them and the runner that records it
   mcp/          MCP adapters and connection lifecycle
-  notion/       Notion REST integration and search tool
   contacts/     Contacts normalization and trust gate
   db/           SQLite schema, migrations client, id minting, seed, and read queries
   db/okf/       The okf/ → SQLite projection: classify, extract, index
@@ -316,7 +312,7 @@ real-estate content; that strand was rewritten out of the fixtures.)
 | --- | --- |
 | `message-extraction` | Screen the iMessage window and pull out actions, summaries and memory |
 | `screenshot-classification` | Describe and classify recent screenshots. Reads only |
-| `screenshot-ingestion` | The same, then source a card and write it into Notion |
+| `screenshot-ingestion` | The same, then source a card and save it into Collections |
 | `safety-classification` | Score a piece of text for prompt-injection risk |
 | `weather-briefing` | The demo agent, through the same task the 07:00 cron fires |
 
@@ -668,6 +664,14 @@ retirement signal for facts nothing has referenced in months.
 
 ### Chat
 
+Opening or refreshing the web app starts on Chat with a new conversation.
+Within that loaded app session, switching pages keeps the current conversation
+and any active voice connection, including when the layout changes between
+phone and desktop. While voice is connecting or active on another page, the
+bottom-right waveform returns to the ongoing conversation. On phones it takes
+the ask button's place above the tab bar. Ending voice or selecting a different
+conversation closes the microphone and connection.
+
 A chat with the agent is a conversation, `channel = 'agent_chat'`, and its turns
 are `messages`. It is not a third stack beside texts and email, because the
 design draws a text from Fenwick Heating and a turn from the agent with the same
@@ -797,20 +801,6 @@ cents, and the single timezone is `America/New_York` (`APP_TZ`). Display strings
 and grouping labels — Overdue / Today / This week / Someday — are derived at
 render time, never stored.
 
-## Notion authentication
-
-```bash
-bun run auth:notion
-bun run connect:notion
-```
-
-Find or verify recommendation database IDs with:
-
-```bash
-bun run scripts/notion-find-databases.ts
-bun run scripts/notion-check-databases.ts [database-id ...]
-```
-
 ## Scheduling
 
 A unit of work is a workflow, whether you press Run or a rule fires it. There is
@@ -851,8 +841,8 @@ them**. Every unattended write in this service went ahead because no code
 existed that could have refused one.
 
 `src/workflows/permissions.ts` is that code. A capability is the tool's family —
-`okf_create` and `okf_patch` are both `okf.write`, `notion-create-pages` is
-`notion.write` — which is the vocabulary `workflows_set_permissions` already
+`okf_create` and `okf_patch` are both `okf.write` — the vocabulary
+`workflows_set_permissions` already
 told the agent to use, so a rule the agent writes and a rule the runner checks
 meet at the same string with no table between them.
 
@@ -871,8 +861,7 @@ failed run and thrown the question away. So the intent is recorded: a
 visible, and an action carrying `effectKind: "tool_call"` and the real
 `{ tool, args }` — so the record says what would happen rather than "approve
 this". Pressing **Write it** in the morning makes the call for real
-(`src/workflows/deferred.ts`): the tool is rebuilt from the group catalog, or
-from the Notion MCP client for a remote one, the arguments are re-validated
+(`src/workflows/deferred.ts`): the tool is rebuilt from the current group catalog, the arguments are re-validated
 against its schema, and the outcome is written back onto the decision and the
 feed row.
 
@@ -889,7 +878,6 @@ on the same terms as `rrule`:
 | Workflow | Capability | Why |
 | --- | --- | --- |
 | `message-extraction` | `okf.write` | It ends by handing graded memories to `okfManagerAgent`, which holds the four OKF writes. |
-| `screenshot-ingestion` | `notion.write` | It creates and updates pages in your workspace. |
 | `screenshot-ingestion` | `tavily.write` | An artefact of `src/mcp/adapter.ts` marking every remote tool a write: a server does not say whether a call changes anything, so the safe guess is that it does, and a web search is caught by it. |
 
 Seeded once, never re-seeded — including where you have retired one. A rule you
@@ -911,7 +899,7 @@ Reads are never gated: a read changes nothing a later read would see.
 **Three callers execute a workflow's body without opening a run** —
 `GET /message-extraction` and its legacy alias, `GET /screenshots/ingest`, and
 `scripts/catchup-screenshot-ingestion.ts`, which exists because the sweep
-outlives any sensible HTTP timeout. They make the same OKF and Notion writes the
+outlives any sensible HTTP timeout. They make the same OKF and collection writes the
 scheduled run does, so they are governed by the same rows, entered through
 `withWorkflowPermissions(db, slug, …)`. A back door around a standing `deny` is
 not a smaller failure than no gate at all. What they cannot do is **defer**: a
@@ -1037,5 +1025,25 @@ Live macOS and integration checks are intentionally separate from the unit suite
 ```bash
 bun run smoke:imessage
 bun run connect:tavily
-bun run connect:notion
 ```
+
+## Screenshot collections
+
+Collections is available in the desktop rail and under Memory on phones. New
+screenshot ingestion saves books, movies, TV shows, games, and music in the app's
+SQLite database. The screenshot path no longer connects to Notion or writes
+Notion pages. The Notion runtime integration and credential setup have been removed.
+
+Search titles, descriptions, and notes; filter by category or archive state;
+edit titles/descriptions/notes; archive and restore items; export all collection
+records with their source snapshots as JSON. Extracted Music subtypes (Song,
+Album, Musician) remain intact. Source details retain screenshot UUIDs, capture
+dates, filenames, extracted cards and source URLs. The screenshot image link is
+available when its accepted asset remains cached on this server.
+
+Historical data is imported offline from the already saved snapshot with
+`bun run import:collections --snapshot <file.json>`. No Notion access is required.
+See [the collection import guide](docs/collections-import.md) for preview,
+verification, backups, and integration steps. Existing historical processing
+receipts remain respected; a new screenshot sweep does not silently reprocess
+all previously ingested screenshots.

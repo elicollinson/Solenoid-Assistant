@@ -1,3 +1,4 @@
+import { CollectionsView } from "./CollectionsView";
 import { useEffect, useState, type CSSProperties } from "react";
 import { MonoLabel } from "../kit";
 import { useInstalled, usePhoneFrame } from "./frame";
@@ -17,6 +18,9 @@ import { ThingsIKnowView } from "./ThingsIKnowView";
 import { WorkflowDetail, runGoing, type WorkflowEdits, type WorkflowTrigger } from "./WorkflowDetail";
 import { WorkflowsView } from "./WorkflowsView";
 import { useChat } from "./chat";
+import { useVoiceMode } from "./useVoiceMode";
+import { ChatSessionContext, useChatSession } from "./ChatSession";
+import { VoiceIndicator } from "./VoiceIndicator";
 import { isDeferredWrite, pendingDecisionFor, withoutResolved } from "./settle";
 import {
   useCalendar,
@@ -58,6 +62,7 @@ const frame = (installed: boolean): CSSProperties => ({
   // 1242px wide in any window narrower than that and the whole app scrolls
   // sideways by two pixels. The phone frame is built the same way, and the
   // same two pixels were the more obvious bug there.
+  position: "relative",
   boxSizing: "border-box",
   width: installed ? "100%" : "min(1240px, 100vw)",
   height: installed ? "100dvh" : "min(840px, 100dvh)",
@@ -84,26 +89,23 @@ interface Route {
   ask?: boolean;
 }
 
-/**
- * Which frame to draw.
- *
- * The one hook above the branch is the whole of the decision, and it has to be
- * above it: the two shells hold different state and read different surfaces, so
- * whichever is not being drawn must not be running its hooks either.
- *
- * The design is explicit that this is a switch and not a reflow. Below roughly
- * 700px the rail becomes a tab bar, the aside is deleted and the cards give way
- * to a timeline — the phone is not the desktop feed at a smaller width, and the
- * copy underneath it is written twice for the same reason.
- */
+/** Conversation and audio outlive every destination, including frame changes. */
 export function AgentHome() {
-  return usePhoneFrame() ? <PhoneHome /> : <DesktopHome />;
+  const phone = usePhoneFrame();
+  const chat = useChat(phone ? "phone" : "desktop");
+  const voice = useVoiceMode({ conversationId: chat.openId, onTurnComplete: chat.reload });
+  return (
+    <ChatSessionContext value={{ chat, voice }}>
+      {phone ? <PhoneHome /> : <DesktopHome />}
+    </ChatSessionContext>
+  );
 }
 
 function DesktopHome() {
+  const { chat, voice } = useChatSession();
   const installed = useInstalled();
   const [theme, setTheme] = useState<"paper" | "dusk">("paper");
-  const [route, setRoute] = useState<Route>({ view: "Activity" });
+  const [route, setRoute] = useState<Route>({ view: "Chat" });
   // Nothing writes to the database yet, so an action that resolves a decision
   // resolves it here: the entry turns done, the aside clears, and the header
   // recounts — the click-through the design specifies, with no side effect.
@@ -227,8 +229,8 @@ function DesktopHome() {
         onToggleTheme={toggleTheme}
       />
 
-      {home.status === "loading" ? <Notice label="Reading" text="Fetching what I did overnight." /> : null}
-      {home.status === "error" ? (
+      {route.view !== "Chat" && home.status === "loading" ? <Notice label="Reading" text="Fetching what I did overnight." /> : null}
+      {route.view !== "Chat" && home.status === "error" ? (
         <Notice
           label="No answer"
           text={`I couldn't reach the API — ${home.message}. Start it with \`bun run start:server\`, and seed it with \`bun run db:seed\` if you haven't yet.`}
@@ -242,7 +244,10 @@ function DesktopHome() {
         />
       ) : null}
 
-      {home.status === "ready" && route.view === "Chat" ? <Chat /> : null}
+      {route.view === "Chat" ? <ChatView chat={chat} voice={voice} /> : null}
+      {route.view !== "Chat" ? <VoiceIndicator voice={voice} onReturn={() => setRoute({ view: "Chat" })} /> : null}
+      {home.status === "ready" && route.view === "Collections" ? <CollectionsView /> : null}
+
 
       {home.status === "ready" && route.view === "Activity" ? (
         <Activity home={home.data} resolved={resolved} onInvoke={invoke} />
@@ -270,18 +275,6 @@ function DesktopHome() {
       ) : null}
     </div>
   );
-}
-
-/**
- * The one destination that writes.
- *
- * Its own component rather than a branch above, because `useChat` holds a live
- * connection: mounting it under the switch is what guarantees the stream is
- * closed when you navigate away, rather than left running behind another
- * screen.
- */
-function Chat() {
-  return <ChatView chat={useChat()} />;
 }
 
 /**

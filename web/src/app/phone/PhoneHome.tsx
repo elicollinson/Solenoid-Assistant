@@ -1,3 +1,4 @@
+import { CollectionsView } from "../CollectionsView";
 // The app below 700px.
 //
 // The desktop's seven destinations and no rail. Five of them are the tab bar,
@@ -45,7 +46,7 @@ import { WorkflowsPhone, isSheetTab, type SheetTab, type WorkflowEdits, type Wor
 import { NO_TRIGGER, triggerFor, triggerReducer } from "./trigger";
 import { runGoing } from "../WorkflowDetail";
 import { ChatPhone } from "./ChatPhone";
-import { useChat } from "../chat";
+import { useChatSession } from "../ChatSession";
 import { PhoneAlert, PhoneNotice, PhoneScreen, PhoneSegments, isPhoneTab, type PhoneTab } from "./chrome";
 
 /** What each screen has open, kept per screen rather than as one field: coming
@@ -54,7 +55,7 @@ type OpenBy = Partial<Record<PhoneTab, string | null>>;
 
 export function PhoneHome() {
   const dusk = usePrefersDusk();
-  const [tab, setTab] = useState<PhoneTab>("Activity");
+  const [tab, setTab] = useState<PhoneTab>("Chat");
   const [open, setOpen] = useState<OpenBy>({});
   // Which of the workflow sheet's four tabs is showing. Held here rather than
   // in the sheet so a feed button naming one — "Trace" — opens it there, and
@@ -243,6 +244,14 @@ export function PhoneHome() {
           onRecommendations={goto("Recommendations")}
         />
       ) : null}
+      {tab === "Collections" ? <PhoneScreen tab={tab} onTab={setTab} onAsk={ask}>
+        <PhoneSegments items={[
+          { label: "Memories", selected: false, onSelect: goto("Things I know") },
+          { label: "Suggestions", selected: false, onSelect: goto("Recommendations") },
+          { label: "Collections", selected: true, onSelect: () => {} },
+        ]} />
+        <CollectionsView phone />
+      </PhoneScreen> : null}
       {tab === "Recommendations" ? (
         <Recommendations
           tab={tab}
@@ -284,14 +293,7 @@ const RUNNING_TICK_MS = 2000;
 
 type Chrome = { tab: PhoneTab; onTab: (tab: PhoneTab) => void; onAsk: (text: string) => void };
 
-/**
- * Its own component so the live connection is opened when Chat is and closed
- * when it is — see the same note on the desktop's.
- *
- * `seed` is what the ask dock said on another screen. Started here rather than
- * there because starting a conversation and sending into it are two requests,
- * and the screen that owns the connection is the one that should make them.
- */
+/** Spend an ask-dock seed once; the session itself lives above navigation. */
 function Chat({
   onTab,
   seed,
@@ -301,7 +303,7 @@ function Chat({
   seed: string | null;
   onSeeded: () => void;
 }) {
-  const chat = useChat("phone");
+  const { chat, voice } = useChatSession();
   const { start, send } = chat;
   // Whether the seed is already on its way. The effect below re-runs when the
   // list lands, when the new conversation opens, and — in development — once
@@ -323,7 +325,7 @@ function Chat({
     });
   }, [seed, start, send, onSeeded]);
 
-  return <ChatPhone chat={chat} onTab={onTab} />;
+  return <ChatPhone chat={chat} voice={voice} onTab={onTab} />;
 }
 
 function Activity({
@@ -494,6 +496,7 @@ function Memory({
         items={[
           { label: "Memories", selected: true, onSelect: () => {} },
           { label: "Suggestions", selected: false, onSelect: onRecommendations },
+          { label: "Collections", selected: false, onSelect: () => onTab("Collections") },
         ]}
       />
       {list.status === "loading" ? <PhoneNotice label="Reading" text="Going through what I've written down." /> : null}
@@ -529,6 +532,7 @@ function Recommendations({
         items={[
           { label: "Memories", selected: false, onSelect: onMemory },
           { label: "Suggestions", selected: true, onSelect: () => {} },
+          { label: "Collections", selected: false, onSelect: () => onTab("Collections") },
         ]}
       />
       {list.status === "loading" ? <PhoneNotice label="Reading" text="Listing what I'd change about how I work." /> : null}

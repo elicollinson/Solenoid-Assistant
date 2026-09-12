@@ -43,7 +43,7 @@ describe("migrations", () => {
       .query<{ name: string }, []>(`SELECT name FROM sqlite_master WHERE type = 'view'`)
       .all();
 
-    expect(tables.length).toBe(61); // 60 relational + the fts5 `search` table
+    expect(tables.length).toBe(64); // 63 relational + the fts5 `search` table
     expect(views.map((v) => v.name).sort()).toEqual([
       "v_evidence",
       "v_needs_you",
@@ -739,12 +739,12 @@ describe("what I run on", () => {
         key: "modelArmor.templateId", value: "base-detector", source: "default", updatedAt: now,
         hint: "Model Armor template name.",
       },
-      { key: "notion.ds.music", value: null, source: "default", updatedAt: now },
+      { key: "tavily.search", value: null, source: "default", updatedAt: now },
     ]).run();
 
     const rows = new Map(db.select().from(s.settings).all().map((r) => [r.key, r]));
     // Nothing here yet is a state, not an absence.
-    expect(rows.get("notion.ds.music")?.value).toBeNull();
+    expect(rows.get("tavily.search")?.value).toBeNull();
     expect(rows.get("port")?.source).toBe("user");
     expect(rows.get("modelArmor.templateId")?.source).toBe("default");
 
@@ -757,9 +757,9 @@ describe("what I run on", () => {
 
   test("a check hangs off the setting that names what was reached", () => {
     db.insert(s.connectionChecks).values([
-      { id: ulid(), settingKey: "notion.ds.music", at: now, kind: "read", ok: true, latencyMs: 38 },
+      { id: ulid(), settingKey: "tavily.search", at: now, kind: "read", ok: true, latencyMs: 38 },
     ]).run();
-    db.delete(s.settings).where(eq(s.settings.key, "notion.ds.music")).run();
+    db.delete(s.settings).where(eq(s.settings.key, "tavily.search")).run();
     expect(db.select().from(s.connectionChecks).all().length).toBe(0);
   });
 });

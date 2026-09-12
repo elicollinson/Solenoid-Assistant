@@ -14,8 +14,6 @@
     "eval:notinject": "bun run scripts/eval-pint-benchmark.ts",
     "smoke:model-armor": "bun run scripts/model-armor-smoke.ts",
     "verify:model-armor": "bun run scripts/verify-model-armor.ts",
-    "auth:notion": "bun run scripts/notion-mcp-auth.ts",
-    "connect:notion": "bun run scripts/notion-mcp-connect.ts",
     "connect:tavily": "bun run scripts/tavily-mcp-connect.ts",
     "smoke:imessage": "bun run scripts/imessage-smoke.ts",
     "check:pushover": "bun run scripts/pushover-validate.ts",
@@ -34,7 +32,8 @@
     "serve:tailscale": "bun run scripts/serve-tailscale.ts",
     "db:index-okf": "bun run scripts/db-index-okf.ts",
     "source:collect": "bun run scripts/collect-host-data.ts",
-    "source:catch-up": "bun run scripts/source-catch-up.ts"
+    "source:catch-up": "bun run scripts/source-catch-up.ts",
+    "import:collections": "bun run scripts/import-collections.ts"
   },
   "devDependencies": {
     "@arizeai/phoenix-cli": "^1.16.1",
@@ -47,6 +46,7 @@
     "@vitejs/plugin-react": "^6.1.0",
     "babel-plugin-react-compiler": "^1.0.0",
     "drizzle-kit": "^0.31.10",
+    "happy-dom": "^20.14.5",
     "typescript": "6.0.3",
     "vite": "^8.2.2"
   },
@@ -64,7 +64,6 @@
     "drizzle-orm": "^0.45.2",
     "elysia": "^1.4.29",
     "google-auth-library": "^9.15.1",
-    "oauth": "^0.10.2",
     "ollama": "^0.6.3",
     "openai": "^6.47.0",
     "p-limit": "^7.3.1",

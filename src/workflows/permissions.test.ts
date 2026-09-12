@@ -116,7 +116,7 @@ describe("naming the thing being governed", () => {
     expect(capabilityFor("calendar_set_attendees")).toBe("calendar.write");
     // MCP servers hyphenate. Both conventions have to land on one string, or a
     // rule written against one would silently govern nothing.
-    expect(capabilityFor("notion-create-pages")).toBe("notion.write");
+    expect(capabilityFor("remote-create-pages")).toBe("remote.write");
     expect(capabilityFor("standalone")).toBe("standalone.write");
   });
 });
@@ -258,7 +258,7 @@ describe("what the catalog ships with", () => {
     expect(seeded.map((r) => `${r.slug}:${r.capability}=${r.mode}`).sort()).toEqual([
       "log-monitoring:github.write=allow",
       "message-extraction:okf.write=allow",
-      "screenshot-ingestion:notion.write=allow",
+      "screenshot-ingestion:collections.write=allow",
       "screenshot-ingestion:tavily.write=allow",
     ]);
   });
@@ -574,4 +574,12 @@ describe("a caller that is not a run", () => {
     expect(ran).toEqual([]);
     expect(openDecisions()).toEqual([]);
   });
+});
+
+test("a historical deferred Notion action cannot reconnect a retired integration", async () => {
+  const result = await runDeferredWrite(db, {
+    runId, tool: "notion-create-pages", args: { title: "Historical request" },
+  }, { db });
+  expect(result).toMatchObject({ ran: false, reason: "unknown_tool" });
+  expect(result.summary).toContain("this build has no tool");
 });

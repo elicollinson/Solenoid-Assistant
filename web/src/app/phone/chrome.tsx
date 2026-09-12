@@ -6,9 +6,11 @@
 // and so the tab bar's destinations are named in exactly one place — a screen
 // that disagreed with the others about what the phone can reach would be a bug
 // nobody notices until they tap it.
-import type { CSSProperties, ReactNode } from "react";
+import { useContext, type CSSProperties, type ReactNode } from "react";
 import { AskDock, Chip, TabBar } from "../../kit";
 import { useInstalled } from "../frame";
+import { ChatSessionContext } from "../ChatSession";
+import { VoiceIndicator } from "../VoiceIndicator";
 
 /**
  * The five destinations, in the order the bar draws them.
@@ -36,7 +38,7 @@ export type PhoneBarTab = (typeof PHONE_TABS)[number];
  * one bar entry with a segment row under the header to move between them. A
  * navigation effect naming either is followed, not dropped.
  */
-export type PhoneTab = PhoneBarTab | "Reminders" | "Recommendations";
+export type PhoneTab = PhoneBarTab | "Reminders" | "Recommendations" | "Collections";
 
 /** Which bar entry lights for each destination. */
 export const BAR_OF: Record<PhoneTab, PhoneBarTab> = {
@@ -46,6 +48,7 @@ export const BAR_OF: Record<PhoneTab, PhoneBarTab> = {
   Reminders: "Calendar",
   "Things I know": "Things I know",
   Recommendations: "Things I know",
+  Collections: "Things I know",
   Workflows: "Workflows",
 };
 
@@ -121,6 +124,8 @@ export function PhoneScreen({
   children?: ReactNode;
 }) {
   const installed = useInstalled();
+  const session = useContext(ChatSessionContext);
+  const voiceBusy = session && (session.voice.active || session.voice.status === "connecting");
   return (
     <div data-frame="phone" data-installed={installed ? "" : undefined} style={phoneFrame(installed)}>
       <header
@@ -156,7 +161,8 @@ export function PhoneScreen({
 
       {children}
 
-      {onAsk ? <AskDock onSend={onAsk} /> : null}
+      {onAsk && !voiceBusy ? <AskDock onSend={onAsk} /> : null}
+      {session && tab !== "Chat" ? <VoiceIndicator voice={session.voice} phone onReturn={() => onTab("Chat")} /> : null}
 
       <TabBar
         items={PHONE_TABS.map((label) => ({ label: TAB_LABEL[label], selected: label === BAR_OF[tab] }))}

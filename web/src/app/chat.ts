@@ -71,8 +71,7 @@ export interface ChatState {
   /**
    * Say something into the open conversation — or into `into`, when the
    * caller has just started one and knows its id before this render does.
-   * With neither, the server's newest conversation takes it, which is what
-   * the ask dock does from a screen that never loaded one.
+   * With neither, start a new conversation (or await the one being created).
    */
   send(text: string, into?: string): void;
   /** Press a button on the approval the run is waiting on. */
@@ -143,8 +142,9 @@ export function useChat(surface: Surface = "desktop"): ChatState {
   // `live` because state is a render behind and two quick returns would both
   // see null.
   const running = useRef(false);
-  // Whether you have picked a conversation yourself. See the effect below.
-  const chosen = useRef(false);
+  // StrictMode replays effects; one loaded app still creates just one chat.
+  const initialized = useRef(false);
+  const creating = useRef<Promise<string | null> | null>(null);
 
   const q = surface === "desktop" ? "" : `?surface=${surface}`;
   const reload = useCallback(() => setNonce((n) => n + 1), []);
@@ -192,42 +192,38 @@ export function useChat(surface: Surface = "desktop"): ChatState {
 
   /** Leaving a conversation drops the turn on screen with it. */
   const open = useCallback((id: string | null) => {
-    chosen.current = true;
     setOpenId(id);
     setLive(null);
   }, []);
 
-  /**
-   * Land in the newest conversation rather than on an empty canvas.
-   *
-   * Once, and only before you have navigated: `chosen` is what stops it
-   * dragging you back into a thread the moment you press the back link, which
-   * is what a plain `openId ?? conversations[0]` would do on every render.
-   */
-  useEffect(() => {
-    if (chosen.current || openId || !list?.conversations.length) return;
-    chosen.current = true;
-    setOpenId(list.conversations[0]!.id);
-  }, [list, openId]);
+  const start = useCallback(() => {
+    if (creating.current) return creating.current;
+    const request = fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" } })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`the server answered ${response.status}`);
+        const { conversationId } = (await response.json()) as { conversationId: string };
+        setFailure(null);
+        setLive(null);
+        setOpenId(conversationId);
+        reload();
+        return conversationId;
+      })
+      .catch((error: unknown) => {
+        setFailure(error instanceof Error ? error.message : String(error));
+        return null;
+      })
+      .finally(() => { creating.current = null; });
+    creating.current = request;
+    return request;
+  }, [reload]);
 
-  const start = useCallback(
-    () =>
-      fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" } })
-        .then(async (response) => {
-          if (!response.ok) throw new Error(`the server answered ${response.status}`);
-          const { conversationId } = (await response.json()) as { conversationId: string };
-          chosen.current = true;
-          setLive(null);
-          setOpenId(conversationId);
-          reload();
-          return conversationId;
-        })
-        .catch((error: unknown) => {
-          setFailure(error instanceof Error ? error.message : String(error));
-          return null;
-        }),
-    [reload],
-  );
+  // Never restore the server's newest chat on load. Navigation keeps this hook
+  // mounted; a browser refresh gives it a fresh lifetime and a fresh conversation.
+  useEffect(() => {
+    if (initialized.current) return;
+    initialized.current = true;
+    void start();
+  }, [start]);
 
   const send = useCallback(
     (text: string, into?: string) => {
@@ -238,10 +234,10 @@ export function useChat(surface: Surface = "desktop"): ChatState {
 
       void (async () => {
         try {
-          // "latest" rather than an id when nothing is open: the ask dock sends
-          // from a screen that has never loaded a conversation, and the server
-          // starting one is a round trip this does not have to make.
-          const target = into ?? openId ?? "latest";
+          const target = into ?? openId ?? await start();
+          if (!target) throw new Error("Could not start a conversation");
+          // Creating the conversation clears live state; restore this first turn.
+          if (!into && !openId) setLive({ ...EMPTY, asked: said });
           const response = await fetch(`/api/chat/${encodeURIComponent(target)}/messages`, {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -269,7 +265,7 @@ export function useChat(surface: Surface = "desktop"): ChatState {
         }
       })();
     },
-    [openId, reload],
+    [openId, reload, start],
   );
 
   /**
@@ -293,17 +289,19 @@ export function useChat(surface: Surface = "desktop"): ChatState {
     [reload],
   );
 
+  const currentPayload = payload?.conversationId === openId ? payload : null;
+
   return {
     status: failure ? "error" : list ? "ready" : "loading",
     message: failure ?? "",
     conversations: list?.conversations ?? [],
     openId,
-    title: payload?.title ?? null,
-    stored: payload?.turns ?? [],
-    model: payload?.model ?? null,
-    voiceInvoked: Boolean(payload?.voiceInvoked),
-    lede: (payload ?? list)?.lede ?? "",
-    restraint: (payload ?? list)?.restraint ?? null,
+    title: currentPayload?.title ?? null,
+    stored: currentPayload?.turns ?? [],
+    model: currentPayload?.model ?? null,
+    voiceInvoked: Boolean(currentPayload?.voiceInvoked),
+    lede: (currentPayload ?? list)?.lede ?? "",
+    restraint: (currentPayload ?? list)?.restraint ?? null,
     waiting: list?.waiting ?? 0,
     live,
     open,

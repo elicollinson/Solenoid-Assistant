@@ -216,12 +216,12 @@ describe("one workflow", () => {
   test("the logs pane shows original arguments and complete structured records", () => {
     const run = structuredClone(detail("vendor-reconciliation").executions[0]!);
     run.detail!.logs = [{ t: "10:00:00.000", level: "info",
-      text: '[tool] github_find_issues({"terms":["Notion authentication"]})',
-      record: { arguments: { terms: ["Notion authentication"] }, result: { issues: [{ number: 123, body: "Original issue body" }] }, payload: { custom: "stored-detail" } },
+      text: '[tool] github_find_issues({"terms":["Provider authentication"]})',
+      record: { arguments: { terms: ["Provider authentication"] }, result: { issues: [{ number: 123, body: "Original issue body" }] }, payload: { custom: "stored-detail" } },
     }];
     const markup = renderToStaticMarkup(<LogsPane run={run} nonce={0} />);
     expect(markup).toContain("github_find_issues");
-    expect(markup).toContain("Notion authentication");
+    expect(markup).toContain("Provider authentication");
     expect(markup).toContain("Original issue body");
     expect(markup).toContain("stored-detail");
     expect(markup).not.toContain("[arguments redacted]");

@@ -21,6 +21,7 @@ FROM deps AS web
 WORKDIR /app
 COPY tsconfig.json ./
 COPY web ./web
+COPY src/shared ./src/shared
 RUN bun run build:web
 
 # ── runtime dependencies only ───────────────────────────────────────────────

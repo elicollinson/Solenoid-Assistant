@@ -78,12 +78,6 @@ const runtimeConfigSchema = z.object({
     (value) => (value === "" ? undefined : value),
     z.coerce.number().int().min(100).max(60_000).default(5_000),
   ),
-  NOTION_API_TOKEN: optionalEnvString,
-  NOTION_DS_BOOKS: optionalEnvString,
-  NOTION_DS_MOVIES: optionalEnvString,
-  NOTION_DS_TV: optionalEnvString,
-  NOTION_DS_MUSIC: optionalEnvString,
-  NOTION_DS_GAMES: optionalEnvString,
   TAVILY_API_KEY: optionalEnvString,
   GEMINI_API_KEY: optionalEnvString,
   GEMINI_LIVE_MODEL: optionalEnvString.default("models/gemini-3.1-flash-live-preview"),
@@ -141,16 +135,6 @@ export interface RuntimeConfig {
       flushMs: number;
       queueLimit: number;
       timeoutMs: number;
-    };
-  };
-  notion: {
-    apiToken?: string;
-    dataSourceIds: {
-      book?: string;
-      movie?: string;
-      tv?: string;
-      music?: string;
-      game?: string;
     };
   };
   tavily: {
@@ -296,16 +280,6 @@ export function loadRuntimeConfig(
         timeoutMs: parsed.VICTORIALOGS_TIMEOUT_MS,
       },
     },
-    notion: {
-      ...(parsed.NOTION_API_TOKEN ? { apiToken: parsed.NOTION_API_TOKEN } : {}),
-      dataSourceIds: {
-        ...(parsed.NOTION_DS_BOOKS ? { book: parsed.NOTION_DS_BOOKS } : {}),
-        ...(parsed.NOTION_DS_MOVIES ? { movie: parsed.NOTION_DS_MOVIES } : {}),
-        ...(parsed.NOTION_DS_TV ? { tv: parsed.NOTION_DS_TV } : {}),
-        ...(parsed.NOTION_DS_MUSIC ? { music: parsed.NOTION_DS_MUSIC } : {}),
-        ...(parsed.NOTION_DS_GAMES ? { game: parsed.NOTION_DS_GAMES } : {}),
-      },
-    },
     tavily: {
       ...(parsed.TAVILY_API_KEY ? { apiKey: parsed.TAVILY_API_KEY } : {}),
     },
@@ -317,30 +291,4 @@ export function loadRuntimeConfig(
       voice: parsed.GEMINI_VOICE,
     },
   };
-}
-
-export function requireNotionDataSourceIds(
-  config: RuntimeConfig,
-): Required<RuntimeConfig["notion"]["dataSourceIds"]> {
-  const ids = config.notion.dataSourceIds;
-  const missing = (
-    [
-      ["book", "NOTION_DS_BOOKS"],
-      ["movie", "NOTION_DS_MOVIES"],
-      ["tv", "NOTION_DS_TV"],
-      ["music", "NOTION_DS_MUSIC"],
-      ["game", "NOTION_DS_GAMES"],
-    ] as const
-  )
-    .filter(([key]) => !ids[key])
-    .map(([, envName]) => envName);
-
-  if (missing.length > 0) {
-    throw new Error(
-      `Notion data source IDs not set in .env: ${missing.join(", ")}. ` +
-        "Set these to the database IDs from your Notion gallery databases.",
-    );
-  }
-
-  return ids as Required<typeof ids>;
 }

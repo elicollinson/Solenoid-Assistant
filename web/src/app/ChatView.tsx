@@ -9,7 +9,7 @@ import {
   StatusMark,
 } from "../kit";
 import { echoed, spoken, useFollowBottom, type ChatState } from "./chat";
-import { useVoiceMode } from "./useVoiceMode";
+import type { VoiceModeState } from "./useVoiceMode";
 
 /**
  * Talking to the agent, on the desktop.
@@ -24,14 +24,10 @@ import { useVoiceMode } from "./useVoiceMode";
  * prose, and prose at 900px is unreadable — the same decision the reminders
  * lede makes with the same empty half.
  */
-export function ChatView({ chat }: { chat: ChatState }) {
+export function ChatView({ chat, voice }: { chat: ChatState; voice: VoiceModeState }) {
   const { box, content } = useFollowBottom();
   const live = chat.live;
   const open = Boolean(chat.openId);
-  const voice = useVoiceMode({
-    conversationId: chat.openId,
-    onTurnComplete: chat.reload,
-  });
 
   return (
     <>

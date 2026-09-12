@@ -135,10 +135,10 @@ test("crashed reservations become unknown, never reclaimable", async () => {
   expect(messages).toHaveLength(0);
 });
 
-test("migration backfills open dated reminders, excluding closed and Someday", async () => {
+for (const predecessor of [8, 10]) test(`migration from ${predecessor} backfills open dated reminders, excluding closed and Someday`, async () => {
   const folder = join(dir, "old-migrations"); mkdirSync(join(folder, "meta"), { recursive: true });
   const journal = JSON.parse(readFileSync("drizzle/meta/_journal.json", "utf8"));
-  journal.entries = journal.entries.filter((e: { idx: number }) => e.idx <= 8);
+  journal.entries = journal.entries.filter((e: { idx: number }) => e.idx <= predecessor);
   writeFileSync(join(folder, "meta/_journal.json"), JSON.stringify(journal));
   for (const entry of journal.entries) copyFileSync(`drizzle/${entry.tag}.sql`, join(folder, `${entry.tag}.sql`));
   const previous = createDb(join(dir, "previous.db"));

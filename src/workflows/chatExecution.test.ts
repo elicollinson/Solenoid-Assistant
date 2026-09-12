@@ -288,7 +288,7 @@ test("chat guidance reaches the real log agent without narrowing coverage or com
     { _time: new Date(Date.now() - 120000).toISOString(), service: "api", level: "warn", _msg: "Transient retry recovered" },
     { _time: new Date(Date.now() - 120000).toISOString(), service: "quiet", level: "info", _msg: "Heartbeat healthy" },
   ];
-  const load = spyOn(config, "loadMonitorConfig").mockReturnValue(config.loadMonitorConfig({ LOG_MONITOR_ENABLED: "true", LOG_MONITOR_GITHUB_REPOSITORY: "test/repo" }));
+  const load = spyOn(config, "loadMonitorConfig").mockReturnValue(config.loadMonitorConfig({ LOG_MONITOR_GITHUB_TOKEN: "fixture-token", LOG_MONITOR_GITHUB_REPOSITORY: "test/repo" }));
   const query = spyOn(queries, "runRawQuery").mockImplementation(async (text, options) => {
     expect(text).toMatch(/^_time:\[/);
     expect(text).not.toMatch(/service:|level:/);

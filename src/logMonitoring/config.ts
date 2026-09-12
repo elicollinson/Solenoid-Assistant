@@ -15,7 +15,7 @@ const schema = z.object({
 export type MonitorConfig = z.infer<typeof schema>;
 export function loadMonitorConfig(env = process.env): MonitorConfig {
   return schema.parse({
-    enabled: env.LOG_MONITOR_ENABLED === "true",
+    enabled: env.LOG_MONITOR_ENABLED !== "false",
     repository: env.LOG_MONITOR_GITHUB_REPOSITORY || "elicollinson/Solenoid-Assistant",
     token: env.LOG_MONITOR_GITHUB_TOKEN || "",
     lookbackMinutes: env.LOG_MONITOR_LOOKBACK_MINUTES || undefined,

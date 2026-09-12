@@ -17,7 +17,8 @@ export async function scanLogs(args: { dryRun?: boolean }, options: {
 }) {
   const config = options.config ?? loadMonitorConfig();
   const dryRun = args.dryRun ?? false;
-  if (!config.enabled && !dryRun) return { enabled: false, message: "Set LOG_MONITOR_ENABLED=true to enable scheduled incident scans." };
+  if (!config.enabled && !dryRun) return { enabled: false, message: "Log monitoring is explicitly disabled by LOG_MONITOR_ENABLED=false; no scan was performed." };
+  if (!options.github && !config.token) throw new Error("LOG_MONITOR_GITHUB_TOKEN is required; supply GitHub Issues read/write credentials with the deployment.");
   const now = options.now ?? Date.now();
   const endpoint = options.endpoint ?? loadRuntimeConfig().logging.victoriaLogs.endpoint;
   const state = new MonitorState(options.db ?? getDb(), digest(`${endpoint}\n${config.repository}`));

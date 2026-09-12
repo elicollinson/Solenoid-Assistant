@@ -47,7 +47,7 @@ async function call(tools: AgentTool[], name: string, args: unknown = {}) {
   return await tool.execute(tool.schema.parse(args)) as any;
 }
 const incident = (ids: string[]) => ({ evidenceIds: ids, title: "Database outage causes downstream failures", summary: "Database connection failures coincide with API and frontend unavailability.", observedImpact: "API and frontend report upstream failures; user impact is unknown.", suggestedInvestigation: "Inspect database availability and dependency configuration.", existingIssueNumber: null });
-const config = loadMonitorConfig({ LOG_MONITOR_ENABLED: "true", LOG_MONITOR_GITHUB_REPOSITORY: "test/repo" });
+const config = loadMonitorConfig({ LOG_MONITOR_GITHUB_REPOSITORY: "test/repo" });
 const scope = digest("test-endpoint\ntest/repo");
 const options = (github: GitHubIssues) => ({ db, now, endpoint: "test-endpoint", config, query: queryFor(records), github, signal: new AbortController().signal });
 async function analyze(tools: AgentTool[]) {
@@ -225,4 +225,36 @@ test("normal Agent consent denial prevents writes and scan completion", async ()
   } }))).rejects.toThrow("denied or deferred");
   expect(fake.count()).toBe(0);
   expect(new MonitorState(db, scope).acquire(now + 1000).completedTo).toBeNull();
+});
+
+
+test("monitoring defaults enabled and retains explicit false as the operational opt-out", () => {
+  expect(loadMonitorConfig({}).enabled).toBe(true);
+  expect(loadMonitorConfig({ LOG_MONITOR_ENABLED: "" }).enabled).toBe(true);
+  expect(loadMonitorConfig({ LOG_MONITOR_ENABLED: "true" }).enabled).toBe(true);
+  expect(loadMonitorConfig({ LOG_MONITOR_ENABLED: "false" }).enabled).toBe(false);
+});
+
+test("explicit opt-out skips collection and state writes but permits an optional preview", async () => {
+  const fake = fakeGitHub();
+  const disabled = loadMonitorConfig({ LOG_MONITOR_ENABLED: "false", LOG_MONITOR_GITHUB_REPOSITORY: "test/repo" });
+  const result = await scanLogs({}, { ...options(fake.github), config: disabled,
+    query: async () => { throw new Error("Disabled scans must not query logs"); },
+    analyze: async () => { throw new Error("Disabled scans must not call the model"); },
+  });
+  expect(result).toEqual({ enabled: false, message: "Log monitoring is explicitly disabled by LOG_MONITOR_ENABLED=false; no scan was performed." });
+  expect(db.$client.query("SELECT count(*) AS n FROM log_monitor_scans").get()).toEqual({ n: 0 });
+  const preview = await scanLogs({ dryRun: true }, { ...options(fake.github), config: disabled, analyze });
+  expect(preview.records).toBe(4);
+  expect(preview.checkpointAdvanced).toBe(false);
+  expect(fake.count()).toBe(0);
+});
+
+test("missing GitHub credentials fail enabled scans and previews without advancing state", async () => {
+  for (const dryRun of [false, true]) {
+    await expect(scanLogs({ dryRun }, { ...options(fakeGitHub().github), github: undefined,
+      query: async () => { throw new Error("Check credentials before querying logs"); },
+    })).rejects.toThrow("LOG_MONITOR_GITHUB_TOKEN is required");
+  }
+  expect(db.$client.query("SELECT count(*) AS n FROM log_monitor_scans").get()).toEqual({ n: 0 });
 });

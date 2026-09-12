@@ -90,6 +90,14 @@ function when(at: Date): string {
 }
 
 const WORKFLOWS: readonly RunnableWorkflow[] = [
+  define({ slug: "okf-reflection", schema: z.object({}), execute: async (_args, context) => {
+    if (process.env.DREAM_ENABLED !== "true") throw new Error("Memory reflection is disabled; configure DREAM_ENABLED explicitly");
+    const { historyRuntime } = await import("../writeHistory/runtime");
+    const { DreamWorkflow } = await import("./dream");
+    context.signal.throwIfAborted();
+    const output = await new DreamWorkflow(historyRuntime()).run(context.signal);
+    return { output, effects: [`Prepared ${output.proposals.length} review proposals; no memories changed.`], prose: ["Review the proposals in Write history & dreams before applying any changes."] };
+  } }),
   define({
     slug: "log-monitoring",
     schema: z.object({ dryRun: z.preprocess(value => value === "true" ? true : value === "false" || value === "" ? false : value, z.boolean().default(false)) }),

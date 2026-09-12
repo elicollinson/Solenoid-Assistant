@@ -1,3 +1,4 @@
+import { auditDomain } from "../../core/writeExecution";
 // The Recommendations surface, written to.
 //
 // ../queries/recommendations.ts answers "what does this screen draw". This is
@@ -135,7 +136,7 @@ function checkWords(draft: { affirm?: string; quiet?: string }): void {
  * decision is written alongside it, because the affirm/quiet pair is a decision
  * like any other and the aside counts open decisions rather than statuses.
  */
-export function proposeRecommendation(db: Db, draft: RecommendationDraft, now: Date = new Date()): string {
+function proposeRecommendationImpl(db: Db, draft: RecommendationDraft, now: Date = new Date()): string {
   checkWords(draft);
   const title = draft.title.trim();
   if (!title) throw new Error("A suggestion needs a title: it is the thing you are being asked");
@@ -207,7 +208,7 @@ export function proposeRecommendation(db: Db, draft: RecommendationDraft, now: D
  * rather than merged — there is no sensible way to patch the third paragraph of
  * an argument in place.
  */
-export function reviseRecommendation(
+function reviseRecommendationImpl(
   db: Db,
   id: string,
   patch: RecommendationRevision,
@@ -286,7 +287,7 @@ export interface Answer {
  * which of the two words you pressed — so the object can still say what you were
  * offered and what you picked, long after the buttons are gone from the screen.
  */
-export function answerRecommendation(
+function answerRecommendationImpl(
   db: Db,
   id: string,
   stance: "adopted" | "declined",
@@ -358,7 +359,7 @@ export function answerRecommendation(
  *
  * The decision is dismissed rather than resolved — nobody answered it.
  */
-export function withdrawRecommendation(
+function withdrawRecommendationImpl(
   db: Db,
   id: string,
   because?: string,
@@ -376,7 +377,7 @@ export function withdrawRecommendation(
  * `supersedes` edge points from the new one at it, so the newer suggestion can
  * show what it grew out of instead of appearing from nowhere.
  */
-export function supersedeRecommendation(
+function supersedeRecommendationImpl(
   db: Db,
   id: string,
   byId: string,
@@ -437,7 +438,7 @@ function settle(t: Tx, row: Row, status: "withdrawn" | "superseded", because: st
  * orphan and `v_needs_you` keeps drawing an open question about a suggestion
  * nothing can open.
  */
-export function forgetRecommendation(db: Db, id: string): void {
+function forgetRecommendationImpl(db: Db, id: string): void {
   const row = require_(db, id);
   db.transaction((t) => {
     const decisions = t
@@ -482,7 +483,7 @@ export interface Citation {
  *
  * Answers with how many citations are now on the suggestion.
  */
-export function citeForRecommendation(
+function citeForRecommendationImpl(
   db: Db,
   id: string,
   citations: readonly Citation[],
@@ -600,4 +601,32 @@ function writeWords(t: Tx, id: string, decisionId: string, affirm: string, quiet
       })
       .run();
   });
+}
+
+export function proposeRecommendation(...args: Parameters<typeof proposeRecommendationImpl>): ReturnType<typeof proposeRecommendationImpl> {
+  return auditDomain("recommendations_proposeRecommendation", () => proposeRecommendationImpl(...args), args[1]);
+}
+
+export function reviseRecommendation(...args: Parameters<typeof reviseRecommendationImpl>): ReturnType<typeof reviseRecommendationImpl> {
+  return auditDomain("recommendations_reviseRecommendation", () => reviseRecommendationImpl(...args), args[1]);
+}
+
+export function answerRecommendation(...args: Parameters<typeof answerRecommendationImpl>): ReturnType<typeof answerRecommendationImpl> {
+  return auditDomain("recommendations_answerRecommendation", () => answerRecommendationImpl(...args), args[1]);
+}
+
+export function withdrawRecommendation(...args: Parameters<typeof withdrawRecommendationImpl>): ReturnType<typeof withdrawRecommendationImpl> {
+  return auditDomain("recommendations_withdrawRecommendation", () => withdrawRecommendationImpl(...args), args[1]);
+}
+
+export function supersedeRecommendation(...args: Parameters<typeof supersedeRecommendationImpl>): ReturnType<typeof supersedeRecommendationImpl> {
+  return auditDomain("recommendations_supersedeRecommendation", () => supersedeRecommendationImpl(...args), args[1]);
+}
+
+export function forgetRecommendation(...args: Parameters<typeof forgetRecommendationImpl>): ReturnType<typeof forgetRecommendationImpl> {
+  return auditDomain("recommendations_forgetRecommendation", () => forgetRecommendationImpl(...args), args[1]);
+}
+
+export function citeForRecommendation(...args: Parameters<typeof citeForRecommendationImpl>): ReturnType<typeof citeForRecommendationImpl> {
+  return auditDomain("recommendations_citeForRecommendation", () => citeForRecommendationImpl(...args), args[1]);
 }

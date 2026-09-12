@@ -1,3 +1,4 @@
+import { auditDomain } from "../../core/writeExecution";
 // The Calendar surface, written to.
 //
 // ../queries/calendar.ts answers "what does the week draw". This is the other
@@ -214,7 +215,7 @@ function writeAccount(t: Tx, subjectId: string, account: readonly string[], now:
  * by when the thing happens. That is how the seed mints them and how anything
  * reading a range of ids will expect them to read.
  */
-export function createCalendarItem(db: Db, draft: CalendarDraft, now: Date = new Date()): string {
+function createCalendarItemImpl(db: Db, draft: CalendarDraft, now: Date = new Date()): string {
   const title = draft.title.trim();
   if (!title) throw new Error("A calendar item needs a title: it is the thing you are being asked to be at");
   checkSpan(draft.startsAt, draft.endsAt);
@@ -287,7 +288,7 @@ export interface Move {
  * A move with no new end keeps the length it had, because "put the review an
  * hour later" is not "make the review shorter".
  */
-export function rescheduleCalendarItem(db: Db, id: string, move: Move, now: Date = new Date()): void {
+function rescheduleCalendarItemImpl(db: Db, id: string, move: Move, now: Date = new Date()): void {
   const row = requireWritable(db, id, "reschedule");
   checkSpan(move.startsAt, move.endsAt);
 
@@ -325,7 +326,7 @@ export function rescheduleCalendarItem(db: Db, id: string, move: Move, now: Date
  * Cancelling a held slot releases it as a consequence: an offer nobody can take
  * up any more is released, and the holds table is where that is recorded.
  */
-export function cancelCalendarItem(
+function cancelCalendarItemImpl(
   db: Db,
   id: string,
   reason: { by?: (typeof s.AUTHOR)[number]; because?: string } = {},
@@ -354,7 +355,7 @@ export function cancelCalendarItem(
  * who changed. Anybody left out is uninvited, which is the honest reading of a
  * list that no longer names them.
  */
-export function setCalendarAttendees(
+function setCalendarAttendeesImpl(
   db: Db,
   id: string,
   attendees: readonly AttendeeDraft[],
@@ -407,7 +408,7 @@ export interface HoldOffer {
  * Answers with the group and the ids it minted, in the order the windows were
  * given.
  */
-export function offerCalendarHolds(
+function offerCalendarHoldsImpl(
   db: Db,
   offer: HoldOffer,
   now: Date = new Date(),
@@ -459,4 +460,24 @@ export function offerCalendarHolds(
 
     return { holdGroupId, ids };
   });
+}
+
+export function createCalendarItem(...args: Parameters<typeof createCalendarItemImpl>): ReturnType<typeof createCalendarItemImpl> {
+  return auditDomain("calendar_createCalendarItem", () => createCalendarItemImpl(...args), args[1]);
+}
+
+export function rescheduleCalendarItem(...args: Parameters<typeof rescheduleCalendarItemImpl>): ReturnType<typeof rescheduleCalendarItemImpl> {
+  return auditDomain("calendar_rescheduleCalendarItem", () => rescheduleCalendarItemImpl(...args), args[1]);
+}
+
+export function cancelCalendarItem(...args: Parameters<typeof cancelCalendarItemImpl>): ReturnType<typeof cancelCalendarItemImpl> {
+  return auditDomain("calendar_cancelCalendarItem", () => cancelCalendarItemImpl(...args), args[1]);
+}
+
+export function setCalendarAttendees(...args: Parameters<typeof setCalendarAttendeesImpl>): ReturnType<typeof setCalendarAttendeesImpl> {
+  return auditDomain("calendar_setCalendarAttendees", () => setCalendarAttendeesImpl(...args), args[1]);
+}
+
+export function offerCalendarHolds(...args: Parameters<typeof offerCalendarHoldsImpl>): ReturnType<typeof offerCalendarHoldsImpl> {
+  return auditDomain("calendar_offerCalendarHolds", () => offerCalendarHoldsImpl(...args), args[1]);
 }

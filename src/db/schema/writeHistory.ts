@@ -30,3 +30,7 @@ export const writeReconciliations = sqliteTable("write_reconciliations", {
   operationId: text().primaryKey(), root: text().notNull(),
   concepts: json<string[]>().notNull(), state: text().notNull(),
 });
+export const dreamCheckpoints = sqliteTable("dream_checkpoints", {
+  root: text().primaryKey(), cursor: integer().notNull().default(0),
+  hashes: json<Record<string, string>>().notNull(),
+});

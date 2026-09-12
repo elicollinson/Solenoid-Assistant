@@ -1,3 +1,4 @@
+import { knowledgeIndex } from "../knowledgeSearch/runtime";
 import { join } from "node:path";
 import { getDb, type Db } from "../db";
 import { configureFileMutation, configureRowMutation, configureWriteExecution } from "../core/writeExecution";
@@ -9,11 +10,13 @@ import { RowHistory } from "./rows";
 export function createHistoryRuntime(db: Db, root: string, key?: Buffer,
   refresh?: (root: string, concepts: string[]) => Promise<void>) {
   const history = new WriteHistory(db, key);
-  const files = new FileHistory(history, refresh ?? (async (root) => {
+  const index = knowledgeIndex(root, () => db);
+  const files = new FileHistory(history, refresh ?? (async (root, concepts) => {
     const result = await reindexOkf(db, { root });
     if (result.problems.length) throw new Error("Knowledge refresh incomplete");
+    knowledgeIndex(root, () => db).reconcile({ enroll: concepts });
   }));
-  return { history, files, rows: new RowHistory(history), root, captureEnabled: !!key };
+  return { history, files, rows: new RowHistory(history), root, neighbors: async (id: string, sha: string, limit: number) => index.neighbors(id, sha, limit), captureEnabled: !!key };
 }
 export type HistoryRuntime = ReturnType<typeof createHistoryRuntime>;
 let runtime: HistoryRuntime | undefined;

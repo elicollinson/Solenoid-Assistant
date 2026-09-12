@@ -161,6 +161,7 @@ function field(
 }
 
 export const WORKFLOW_CATALOG: readonly WorkflowCatalogEntry[] = [
+  { slug: "okf-reflection", name: "Memory reflection", description: "Prepare reviewed links and source overviews. Never applies memory changes on a schedule.", trigger: "on_demand", cadence: "On demand", rrule: null, permissions: [{ capability: "okf.write", mode: "ask" }], inputs: [] },
   {
     slug: "log-monitoring",
     name: "Service log monitoring",

@@ -1,3 +1,9 @@
+CREATE TABLE `dream_checkpoints` (
+  `root` text PRIMARY KEY NOT NULL,
+  `cursor` integer DEFAULT 0 NOT NULL,
+  `hashes` text NOT NULL
+) STRICT;
+--> statement-breakpoint
 CREATE TABLE `write_events` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`operation_id` text NOT NULL,

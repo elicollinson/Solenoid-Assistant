@@ -63,6 +63,7 @@ export class WriteHistory implements WriteRecorder {
   events(id: string) {
     return this.db.$client.query("SELECT kind,code,at FROM write_events WHERE operation_id=? ORDER BY id").all(id);
   }
+  targets(id: string, targets: string[]) { for (const target of targets) this.event(id, "target", target); }
   encrypt(value: unknown): string {
     if (!this.key) throw new HistoryUnavailable("Set WRITE_HISTORY_KEY to enable captured changes and undo");
     const bytes = Buffer.from(JSON.stringify(value));
@@ -110,7 +111,7 @@ export class WriteHistory implements WriteRecorder {
       .run(operationId, id, digest, this.now());
     if (!result.changes) throw new HistoryConflict("Plan was changed, expired, or already applied");
   }
-  markPlan(id: string, state: string): void { this.db.$client.query("UPDATE write_plans SET state=? WHERE id=?").run(state, id); }
+  markPlan(id: string, state: string): void { this.db.$client.query("UPDATE write_plans SET state=?,expires_at=CASE WHEN ?='rejected' THEN ? ELSE expires_at END WHERE id=?").run(state, state, this.now() + 30 * 86400_000, id); }
   inverse(id: string, original: string): void { this.db.$client.query("UPDATE write_operations SET inverse_of=? WHERE id=?").run(original, id); }
   prune(): void {
     // Unknown/partial in-flight changes stay pinned until explicitly recovered.

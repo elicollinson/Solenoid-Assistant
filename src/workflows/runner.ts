@@ -1,3 +1,4 @@
+import { newWriteCall, withWriteCall } from "../core/writeExecution";
 // Starting a workflow, and writing down what it did.
 //
 // The run row exists before the work does. That ordering is the whole design:
@@ -300,7 +301,7 @@ function execute(
     // remember would be a hole exactly where a hole is least affordable.
     () => withRunPermissions(
       { db, workflowId, runId, slug: runnable.slug },
-      () => run(db, runId, runnable, args, ordinal, signal, guidance),
+      () => withWriteCall(newWriteCall({ origin: "workflow", actor: "agent", runId, workflowId }), () => run(db, runId, runnable, args, ordinal, signal, guidance)),
     ),
   );
 }

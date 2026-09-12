@@ -1,3 +1,4 @@
+import { auditDomain } from "../../core/writeExecution";
 import { rowMutationHandler } from "../../core/writeExecution";
 // The Reminders surface, written to.
 //
@@ -159,7 +160,7 @@ function closedAs(row: Row): string {
  * that says the reminder wants you rather than merely existing, and it is worth
  * the caller having to choose it.
  */
-export function createReminder(db: Db, draft: ReminderDraft, now: Date = new Date()): string {
+function createReminderImpl(db: Db, draft: ReminderDraft, now: Date = new Date()): string {
   const title = draft.title.trim();
   if (!title) throw new Error("A reminder needs a title: it is the thing to be done");
 
@@ -211,7 +212,7 @@ export function createReminder(db: Db, draft: ReminderDraft, now: Date = new Dat
  * merged — there is no sensible way to patch the third paragraph of an
  * explanation in place.
  */
-export function reviseReminder(db: Db, id: string, patch: ReminderRevision, now: Date = new Date(), captured = false): void {
+function reviseReminderImpl(db: Db, id: string, patch: ReminderRevision, now: Date = new Date(), captured = false): void {
   const history = !captured && rowMutationHandler();
   const keys = Object.keys(patch).filter(k => patch[k as keyof ReminderRevision] !== undefined);
   if (history && keys.length && keys.every(k => ["title", "dueAt", "allDay"].includes(k))) {
@@ -251,7 +252,7 @@ export function reviseReminder(db: Db, id: string, patch: ReminderRevision, now:
  * off it is resolved rather than dismissed: something got done, so the thing it
  * was waiting on has an answer.
  */
-export function completeReminder(
+function completeReminderImpl(
   db: Db,
   id: string,
   closing: ReminderClosing = {},
@@ -274,7 +275,7 @@ export function completeReminder(
  * The question hanging off it, if there is one, is dismissed rather than
  * resolved: nobody answered it.
  */
-export function dismissReminder(
+function dismissReminderImpl(
   db: Db,
   id: string,
   because: string,
@@ -377,4 +378,20 @@ function writeProse(
 function writeMeta(t: Tx, id: string, pairs: readonly MetaPair[] | undefined): void {
   if (pairs === undefined) return;
   writeAttributePairs(t, id, "meta", pairs);
+}
+
+export function createReminder(...args: Parameters<typeof createReminderImpl>): ReturnType<typeof createReminderImpl> {
+  return auditDomain("reminders_createReminder", () => createReminderImpl(...args), args[1]);
+}
+
+export function reviseReminder(...args: Parameters<typeof reviseReminderImpl>): ReturnType<typeof reviseReminderImpl> {
+  return auditDomain("reminders_reviseReminder", () => reviseReminderImpl(...args), args[1]);
+}
+
+export function completeReminder(...args: Parameters<typeof completeReminderImpl>): ReturnType<typeof completeReminderImpl> {
+  return auditDomain("reminders_completeReminder", () => completeReminderImpl(...args), args[1]);
+}
+
+export function dismissReminder(...args: Parameters<typeof dismissReminderImpl>): ReturnType<typeof dismissReminderImpl> {
+  return auditDomain("reminders_dismissReminder", () => dismissReminderImpl(...args), args[1]);
 }

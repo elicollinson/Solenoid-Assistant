@@ -1,3 +1,4 @@
+import { auditDomain } from "../../core/writeExecution";
 // The Workflows surface, written to.
 //
 // Everything under ../queries answers "what does this screen draw". This is the
@@ -79,7 +80,7 @@ export interface PauseOptions extends Authorship {
  * timestamp is the answer to "since when", and answering it again with today's
  * date would lose the only fact it carries.
  */
-export function setWorkflowPaused(
+function setWorkflowPausedImpl(
   db: Db,
   slug: string,
   paused: boolean,
@@ -110,7 +111,7 @@ export function setWorkflowPaused(
  * the way it was set up" is the absence of an instruction, not an instruction
  * saying so.
  */
-export function setWorkflowInstructions(
+function setWorkflowInstructionsImpl(
   db: Db,
   slug: string,
   text: string,
@@ -165,7 +166,7 @@ export function setWorkflowInstructions(
  * a superseded summary is not part of why any run did anything. Empty text
  * removes it, and the pane draws nothing rather than a stale line.
  */
-export function setWorkflowSummary(db: Db, slug: string, text: string, now: Date = new Date()): void {
+function setWorkflowSummaryImpl(db: Db, slug: string, text: string, now: Date = new Date()): void {
   const workflow = require_(db, slug);
   const trimmed = text.trim();
 
@@ -221,7 +222,7 @@ export interface ScheduleChange {
  * "Unscheduled" while the reason it stopped running went unrecorded; the way to
  * stop a workflow is `setWorkflowPaused`, which says who did it and when.
  */
-export function setWorkflowSchedule(db: Db, slug: string, change: ScheduleChange, now: Date = new Date()): void {
+function setWorkflowScheduleImpl(db: Db, slug: string, change: ScheduleChange, now: Date = new Date()): void {
   const workflow = require_(db, slug);
   const rrule = change.rrule.trim();
   const cadence = change.cadence.trim();
@@ -290,7 +291,7 @@ export interface PermissionGrant extends Authorship {
  * everything at once, which is not a thing to reach through a tool pointed at
  * one workflow.
  */
-export function grantWorkflowPermission(
+function grantWorkflowPermissionImpl(
   db: Db,
   slug: string,
   grant: PermissionGrant,
@@ -329,7 +330,7 @@ export function grantWorkflowPermission(
  * absence of one. Use `grantWorkflowPermission` with mode "deny" to refuse
  * something outright.
  */
-export function revokeWorkflowPermission(db: Db, slug: string, capability: string, now: Date = new Date()): void {
+function revokeWorkflowPermissionImpl(db: Db, slug: string, capability: string, now: Date = new Date()): void {
   const workflow = require_(db, slug);
   const wanted = capability.trim();
 
@@ -730,4 +731,28 @@ function argumentPairs(args: unknown): Pair[] {
     if (pairs.length >= 6) break;
   }
   return pairs;
+}
+
+export function setWorkflowPaused(...args: Parameters<typeof setWorkflowPausedImpl>): ReturnType<typeof setWorkflowPausedImpl> {
+  return auditDomain("workflows_setWorkflowPaused", () => setWorkflowPausedImpl(...args), args[1]);
+}
+
+export function setWorkflowInstructions(...args: Parameters<typeof setWorkflowInstructionsImpl>): ReturnType<typeof setWorkflowInstructionsImpl> {
+  return auditDomain("workflows_setWorkflowInstructions", () => setWorkflowInstructionsImpl(...args), args[1]);
+}
+
+export function setWorkflowSummary(...args: Parameters<typeof setWorkflowSummaryImpl>): ReturnType<typeof setWorkflowSummaryImpl> {
+  return auditDomain("workflows_setWorkflowSummary", () => setWorkflowSummaryImpl(...args), args[1]);
+}
+
+export function setWorkflowSchedule(...args: Parameters<typeof setWorkflowScheduleImpl>): ReturnType<typeof setWorkflowScheduleImpl> {
+  return auditDomain("workflows_setWorkflowSchedule", () => setWorkflowScheduleImpl(...args), args[1]);
+}
+
+export function grantWorkflowPermission(...args: Parameters<typeof grantWorkflowPermissionImpl>): ReturnType<typeof grantWorkflowPermissionImpl> {
+  return auditDomain("workflows_grantWorkflowPermission", () => grantWorkflowPermissionImpl(...args), args[1]);
+}
+
+export function revokeWorkflowPermission(...args: Parameters<typeof revokeWorkflowPermissionImpl>): ReturnType<typeof revokeWorkflowPermissionImpl> {
+  return auditDomain("workflows_revokeWorkflowPermission", () => revokeWorkflowPermissionImpl(...args), args[1]);
 }

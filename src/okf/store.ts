@@ -67,6 +67,7 @@ const GUARDED_KEYS = new Set([
   "stale_after",
   "generated",
   "verified",
+  "verification_stale",
   "okf_version",
 ]);
 
@@ -378,6 +379,7 @@ export class OkfStore {
       // *current* content was produced (§5.2). `verified` deliberately does
       // not move — content can change without re-confirmation.
       frontmatter.generated = { by: this.actor, at: isoDateTime(this.bundle.now()) };
+      if (concept.frontmatter.verified) frontmatter.verification_stale = true;
 
       await writeFileAtomic(conceptPath(this.bundle, id), serializeConcept({ frontmatter, body }));
       await regenerateIndexChain(this.bundle, parentDirId(id));

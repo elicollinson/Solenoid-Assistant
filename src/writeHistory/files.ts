@@ -65,6 +65,15 @@ export class FileHistory {
   constructor(readonly history: WriteHistory,
     readonly reconcile: (root: string, concepts: string[]) => Promise<void> = async () => {},
     readonly fault?: (point: string, index: number) => void) {}
+  async preview<T>(root: string, stage: (root: string) => Promise<T>) {
+    const dir = await mkdtemp(join(tmpdir(), "solenoid-preview-"));
+    try {
+      const before = await snapshot(root);
+      for (const [path, text] of before) await writeFileAtomic(safe(dir, path), text);
+      await stage(dir);
+      return delta(before, await snapshot(dir));
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  }
   private async root(root: string) {
     await mkdir(root, { recursive: true });
     if ((await lstat(root)).isSymbolicLink()) throw new HistoryConflict("Bundle root cannot be a symlink");
@@ -136,6 +145,7 @@ export class FileHistory {
       this.history.db.$client.query("INSERT OR REPLACE INTO write_reconciliations(operation_id,root,concepts,state) VALUES(?,?,?,'pending')")
         .run(id, record.root, JSON.stringify(concepts));
       this.history.outcome(id, "committed", "adapter:files_committed");
+      this.history.db.$client.query("UPDATE write_plans SET state='applied' WHERE applied_operation_id=? AND state IN ('applying','failed')").run(id);
     }).immediate();
     await this.refresh(id, record.root, concepts);
   }
@@ -150,6 +160,9 @@ export class FileHistory {
     for (const row of rows) await this.refresh(row.id, row.root, JSON.parse(row.concepts));
   }
   async recover(id: string) {
+    const state = this.history.get(id)?.execution;
+    if (state === "committed") return;
+    if (!["partial", "dispatch_started", "outcome_unknown"].includes(state ?? "")) throw new HistoryConflict("This operation does not need file recovery");
     const record = this.history.payload<FileRecord>(id, true);
     if (record.kind !== "okf-v1") throw new HistoryConflict("Unsupported recovery adapter");
     const root = await this.root(record.root);
@@ -203,6 +216,12 @@ export class FileHistory {
     const { withWriteCall } = await import("../core/writeExecution");
     try {
       await withWriteCall(call, () => this.mutate(plan.value.root, "human:user", "okf_undo", async root => {
+        const stageFiles = await snapshot(root);
+        const removing = new Set(plan.value.changes.filter(c => c.after === null).map(c => c.path.slice(0, -3)));
+        for (const [path, text] of stageFiles) {
+          if (!isConcept(path) || plan.value.changes.some(c => c.path === path)) continue;
+          if (conceptLinks(path.slice(0, -3), parseDocument(text).body).some(l => l.id && removing.has(l.id))) throw new HistoryConflict("A later reference prevents removal");
+        }
         for (const c of plan.value.changes) {
           const file = Bun.file(safe(root, c.path));
           if (!equal(await file.exists() ? await file.text() : null, c.before)) throw new HistoryConflict("Later edits prevent undo");

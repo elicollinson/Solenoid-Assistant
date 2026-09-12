@@ -26,6 +26,12 @@ export interface WriteCapabilityInfo {
 }
 
 export const KNOWN_WRITE_CAPABILITIES: readonly WriteCapabilityInfo[] = [
+  {
+    capability: "collections.write",
+    label: "Collections",
+    description: "Save screenshot discoveries and source receipts to Collections",
+    tools: ["collections_save_screenshot"],
+  },
   { capability: "github.write", label: "GitHub Incidents", description: "Create evidence-based log incident issues in the configured repository", tools: ["github_create_incident"] },
   {
     capability: "okf.write",
@@ -214,7 +220,10 @@ export const WORKFLOW_CATALOG: readonly WorkflowCatalogEntry[] = [
     cadence: "On demand",
     rrule: null,
     // Remote search tools use the MCP adapter's write permission gate.
-    permissions: [{ capability: "tavily.write", mode: "allow" }],
+    permissions: [
+      { capability: "tavily.write", mode: "allow" },
+      { capability: "collections.write", mode: "allow" },
+    ],
     inputs: [
       field("hoursBack", "Hours back", { kind: "number", default: 24 }),
       field("limit", "Most screenshots", {

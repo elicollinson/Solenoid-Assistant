@@ -78,6 +78,14 @@ The rollout order is:
    imported + skipped and verified counts against the snapshot. Browse Collections
    and export the result to check source records before considering cleanup.
 
+Screenshot saves are governed by `collections.write`: allow saves immediately,
+deny leaves both item and receipt unwritten, and ask records an approval during
+a workflow run. Direct invocations refuse ask without recording a decision.
+Migration 0009 copies the replaced Notion permission history for screenshot
+ingestion and global rules, preserving deny, ask, and revoked rules. Original
+permission rows remain for historical runs. Run `bun run db:sync-workflows`
+explicitly to seed defaults where no prior Collections rule exists.
+
 The Notion agents, clients, write endpoint, authentication scripts, credential
 configuration, and deferred-call fallback have all been removed. Old workflow
 rows may retain historical descriptions or permissions until explicitly reviewed

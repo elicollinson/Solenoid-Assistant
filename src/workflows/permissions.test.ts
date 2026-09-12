@@ -258,6 +258,7 @@ describe("what the catalog ships with", () => {
     expect(seeded.map((r) => `${r.slug}:${r.capability}=${r.mode}`).sort()).toEqual([
       "log-monitoring:github.write=allow",
       "message-extraction:okf.write=allow",
+      "screenshot-ingestion:collections.write=allow",
       "screenshot-ingestion:tavily.write=allow",
     ]);
   });

@@ -2,7 +2,9 @@ import { rejectCollectedPhoto } from "../sources/assets";
 import { createClassifierAgent } from "../agents/classifier";
 import { createContentCardSourcingAgent } from "../agents/contentCardSourcing";
 import { getDb, type Db } from "../db";
-import { collectionSourceExists, saveExtractedCollectionItem, type LocalIngestionResult } from "../db/mutations/collections";
+import { collectionSourceExists, type LocalIngestionResult } from "../db/mutations/collections";
+import { currentConsent } from "../core/consent";
+import { collectionWriteTool } from "./collectionWrite";
 import type { Collection } from "../shared/collections";
 import type { AgentResource } from "../agents/resource";
 import {
@@ -154,11 +156,20 @@ export async function ingestRecentScreenshots(
         contentCardSchema,
       ) as ContentCard;
 
-      const ingestion = saveExtractedCollectionItem(db, {
+      const write = collectionWriteTool(db);
+      const input = write.schema.parse({
         uuid: screenshot.uuid, filename: screenshot.filename, date: screenshot.date,
         path: screenshot.path, classification, contentCard,
         collection: classificationToCollection(classification.classification),
       });
+      const gate = currentConsent();
+      if (!gate) throw new Error("Collection saves require a workflow permission context");
+      const verdict = await gate({
+        tool: write.definition.function.name, kind: write.kind, args: input,
+        description: write.definition.function.description,
+      });
+      if (!verdict.allow) return { ...base, contentCard, status: "skipped", error: verdict.tell };
+      const ingestion = await write.execute(input) as LocalIngestionResult;
       return {
         ...base,
         contentCard,

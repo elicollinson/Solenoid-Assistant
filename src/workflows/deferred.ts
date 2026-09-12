@@ -28,6 +28,7 @@ import type { AgentTool } from "../core/tools";
 import { readDeferredWrite, settleDeferredWrite } from "../db/mutations/workflows";
 import { TOOL_GROUP_CATALOG, type ToolGroupContext } from "../tools/groups";
 import { capabilityFor, resolvePermission } from "./permissions";
+import { collectionWriteTool } from "./collectionWrite";
 
 /** Why a deferred call could not be made. Each is a different sentence to a
  *  person, which is why they are not one boolean. */
@@ -52,6 +53,8 @@ export async function resolveDeferredTool(
   context: ToolGroupContext,
   name: string,
 ): Promise<AgentTool | undefined> {
+  // This deterministic workflow write is not exposed to an agent's tool groups.
+  if (name === "collections_save_screenshot") return collectionWriteTool(context.db);
   for (const factory of Object.values(TOOL_GROUP_CATALOG)) {
     const found = factory(context).tools.find((tool) => tool.definition.function.name === name);
     if (found) return found;

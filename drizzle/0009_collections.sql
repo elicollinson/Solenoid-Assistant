@@ -33,3 +33,16 @@ CREATE TABLE `collection_sources` (
 --> statement-breakpoint
 CREATE UNIQUE INDEX `collection_sources_screenshot` ON `collection_sources` (`screenshot_uuid`);--> statement-breakpoint
 CREATE INDEX `collection_sources_item` ON `collection_sources` (`item_id`);
+--> statement-breakpoint
+-- Carry the replaced write's permission history forward, including revocations.
+-- Keep original rows for historical runs; do not override existing Collections rules.
+INSERT INTO workflow_permissions
+  (id, workflow_id, capability, mode, limit_amount_cents, limit_json, okf_policy_uri, created_at, created_by, retired_at)
+SELECT 'collections:' || old.id, old.workflow_id, 'collections.write', old.mode,
+  old.limit_amount_cents, old.limit_json, old.okf_policy_uri, old.created_at, old.created_by, old.retired_at
+FROM workflow_permissions AS old
+WHERE old.capability = 'notion.write'
+  AND (old.workflow_id IS NULL OR old.workflow_id IN
+    (SELECT id FROM workflows WHERE slug = 'screenshot-ingestion'))
+  AND NOT EXISTS (SELECT 1 FROM workflow_permissions AS existing
+    WHERE existing.capability = 'collections.write' AND existing.workflow_id IS old.workflow_id);

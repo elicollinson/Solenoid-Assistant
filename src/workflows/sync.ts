@@ -22,7 +22,7 @@
 //
 // Additive, and it never deletes: the design's fixtures share this table and
 // the feed, calendar and reminders all point at them.
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { ulid, type Db } from "../db";
 import * as s from "../db/schema";
 import { WORKFLOW_CATALOG, type WorkflowCatalogEntry } from "./catalog";
@@ -169,6 +169,13 @@ function seedPermissions(
       .limit(1)
       .all();
     if (existing) continue;
+
+    // A migrated global Collections rule (even a revocation) must not be
+    // shadowed by a fresh per-workflow allow during the explicit catalog sync.
+    if (capability === "collections.write" && t.select({ id: s.workflowPermissions.id })
+      .from(s.workflowPermissions).where(and(
+        isNull(s.workflowPermissions.workflowId), eq(s.workflowPermissions.capability, capability),
+      )).limit(1).get()) continue;
 
     t.insert(s.workflowPermissions)
       .values({

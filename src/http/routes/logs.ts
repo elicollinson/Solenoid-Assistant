@@ -9,15 +9,13 @@
 // and says which of the two it answered with — a thinner log passing silently
 // for the full one is worse than an empty pane.
 import { Elysia, t } from "elysia";
-import { loadRuntimeConfig } from "../../core/config";
-import { ingestLogRecord, log, type LogRecord } from "../../core/logger";
-import { LogQueryError, queryRunLogs, logQueryEnabled } from "../../core/logging/query";
+import { ingestLogRecord, type LogRecord } from "../../core/logger";
+import { readRunLogPage } from "../../core/logging/runReader";
 import { getDb, type Db } from "../../db";
-import { loadRunLogs } from "../../db/queries/workflows";
 import { logStamp } from "../../db/queries/_format";
 import * as s from "../../db/schema";
 import { eq } from "drizzle-orm";
-import type { WorkflowLogLevel, WorkflowLogLine, WorkflowRunLogsPayload } from "../../shared/workflows";
+import type { WorkflowLogLevel, WorkflowRunLogsPayload } from "../../shared/workflows";
 
 /**
  * "06:12:04.221", the stamp the log stream draws.
@@ -35,7 +33,7 @@ export function createLogRoutes(resolveDb: () => Db = getDb) {
   return new Elysia({ name: "routes.logs" })
     .get(
       "/api/runs/:runId/logs",
-      async ({ params, query, set }): Promise<WorkflowRunLogsPayload | { error: string }> => {
+      async ({ params, query, set, request }): Promise<WorkflowRunLogsPayload | { error: string }> => {
         const db = resolveDb();
         const [run] = db
           .select({ id: s.workflowRuns.id, startedAt: s.workflowRuns.startedAt })
@@ -48,52 +46,9 @@ export function createLogRoutes(resolveDb: () => Db = getDb) {
           return { error: `No run with id ${params.runId}` };
         }
 
-        const fallback = (note: string | null): WorkflowRunLogsPayload => ({
-          runId: run.id,
-          source: "database",
-          note,
-          lines: loadRunLogs(db, run.id),
-        });
-
-        const config = loadRuntimeConfig();
-        if (!logQueryEnabled(config)) {
-          return fallback("VICTORIALOGS_ENABLED is false — showing the run record's own lines.");
-        }
-
-        try {
-          const stored = await queryRunLogs(run.id, {
-            config,
-            ...(run.startedAt ? { since: run.startedAt } : {}),
-            ...(query.limit ? { limit: query.limit } : {}),
-          });
-          // An empty answer is not the same as a failed one, but for a run
-          // that has lines on the record it means the store never got them —
-          // it was down while the run went, or started after it. Show what
-          // there is rather than an empty pane.
-          if (stored.length === 0) {
-            const kept = loadRunLogs(db, run.id);
-            if (kept.length > 0) {
-              return { runId: run.id, source: "database", note: "Nothing in the log store for this run yet.", lines: kept };
-            }
-          }
-          const lines: WorkflowLogLine[] = stored.map((line) => ({
-            t: clockOf(line.at),
-            level: line.level as WorkflowLogLevel,
-            text: line.message,
-            component: line.component,
-            service: line.service,
-          }));
-          return { runId: run.id, source: "victorialogs", note: null, lines };
-        } catch (error) {
-          // Never a failed request: the log pane is a read, and a log store
-          // that is down is not a reason for the screen to break.
-          const why = error instanceof LogQueryError ? error.message : String(error);
-          log.warn("Could not read run logs from VictoriaLogs — falling back to the run record", {
-            run_id: run.id,
-            error: why,
-          });
-          return fallback(`${why}. Showing the run record's own lines instead.`);
-        }
+        const page = await readRunLogPage(db, run.id, { offset: 0, limit: query.limit ?? 5000, order: "asc" }, { signal: request.signal });
+        return { ...page, note: `${page.note}${page.truncated ? " More matching records exist; use chat log pagination or a narrower time range." : ""}`,
+          lines: page.lines.map(line => ({ ...line, t: clockOf(line.at), level: line.level as WorkflowLogLevel })) };
       },
       {
         params: t.Object({ runId: t.String() }),

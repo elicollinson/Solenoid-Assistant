@@ -40,7 +40,7 @@ afterEach(() => {
 describe("the catalog", () => {
   test("offers the ten groups this service was built for", () => {
     expect(NAMES).toEqual([
-      "recommendations", "reminders", "calendar", "workflows", "knowledge",
+      "recommendations", "reminders", "calendar", "workflows", "logs", "github", "knowledge",
       "activity", "okf", "imessage", "photos", "contacts",
     ]);
   });

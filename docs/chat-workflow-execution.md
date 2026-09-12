@@ -100,3 +100,61 @@ and dedicated Agent with fixture logs, verifying broad coverage, incomplete-revi
 checkpoint retention, retry completion, guidance isolation, and message-date coercion.
 `src/core/runGuidance.test.ts` verifies input provenance, model fallback and nested
 scope restoration. Tests perform no external model requests or external writes.
+
+## Investigating logs and issues from chat
+
+`workflows_read_run_logs` and `GET /api/runs/:runId/logs` share the run-log reader.
+VictoriaLogs supplies internal agent/tool lines as well as runner bookkeeping.
+Disabled, unreachable, failed, or initially empty stores produce an explicitly
+labeled database fallback; that fallback cannot establish which internal calls
+ran. Empty filtered or later VictoriaLogs pages stay empty rather than switching
+sources. Cancellation stops the chat read; a VictoriaLogs timeout is labeled in
+the fallback. The HTTP pane retains its 5,000 default / 20,000 maximum rows and
+shows a note when more records exist.
+
+Chat reads default to 100 records (maximum 500), oldest first, with `order: "desc"`
+for recent evidence, level/search filters, `offset`, and optional ISO `from`/`to`.
+Run defaults include a minute around the known execution. A window is at most
+seven days; a longer run begins with its first window. Every response carries
+source, scope, count, limit, order, truncation, and `nextOffset`. Reuse the returned
+bounds/filters/order to page; narrow or advance the time window at the 100,000
+row offset ceiling. `nextWindowFrom` identifies a later run window when the known
+execution extends beyond the returned bounds. Pages are not snapshots: late ingestion can shift them.
+A fallback source can change when VictoriaLogs recovers; restart pagination if
+it does. Bounds describe coverage, not proof that ingestion captured everything.
+
+`get_logs_tools` opens the optional, on-demand `logs_query` tool. It uses
+`VICTORIALOGS_ENDPOINT` with the existing timeout and optional off switch; no API
+key or new enable flag is required. Its default is the last hour, maximum seven
+days, with exact stored `service`/`level` and literal message phrase search.
+It queries only the read endpoint, independently of monitoring. Remove narrow
+filters to retrieve surrounding context. Empty results and source errors differ.
+Ordering is applied on the server before offset/limit using the documented
+[LogsQL sort pipe](https://docs.victoriametrics.com/victorialogs/logsql/#sort-pipe).
+
+`get_github_tools` opens `github_list_issues`, `github_read_issue`, and (in full
+chat groups) `github_create_issue`. They use the workflow's
+`LOG_MONITOR_GITHUB_TOKEN` and `LOG_MONITOR_GITHUB_REPOSITORY`, even when monitoring
+is off. No scan, lease, evidence registry, second credential, or repository tool
+argument is involved. List search terms match title/body within each fetched
+page; follow `nextPage` even when no match is returned. Specific reads return
+current status, URL and a body page with `nextBodyOffset`. API errors, rate-limit
+headers and ambiguous create outcomes are explicit. POSTs are never retried
+automatically. Creation requires the usual chat write approval and returns an
+actual validated GitHub number/URL; read-only groups exclude it.
+
+Log text and allowed diagnostic metadata are sanitized before entering chat;
+arbitrary stored payload fields are omitted. Tool-call arguments are redacted
+while preserving the tool's name and identifying the record as an invocation.
+Issue reads preserve body structure with secret redaction and normal external
+text screening. Issue creation applies the existing monitoring evidence sanitizer
+to its bounded title/body and returns the submitted text. Sanitization can remove
+detail and never replaces injection screening.
+
+For the example “Run 2 called `logs_recent`, `github_find_issues`, then
+`github_create_incident`,” retrieve the stored run lines, compare what they actually
+show, and read `workflows_read_run` for the outcome. The invocation alone does
+not establish that GitHub created anything: it may have linked an existing issue,
+run in dry-run mode, failed, or never completed. Use the returned issue number
+with `github_read_issue` to verify current state before claiming success. These
+tools never create an incident just to test diagnostics.

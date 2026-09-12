@@ -172,7 +172,9 @@ test("chat provenance and guidance survive cancellation and the chat context doe
   const started = await withTurn(turn, () => call("workflows_run", { slug: "weather-briefing", args: { city: "Lisbon" }, guidance: "just this once" }));
   expect(started.state).toBe("running");
   const logs = await call("workflows_read_run_logs", { runId: started.runId });
-  expect(JSON.parse(logs.lines[1].text.slice("Invocation: ".length))).toEqual({
+  expect(logs.lines[1].text).toBe("Invocation: [private arguments and guidance redacted]");
+  const storedInvocation = db.select().from(s.runLogs).where(eq(s.runLogs.runId, started.runId)).all().find(line => line.text.startsWith("Invocation: "))!;
+  expect(JSON.parse(storedInvocation.text.slice("Invocation: ".length))).toEqual({
     args: { city: "Lisbon" }, guidance: "just this once", source: { kind: "chat", conversationId: "chat-123" },
   });
   cancelWorkflowRun(db, started.runId);
@@ -252,7 +254,8 @@ test("normal chat discovers, approves, starts a real registered workflow and rea
     expect(events.find((e) => e.type === "tool" && e.name === "workflows.run")).toMatchObject({ ok: true, kind: "write" });
     expect(events.at(-1)).toMatchObject({ type: "message", body: `Run ${runId} finished: Lisbon is sunny.` });
     expect(workflowMessages[0]?.find((m) => m.origin === "operator")?.content).toBe("Focus on walking weather");
-    expect((await toolCall()("workflows_read_run_logs", { runId })).lines[1].text).toContain(conversationId);
+    expect((await toolCall()("workflows_read_run_logs", { runId })).lines[1].text).toContain("private arguments and guidance redacted");
+    expect(db.select().from(s.runLogs).where(eq(s.runLogs.runId, runId)).all().find(line => line.text.startsWith("Invocation: "))!.text).toContain(conversationId);
   } finally { weather.mockRestore(); }
 });
 

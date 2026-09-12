@@ -85,8 +85,8 @@ describe("GET /api/runs/:runId/logs", () => {
   test("prefers the log store, and says so", async () => {
     const fake = collector(() =>
       ndjson([
-        { _time: "2026-08-26T10:00:01.500Z", _msg: "asked the model", level: "info", service: "solenoid-server", component: "llm" },
         { _time: "2026-08-26T10:00:00.100Z", _msg: "Run 1 started by you.", level: "info", service: "solenoid-server", component: "workflow" },
+        { _time: "2026-08-26T10:00:01.500Z", _msg: "asked the model", level: "info", service: "solenoid-server", component: "llm" },
       ]),
     );
     process.env.VICTORIALOGS_ENDPOINT = fake.url;
@@ -94,7 +94,7 @@ describe("GET /api/runs/:runId/logs", () => {
       const { status, body } = await logsFor(runId);
       expect(status).toBe(200);
       expect(body.source).toBe("victorialogs");
-      expect(body.note).toBeNull();
+      expect(body.note).toContain("Sanitized stored records");
       // Oldest first, and carrying the component the run record has no column for.
       expect(body.lines.map((l) => l.text)).toEqual(["Run 1 started by you.", "asked the model"]);
       expect(body.lines[1]).toMatchObject({ component: "llm", service: "solenoid-server" });
@@ -102,6 +102,7 @@ describe("GET /api/runs/:runId/logs", () => {
       // answer one pane, and a stamp that shifts when the store goes down is a
       // log nobody can read a sequence out of.
       expect(body.lines[0]!.t).toBe(logStamp(new Date("2026-08-26T10:00:00.100Z")));
+      expect(fake.asked[0]).toContain("| sort by (_time asc");
       expect(fake.asked[0]).toContain(`run_id:="${runId}"`);
     } finally {
       fake.stop();

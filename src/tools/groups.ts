@@ -28,6 +28,8 @@ import { okfGroup } from "./okf";
 import { photosGroup } from "./photos";
 import { recommendationsGroup } from "./recommendations";
 import { remindersGroup } from "./reminders";
+import { logsGroup } from "./logs";
+import { githubGroup } from "./github";
 import { workflowsGroup } from "./workflows";
 
 /**
@@ -94,6 +96,8 @@ export const TOOL_GROUP_CATALOG: Readonly<Record<string, ToolGroupFactory>> = {
   reminders: remindersGroup,
   calendar: calendarGroup,
   workflows: workflowsGroup,
+  logs: logsGroup,
+  github: githubGroup,
   knowledge: knowledgeGroup,
   activity: activityGroup,
   // The sources: what the assistant reads the world through. Everything these

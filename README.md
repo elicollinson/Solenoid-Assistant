@@ -667,6 +667,14 @@ retirement signal for facts nothing has referenced in months.
 
 ### Chat
 
+Opening or refreshing the web app starts on Chat with a new conversation.
+Within that loaded app session, switching pages keeps the current conversation
+and any active voice connection, including when the layout changes between
+phone and desktop. While voice is connecting or active on another page, the
+bottom-right waveform returns to the ongoing conversation. On phones it takes
+the ask button's place above the tab bar. Ending voice or selecting a different
+conversation closes the microphone and connection.
+
 A chat with the agent is a conversation, `channel = 'agent_chat'`, and its turns
 are `messages`. It is not a third stack beside texts and email, because the
 design draws a text from Fenwick Heating and a turn from the agent with the same

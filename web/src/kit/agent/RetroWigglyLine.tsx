@@ -3,6 +3,8 @@ import { Button } from "../core/Button";
 
 export interface RetroWigglyLineProps {
   active: boolean;
+  /** Waveform only, for the floating return-to-chat control. */
+  compact?: boolean;
   analyserNode?: AnalyserNode | null;
   isSpeaking?: boolean;
   isMuted?: boolean;
@@ -21,6 +23,7 @@ export interface RetroWigglyLineProps {
  */
 export function RetroWigglyLine({
   active,
+  compact = false,
   analyserNode,
   isSpeaking = false,
   isMuted = false,
@@ -177,10 +180,11 @@ export function RetroWigglyLine({
         border: "var(--border)",
         background: "var(--surface-sunken)",
         boxSizing: "border-box",
+        ...(compact ? { padding: 0, border: "none", background: "transparent" } : {}),
         ...style,
       }}
     >
-      <div
+      {compact ? null : <div
         style={{
           display: "flex",
           alignItems: "center",
@@ -248,7 +252,7 @@ export function RetroWigglyLine({
             </Button>
           ) : null}
         </div>
-      </div>
+      </div>}
 
       <div style={{ width: "100%", height: "48px", overflow: "hidden", position: "relative" }}>
         <canvas ref={canvasRef} style={{ display: "block", width: "100%", height: "100%" }} />

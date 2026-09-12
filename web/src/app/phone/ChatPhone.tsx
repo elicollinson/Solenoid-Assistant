@@ -11,7 +11,7 @@
 // two half-buttons.
 import { ApprovalBubble, Button, ChatTurn, ConversationRow, RetroWigglyLine } from "../../kit";
 import { echoed, spoken, useFollowBottom, type ChatState } from "../chat";
-import { useVoiceMode } from "../useVoiceMode";
+import type { VoiceModeState } from "../useVoiceMode";
 import { PhoneScreen, type PhoneTab } from "./chrome";
 
 const CONTROL = {
@@ -20,12 +20,12 @@ const CONTROL = {
   textTransform: "uppercase",
 } as const;
 
-export function ChatPhone({ chat, onTab }: { chat: ChatState; onTab: (tab: PhoneTab) => void }) {
+export function ChatPhone({ chat, voice, onTab }: { chat: ChatState; voice: VoiceModeState; onTab: (tab: PhoneTab) => void }) {
   // No ask dock on either of these screens. It is for the four that have no
   // way to say anything; here the thread has a composer and the list has "Start
   // a new one", and the floating disc lands on top of that button.
   const chrome = { tab: "Chat" as const, onTab };
-  return chat.openId ? <Thread chat={chat} chrome={chrome} /> : <List chat={chat} chrome={chrome} />;
+  return chat.openId ? <Thread chat={chat} voice={voice} chrome={chrome} /> : <List chat={chat} chrome={chrome} />;
 }
 
 type Chrome = Parameters<typeof PhoneScreen>[0];
@@ -111,14 +111,10 @@ function List({ chat, chrome }: { chat: ChatState; chrome: Partial<Chrome> }) {
 }
 
 /** One conversation, and where you say the next thing. */
-function Thread({ chat, chrome }: { chat: ChatState; chrome: Partial<Chrome> }) {
+function Thread({ chat, voice, chrome }: { chat: ChatState; voice: VoiceModeState; chrome: Partial<Chrome> }) {
   const { box, content } = useFollowBottom();
   const live = chat.live;
   const waiting = Boolean(live?.pending);
-  const voice = useVoiceMode({
-    conversationId: chat.openId,
-    onTurnComplete: chat.reload,
-  });
 
   return (
     <PhoneScreen {...(chrome as Chrome)}>

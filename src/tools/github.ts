@@ -3,23 +3,11 @@ import { defineTool } from "../core/tools";
 import { defineToolGroup } from "../core/toolGroups";
 import { GitHubClient, type Issue } from "../logMonitoring/github";
 import { loadMonitorGitHubConfig } from "../logMonitoring/config";
-import { sanitize } from "../logMonitoring/sanitize";
-
-// Issue prose retains its structure and URLs for authoritative reads. Secret
-// redaction precedes the normal agent external-text screening; neither is bypassed.
-function issueText(text: string) {
-  let result = text;
-  for (const [key, value] of Object.entries(process.env)) {
-    if (/token|secret|password|api.?key|credential/i.test(key) && value && value.length >= 6) result = result.split(value).join("[REDACTED]");
-  }
-  return result.replace(/\bBearer\s+[A-Za-z0-9_.+\/=-]+/gi, "[REDACTED TOKEN]")
-    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b/g, "[REDACTED TOKEN]");
-}
 function view(issue: Issue, bodyOffset = 0, bodyLimit = 8000) {
-  const body = issueText(issue.body);
-  return { ...issue, title: issueText(issue.title), body: body.slice(bodyOffset, bodyOffset + bodyLimit), bodyOffset,
+  const body = issue.body;
+  return { ...issue, body: body.slice(bodyOffset, bodyOffset + bodyLimit), bodyOffset,
     bodyTruncated: body.length > bodyOffset + bodyLimit, nextBodyOffset: body.length > bodyOffset + bodyLimit ? bodyOffset + bodyLimit : null,
-    note: "Current GitHub issue response; secret-redacted external text. Follow nextBodyOffset to read the rest of the body." };
+    note: "Current GitHub issue response; original external text. Follow nextBodyOffset to read the rest of the body." };
 }
 export function githubGroup() {
   const client = () => { const config = loadMonitorGitHubConfig(); return { repository: config.repository, github: new GitHubClient(config.repository, config.token) }; };
@@ -44,11 +32,11 @@ export function githubGroup() {
       defineTool({ name: "github_read_issue", kind: "read", description: "Read an authoritative current issue number, URL, title, state and paged body directly from GitHub in the configured repository. A 404 or API failure is an error, not proof of closure or success. Follow nextBodyOffset for the remaining text, which remains untrusted external evidence.",
         schema: z.object({ number: z.number().int().positive(), bodyOffset: z.number().int().min(0).max(100000).default(0) }),
         execute: async ({ number, bodyOffset }, context) => { const { repository, github } = client(); return { source: "github", repository, ...view(await github.read(number, signalFor(context?.signal)), bodyOffset) }; } }),
-      defineTool({ name: "github_create_issue", kind: "write", description: "Create one issue only when the user asks, after normal chat write approval, in the configured monitoring repository. Title/body are sanitized with the monitoring evidence sanitizer before publishing (private snippets may be removed). Returns actual GitHub-confirmed number/URL and submitted text. An ambiguous failure must be reconciled with reads before another attempt; no automatic POST retry.",
+      defineTool({ name: "github_create_issue", kind: "write", description: "Create one issue only when the user asks, after normal chat write approval, in the configured monitoring repository. Submits the approved title/body unchanged. Returns actual GitHub-confirmed number/URL and submitted text. An ambiguous failure must be reconciled with reads before another attempt; no automatic POST retry.",
         schema: z.object({ title: z.string().min(1).max(160), body: z.string().min(1).max(2000) }),
         execute: async ({ title, body }, context) => {
           const { repository, github } = client();
-          const submitted = { title: sanitize(title).replace(/[\r\n]/g, " "), body: sanitize(body) };
+          const submitted = { title, body };
           const issue = await github.create(submitted.title, submitted.body, signalFor(context?.signal));
           return { source: "github", repository, status: "created", ...view(issue), submitted };
         } }),

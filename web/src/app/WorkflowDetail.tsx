@@ -787,7 +787,7 @@ export function LogsPane({ run, nonce }: { run: WorkflowExecution; nonce: number
     .map((l) => ({
       t: l.t,
       level: l.level === "debug" ? "info" : l.level,
-      text: l.text,
+      text: l.record ? `${l.text}\n${JSON.stringify(l.record, null, 2)}` : l.text,
       // Only worth drawing once a line could have come from somewhere other
       // than the runner, which is only true of the store's answer.
       ...(l.component && l.component !== "workflow" ? { tag: l.component } : {}),

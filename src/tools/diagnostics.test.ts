@@ -56,7 +56,7 @@ afterEach(() => {
   db.$client.close(); rmSync(dir, { recursive: true, force: true });
 });
 
-test("chat retrieves internal calls with safe metadata and continues to later evidence", async () => {
+test("chat retrieves exact internal calls and complete metadata and continues to later evidence", async () => {
   const rows = [
     { _time: at.toISOString(), _msg: "Run 2 started", seq: 0 },
     { _time: at.toISOString(), _msg: '[tool] logs_recent({})', seq: 1, component: "agent" },
@@ -76,9 +76,11 @@ test("chat retrieves internal calls with safe metadata and continues to later ev
   expect(first).toMatchObject({ source: "victorialogs", count: 2, truncated: true, nextOffset: 2, scope: { from, to } });
   const second = await call(tool, { runId, from, to, offset: first.nextOffset, limit: 2 });
   expect(second.lines.map((l: any) => l.tool)).toEqual(["github_find_issues", "github_create_incident"]);
-  expect(second.lines[1]).toMatchObject({ event: "invocation", trace_id: "trace-abc", redacted: true });
+  expect(second.lines[1]).toMatchObject({ event: "invocation", trace_id: "trace-abc" });
   expect(second.lines[1].status).toBeUndefined();
-  expect(JSON.stringify(second)).not.toContain("test-shared-secret"); expect(JSON.stringify(second)).not.toContain("private-payload");
+  expect(second.lines[0].text).toBe(rows[2]!._msg);
+  expect(second.lines[1].text).toBe(rows[3]!._msg);
+  expect(second.lines[1].record).toEqual(rows[3]);
   const last = await call(tool, { runId, from, to, offset: second.nextOffset, limit: 2 });
   expect(last).toMatchObject({ count: 1, truncated: false, nextOffset: null });
   expect(last.lines[0].text).toBe("Run 2 finished");
@@ -180,7 +182,7 @@ for (const outcome of ["approved", "declined"] as const) test(`chat GitHub creat
   const result = transcripts.at(-1)!.filter(m => m.role === "tool").at(-1)!.content;
   if (outcome === "approved") {
     expect(requests).toHaveLength(1); expect(requests[0]!.method).toBe("POST");
-    expect(requests[0]!.body).not.toContain("super-secret-token");
+    expect(JSON.parse(requests[0]!.body)).toEqual({ title: "Investigate failure", body: "Safe evidence. Bearer super-secret-token" });
     expect(result).toContain('"status":"created"'); expect(result).toContain(issue.html_url);
     expect(screened.join("\n")).toContain("Authoritative body");
   } else {
@@ -194,13 +196,13 @@ test("invalid create response cannot claim verified success", async () => {
   expect(requests).toHaveLength(1);
 });
 
-test("GitHub body continuation is honest and secrets are redacted before returning", async () => {
+test("GitHub body continuation returns original content unchanged", async () => {
   mockFetch(() => Response.json({ ...issue, state: "closed", body: "x".repeat(8000) + "test-shared-secret remainder" }));
   const tool = named(githubGroup().tools, "github_read_issue");
   const first = await call(tool, { number: 123 });
   expect(first).toMatchObject({ state: "closed", bodyTruncated: true, nextBodyOffset: 8000 });
   const second = await call(tool, { number: 123, bodyOffset: first.nextBodyOffset });
-  expect(second).toMatchObject({ body: "[REDACTED] remainder", bodyTruncated: false, nextBodyOffset: null });
+  expect(second).toMatchObject({ body: "test-shared-secret remainder", bodyTruncated: false, nextBodyOffset: null });
 });
 
 test("GitHub cancellation performs no HTTP request and specific read failures are explicit", async () => {
@@ -249,4 +251,38 @@ test("malicious issue body goes through normal screening and is quarantined befo
   expect(lastMessages.at(-1)!.content).toContain("output blocked");
   expect(JSON.stringify(lastMessages)).not.toContain("hostile external issue instructions");
   expect(requests).toHaveLength(1); expect(requests[0]!.method).toBe("GET");
+});
+
+test("standalone and workflow diagnostics round-trip structured results and colliding source fields", async () => {
+  const row = { _time: at.toISOString(), run_id: runId,
+    _msg: '[tool] github_find_issues({"terms":["Notion authentication","unauthorized"],"page":1})',
+    arguments: { terms: ["Notion authentication", "unauthorized"], page: 1 },
+    result: { issues: [{ number: 123, state: "open", url: issue.html_url, body: 'Original "Notion" evidence' }], nextPage: null },
+    payload: { text: "x".repeat(2500), token: "test-shared-secret", nested: [null, false, { count: 12345678901 }] },
+    trace_id: "0123456789abcdef0123456789abcdef", text: "stored text alias", record: { original: true },
+  };
+  mockFetch(() => ndjson([row]));
+  for (const tool of [logsGroup().tools[0]!, named(workflowsGroup({ db }).tools, "workflows_read_run_logs")]) {
+    const result = await call(tool, { runId, from, to });
+    expect(result.lines[0].text).toBe(row._msg);
+    expect(result.lines[0].record).toEqual(row);
+    expect(result.lines[0].arguments).toEqual(row.arguments);
+    expect(result.lines[0].result).toEqual(row.result);
+    expect(result.lines[0].payload).toEqual(row.payload);
+    expect(result.lines[0].trace_id).toBe(row.trace_id);
+  }
+});
+
+test("interactive GitHub list/read/create preserve quoted content and submitted title/body", async () => {
+  const title = 'Notion "authentication": test-shared-secret';
+  const body = 'Request body: {"error":"unauthorized"}\n```json\n{"token":"example"}\n```\nhttps://example.com/full/path?detail=true';
+  mockFetch((url) => Response.json(url.includes("issues?") ? [{ ...issue, title, body }] : { ...issue, title, body }));
+  const tools = githubGroup().tools;
+  const listed = await call(named(tools, "github_list_issues"), {});
+  expect(listed.issues[0]).toMatchObject({ title, body });
+  const read = await call(named(tools, "github_read_issue"), { number: 123 });
+  expect(read).toMatchObject({ title, body });
+  const created = await call(named(tools, "github_create_issue"), { title, body });
+  expect(created).toMatchObject({ title, body, submitted: { title, body }, status: "created" });
+  expect(JSON.parse(requests.at(-1)!.body)).toEqual({ title, body });
 });

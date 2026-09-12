@@ -143,13 +143,14 @@ headers and ambiguous create outcomes are explicit. POSTs are never retried
 automatically. Creation requires the usual chat write approval and returns an
 actual validated GitHub number/URL; read-only groups exclude it.
 
-Log text and allowed diagnostic metadata are sanitized before entering chat;
-arbitrary stored payload fields are omitted. Tool-call arguments are redacted
-while preserving the tool's name and identifying the record as an invocation.
-Issue reads preserve body structure with secret redaction and normal external
-text screening. Issue creation applies the existing monitoring evidence sanitizer
-to its bounded title/body and returns the submitted text. Sanitization can remove
-detail and never replaces injection screening.
+Diagnostic reads return original stored log text and the complete structured
+record in `record`, including tool arguments, available results and invocation
+guidance. Chat and the UI use the same records; the UI displays structured fields
+alongside the log message. No diagnostic redaction or metadata allowlist is applied.
+GitHub reads preserve original titles/bodies across pages; approved interactive
+creates submit the supplied title/body unchanged. Ordinary chat write approval and
+external-text instruction screening still apply. The existing scheduled incident
+workflow keeps its established behavior independently of these diagnostic tools.
 
 For the example “Run 2 called `logs_recent`, `github_find_issues`, then
 `github_create_incident`,” retrieve the stored run lines, compare what they actually

@@ -46,6 +46,6 @@ export async function readRunLogPage(db: Db, runId: string, input: LogPageInput,
     order: input.order, offset: input.offset, limit: input.limit,
     count: rows.slice(0, input.limit).length, truncated,
     nextOffset: truncated && input.offset + input.limit <= 100000 ? input.offset + input.limit : null,
-    note: `${note} Database fallback contains runner bookkeeping only; internal agent/tool logs may be missing. Sanitized, bounded window; reuse bounds and nextOffset or move the window forward.`,
+    note: `${note} Database fallback contains runner bookkeeping only; internal agent/tool logs may be missing. Bounded window; reuse bounds and nextOffset or move the window forward.`,
     lines: rows.slice(0, input.limit).map(row => diagnosticLine({ _time: row.at.toISOString(), _msg: row.text, level: row.level, seq: row.seq, run_id: runId })) };
 }

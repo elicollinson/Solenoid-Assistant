@@ -22,6 +22,7 @@ import {
 import { storedContacts, storedMessages } from "./readers";
 import { createSourceRoutes } from "../http/routes/sources";
 import { consumeScreenshot } from "./consumer";
+import { WORKFLOW_CATALOG } from "../workflows/catalog";
 import { syncWorkflowCatalog } from "../workflows/sync";
 
 let root: string, db: Db, replica: Db;
@@ -90,7 +91,7 @@ describe("source replication", () => {
     expect(records("messages", replica)).toHaveLength(0);
     expect(
       replica.$client.query("SELECT count(*) AS n FROM workflows").get(),
-    ).toEqual({ n: 5 });
+    ).toEqual({ n: WORKFLOW_CATALOG.length });
     expect(
       replica.$client
         .query("SELECT count(*) AS n FROM workflow_schedules")

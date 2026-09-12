@@ -4,6 +4,7 @@ import { Ollama } from "ollama";
 import { z } from "zod";
 import { type AgentTool } from "./tools";
 import { currentConsent } from "./consent";
+import { applyRunGuidance } from "./runGuidance";
 import { ToolBelt, ToolSession, loaderName, type ToolGroup } from "./toolGroups";
 import {
   OllamaProvider,
@@ -509,6 +510,12 @@ export class Agent {
     inputMimeType: "text/plain" | "application/json",
     externalSignal?: AbortSignal,
   ): Promise<unknown> {
+    const guidedMessages = applyRunGuidance(messages);
+    if (guidedMessages !== messages) {
+      messages = guidedMessages;
+      inputValue = safeMessagesJson(messages);
+      inputMimeType = "application/json";
+    }
     // Traced entry: one AGENT root span per invocation. Subclasses customize
     // behavior by overriding runInner/loop — never run or runMessages — so the
     // span and deadline always stay intact.

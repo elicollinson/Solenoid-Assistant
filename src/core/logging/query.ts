@@ -144,3 +144,43 @@ function isoDay(at: Date): string {
   const to = new Date(at.getTime() + 24 * 60 * 60 * 1_000).toISOString();
   return `[${from}, ${to}]`;
 }
+
+/** Full records for cross-service monitoring. Unlike the UI reader, malformed
+ * NDJSON is fatal: silently dropping evidence cannot produce a complete scan. */
+export type RawLog = Record<string, unknown>;
+export async function runRawQuery(query: string, options: {
+  limit: number; signal: AbortSignal; config?: RuntimeConfig;
+}): Promise<RawLog[]> {
+  const { endpoint, timeoutMs } = (options.config ?? loadRuntimeConfig()).logging.victoriaLogs;
+  const response = await fetch(`${endpoint}/select/logsql/query`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ query, limit: String(options.limit) }),
+    signal: AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)]),
+  });
+  if (!response.ok) throw new LogQueryError(`VictoriaLogs query failed (${response.status})`);
+  if (!response.body) throw new LogQueryError("VictoriaLogs returned no response body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let body = "";
+  let bytes = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 16 * 1024 * 1024) throw new LogQueryError("VictoriaLogs response exceeds monitoring budget");
+      body += decoder.decode(value, { stream: true });
+    }
+    body += decoder.decode();
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return body.split("\n").filter(s => s.trim()).map(line => {
+    try {
+      const row: unknown = JSON.parse(line);
+      if (!row || typeof row !== "object" || Array.isArray(row)) throw new Error();
+      return row as RawLog;
+    } catch { throw new LogQueryError("Malformed VictoriaLogs record; scan incomplete"); }
+  });
+}

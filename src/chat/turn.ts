@@ -83,7 +83,13 @@ export interface ChatTurn {
   ): void;
 }
 
-const storage = new AsyncLocalStorage<ChatTurn>();
+const storage = new AsyncLocalStorage<ChatTurn | undefined>();
+
+/** Background workflows have their own lifecycle and permissions, not the
+ * initiating chat's approval callbacks or streaming connection. */
+export function withoutTurn<T>(fn: () => T): T {
+  return storage.run(undefined, fn);
+}
 
 /** The turn in progress, or undefined outside one. See the header. */
 export function currentTurn(): ChatTurn | undefined {

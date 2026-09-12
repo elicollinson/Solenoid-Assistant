@@ -42,8 +42,8 @@ afterEach(() => {
 describe("what goes", () => {
   test("every workflow with no code behind it, and nothing that has any", () => {
     const before = loadWorkflows(db, MORNING).rows;
-    expect(before.length).toBe(13);
-    expect(before.filter((row) => row.runnable).length).toBe(5);
+    expect(before.length).toBe(8 + CATALOGUED_SLUGS.length);
+    expect(before.filter((row) => row.runnable).length).toBe(CATALOGUED_SLUGS.length);
 
     const result = pruneUncataloguedWorkflows(db);
     expect(result.removed.length).toBe(8);
@@ -155,7 +155,7 @@ describe("one at a time", () => {
   test("removes just that workflow, and says whether it was there", () => {
     expect(removeWorkflow(db, "calendar-tidy")).toBe(true);
     expect(loadWorkflows(db, MORNING).rows.find((row) => row.slug === "calendar-tidy")).toBeUndefined();
-    expect(loadWorkflows(db, MORNING).rows.length).toBe(12);
+    expect(loadWorkflows(db, MORNING).rows.length).toBe(7 + CATALOGUED_SLUGS.length);
 
     expect(removeWorkflow(db, "calendar-tidy")).toBe(false);
     expect(removeWorkflow(db, "never-existed")).toBe(false);

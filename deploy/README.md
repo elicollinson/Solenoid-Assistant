@@ -297,3 +297,9 @@ deploy/launchd/com.solenoid.hostmirror.plist
 
 Both plists have `USERNAME` placeholders. `compose.yaml` mounts
 `../hostmirror` — comment that line out until Phase 2.
+
+### Cross-service log monitoring
+
+The `log-monitoring` workflow uses the existing VictoriaLogs endpoint and shared
+SQLite database. Configuration, dry-run activation, collection limits, and the
+mini-cloud shared environment and manual rollout are documented in [log-monitoring.md](../docs/log-monitoring.md).

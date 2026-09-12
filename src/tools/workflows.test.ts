@@ -30,10 +30,12 @@ const READS = [
   "workflows_list",
   "workflows_read",
   "workflows_read_runs",
+  "workflows_read_run",
   "workflows_read_run_logs",
 ];
 
 const WRITES = [
+  "workflows_run",
   "workflows_set_summary",
   "workflows_set_schedule",
   "workflows_set_paused",
@@ -118,7 +120,7 @@ describe("the group", () => {
     expect(new Set(names(group)).size).toBe(group.tools.length);
   });
 
-  test("hands over the nine tools, reads first", () => {
+  test("hands over the tools, reads first", () => {
     expect(names(group)).toEqual([...READS, ...WRITES]);
   });
 

@@ -9,6 +9,7 @@ A local Bun service for experimenting with tool-using agents and personal-assist
 - macOS with Full Disk Access for the iMessage, Contacts, and Photos workflows
 - `osxphotos` for screenshot workflows
 - Optional Notion and Tavily credentials for their respective MCP-backed agents
+- Optional [Pushover reminder notifications](docs/pushover-reminders.md), delivered at the reminder's due time
 
 ## Setup
 

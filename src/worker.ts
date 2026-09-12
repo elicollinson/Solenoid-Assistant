@@ -1,4 +1,5 @@
 import { consumeScreenshot } from "./sources/consumer";
+import { deliverDueReminder, REMINDER_POLL_MS } from "./pushover/delivery";
 // The cron worker: runs what the DATABASE says to run, when it says to.
 //
 // Runs as its own process (`bun run start:worker`), separate from the HTTP
@@ -163,6 +164,9 @@ const poll = setInterval(() => {
 installShutdownHandler(async () => {
   clearInterval(poll);
   clearInterval(sourceTimer);
+  clearInterval(reminderTimer);
+  reminderAbort.abort();
+  await reminderInFlight;
   for (const job of jobs) job.stop();
   await shutdownTracing();
   await flushLogs();
@@ -177,3 +181,20 @@ const sourceTimer = setInterval(async () => {
   try { await consumeScreenshot(db); } catch { scheduler.warn("Source consumer unavailable; will retry"); } finally { sourceBusy = false; }
 }, 15_000);
 sourceTimer.unref();
+
+// Dated reminders are individual schedules, independent of workflow cron rules.
+// PUSHOVER_REMINDERS_ENABLED is the standing authorization for due-time sends.
+const reminderAbort = new AbortController();
+let reminderInFlight: Promise<unknown> | undefined;
+function tickReminders() {
+  if (reminderInFlight || reminderAbort.signal.aborted) return;
+  reminderInFlight = deliverDueReminder(db, { signal: reminderAbort.signal })
+    .then(result => {
+      if (result) scheduler.info("Reminder push submission settled", { delivery_id: result.id, outcome: result.status, code: result.code });
+    })
+    .catch(() => scheduler.warn("Reminder push processing interrupted; internal reminders remain available"))
+    .finally(() => { reminderInFlight = undefined; });
+}
+const reminderTimer = setInterval(tickReminders, REMINDER_POLL_MS);
+reminderTimer.unref();
+tickReminders();

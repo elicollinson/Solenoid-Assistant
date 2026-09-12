@@ -16,6 +16,7 @@
     "verify:model-armor": "bun run scripts/verify-model-armor.ts",
     "connect:tavily": "bun run scripts/tavily-mcp-connect.ts",
     "smoke:imessage": "bun run scripts/imessage-smoke.ts",
+    "check:pushover": "bun run scripts/pushover-validate.ts",
     "db:generate": "bun run scripts/db-generate.ts",
     "db:migrate": "bun run scripts/db-migrate.ts",
     "db:studio": "bun x drizzle-kit studio",

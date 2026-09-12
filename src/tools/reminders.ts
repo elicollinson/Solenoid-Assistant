@@ -183,7 +183,9 @@ export function remindersGroup(context: ToolGroupContext): ToolGroup {
       "back. Check reminders_list first; the same reminder set twice is worse than not set. " +
       "Leave `dueAt` off only when there genuinely is no date, which puts it on 'Someday' — a guessed date is " +
       "worse than none, because the list will then be wrong about what is overdue. Say in `blurb` what this " +
-      "is about and in `prose` why you are holding it rather than acting on it.",
+      "is about and in `prose` why you are holding it rather than acting on it. When Pushover reminder " +
+      "delivery is enabled, a dated reminder also schedules a push at dueAt without another approval then. " +
+      "Use pushover_status to check setup before promising push delivery.",
     schema: z.object({
       title: z
         .string()
@@ -255,7 +257,8 @@ export function remindersGroup(context: ToolGroupContext): ToolGroup {
     description:
       "Change the wording or the date of one that is still open — the deadline moved, the one line was doing " +
       "nobody any favours, it turned out to be about something narrower. This is also how a reminder is " +
-      "rescheduled or snoozed: give a new `dueAt`. " +
+      "rescheduled or snoozed: give a new `dueAt`. Changing the date replaces a pending push; a push already " +
+      "being submitted cannot be recalled. Wording-only changes do not schedule another push. " +
       "Only works while it is open. Once it is closed, what it said is part of the record of what was done " +
       "about it, and rewriting it would leave the trail describing a different reminder. " +
       "Fields you omit are left alone. `prose` and `meta` are lists, so each one you give REPLACES what was " +

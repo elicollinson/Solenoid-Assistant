@@ -43,7 +43,7 @@ describe("migrations", () => {
       .query<{ name: string }, []>(`SELECT name FROM sqlite_master WHERE type = 'view'`)
       .all();
 
-    expect(tables.length).toBe(62); // 61 relational + the fts5 `search` table
+    expect(tables.length).toBe(64); // 63 relational + the fts5 `search` table
     expect(views.map((v) => v.name).sort()).toEqual([
       "v_evidence",
       "v_needs_you",

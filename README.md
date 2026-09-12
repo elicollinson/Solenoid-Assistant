@@ -9,6 +9,7 @@ A local Bun service for experimenting with tool-using agents and personal-assist
 - macOS with Full Disk Access for the iMessage, Contacts, and Photos workflows
 - `osxphotos` for screenshot workflows
 - Optional Tavily credentials for live web search
+- Optional [Pushover reminder notifications](docs/pushover-reminders.md), delivered at the reminder's due time
 
 ## Setup
 

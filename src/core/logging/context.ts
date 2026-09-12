@@ -16,7 +16,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 export interface LogContext {
   /** Which half of the app: "solenoid-server", "solenoid-worker", ... */
   service?: string;
-  /** The part inside it: "http", "workflow", "imessage", "notion-mcp". */
+  /** The part inside it: "http", "workflow", "imessage", "tavily-mcp". */
   component?: string;
   /** One inbound HTTP request. */
   request_id?: string;

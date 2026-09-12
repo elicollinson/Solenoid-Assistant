@@ -22,7 +22,7 @@ const originalFetch = globalThis.fetch;
 let env: Record<string, string | undefined>;
 const at = new Date("2026-09-01T10:00:00Z");
 const from = "2026-09-01T09:59:00.000Z", to = "2026-09-01T10:02:00.000Z";
-const issue = { number: 123, html_url: "https://github.com/test/repo/issues/123", title: "Notion authentication failure", body: "Authoritative body with [evidence](https://example.com/logs).", state: "open" };
+const issue = { number: 123, html_url: "https://github.com/test/repo/issues/123", title: "Provider authentication failure", body: "Authoritative body with [evidence](https://example.com/logs).", state: "open" };
 let requests: { url: string; body: string; method: string; authorization: string | null }[];
 function mockFetch(fn: (url: string, init: RequestInit) => Response | Promise<Response>) {
   globalThis.fetch = (async (url: any, init: RequestInit = {}) => {
@@ -60,7 +60,7 @@ test("chat retrieves exact internal calls and complete metadata and continues to
   const rows = [
     { _time: at.toISOString(), _msg: "Run 2 started", seq: 0 },
     { _time: at.toISOString(), _msg: '[tool] logs_recent({})', seq: 1, component: "agent" },
-    { _time: at.toISOString(), _msg: '[tool] github_find_issues({"terms":["Notion authentication"]})', seq: 2 },
+    { _time: at.toISOString(), _msg: '[tool] github_find_issues({"terms":["Provider authentication"]})', seq: 2 },
     { _time: at.toISOString(), _msg: '[tool] github_create_incident({"evidenceIds":["private-id"],"body":"test-shared-secret"})', seq: 3, trace_id: "trace-abc", payload: "private-payload" },
     { _time: "2026-09-01T10:01:00.000Z", _msg: "Run 2 finished", seq: 4 },
   ];
@@ -148,7 +148,7 @@ test("timeout and caller cancellation interrupt pending requests", async () => {
 test("GitHub pages search locally without losing continuation; specific reads preserve current body and URL", async () => {
   const tools = githubGroup().tools;
   mockFetch(url => Response.json(url.includes("issues?") ? [{ ...issue, pull_request: {} }, { ...issue, number: 124, html_url: "https://github.com/test/repo/issues/124", title: "different", body: "not matching" }] : issue));
-  const page = await call(named(tools, "github_list_issues"), { terms: ["Notion"], perPage: 2 });
+  const page = await call(named(tools, "github_list_issues"), { terms: ["Provider"], perPage: 2 });
   expect(page).toMatchObject({ repository: "test/repo", count: 0, truncated: true, nextPage: 2 });
   const read = await call(named(tools, "github_read_issue"), { number: 123 });
   expect(read).toMatchObject({ number: 123, url: issue.html_url, state: "open", body: issue.body, bodyTruncated: false });
@@ -255,9 +255,9 @@ test("malicious issue body goes through normal screening and is quarantined befo
 
 test("standalone and workflow diagnostics round-trip structured results and colliding source fields", async () => {
   const row = { _time: at.toISOString(), run_id: runId,
-    _msg: '[tool] github_find_issues({"terms":["Notion authentication","unauthorized"],"page":1})',
-    arguments: { terms: ["Notion authentication", "unauthorized"], page: 1 },
-    result: { issues: [{ number: 123, state: "open", url: issue.html_url, body: 'Original "Notion" evidence' }], nextPage: null },
+    _msg: '[tool] github_find_issues({"terms":["Provider authentication","unauthorized"],"page":1})',
+    arguments: { terms: ["Provider authentication", "unauthorized"], page: 1 },
+    result: { issues: [{ number: 123, state: "open", url: issue.html_url, body: 'Original "Provider" evidence' }], nextPage: null },
     payload: { text: "x".repeat(2500), token: "test-shared-secret", nested: [null, false, { count: 12345678901 }] },
     trace_id: "0123456789abcdef0123456789abcdef", text: "stored text alias", record: { original: true },
   };
@@ -274,7 +274,7 @@ test("standalone and workflow diagnostics round-trip structured results and coll
 });
 
 test("interactive GitHub list/read/create preserve quoted content and submitted title/body", async () => {
-  const title = 'Notion "authentication": test-shared-secret';
+  const title = 'Provider "authentication": test-shared-secret';
   const body = 'Request body: {"error":"unauthorized"}\n```json\n{"token":"example"}\n```\nhttps://example.com/full/path?detail=true';
   mockFetch((url) => Response.json(url.includes("issues?") ? [{ ...issue, title, body }] : { ...issue, title, body }));
   const tools = githubGroup().tools;

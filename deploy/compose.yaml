@@ -62,9 +62,8 @@ x-app: &app
     - "host.docker.internal:host-gateway"
   environment: *app-env
   volumes:
-    # Secrets, and writable on purpose: the Notion client rotates its refresh
-    # token straight back into .env (src/mcp/notionClient.ts persistTokens).
-    - ../.env:/app/.env
+    # Runtime secrets are read only; the app never rotates tokens into .env.
+    - ../.env:/app/.env:ro
     # No schedule file. Schedules are rows in `workflow_schedules` on the
     # volume below, edited through the Workflows screen or by asking the agent,
     # and the worker re-reads them every 30s without a restart.

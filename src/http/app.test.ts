@@ -28,7 +28,7 @@ describe("HTTP app", () => {
     }
   });
 
-  test("validates notion entry requests before performing a write", async () => {
+  test("retired Notion write endpoint is not registered", async () => {
     const response = await app.handle(
       new Request("http://localhost/notion-entry", {
         method: "POST",
@@ -36,11 +36,11 @@ describe("HTTP app", () => {
         body: JSON.stringify({
           name: "Test entry",
           url: "https://example.com",
-          collection: "invalid",
+          collection: "book",
         }),
       }),
     );
 
-    expect(response.status).toBe(422);
+    expect(response.status).toBe(404);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { loadRuntimeConfig, requireNotionDataSourceIds } from "./config";
+import { loadRuntimeConfig } from "./config";
 
 describe("where it listens", () => {
   // Worth its own test because the cost of getting it wrong is silent. This
@@ -148,8 +148,5 @@ describe("loadRuntimeConfig", () => {
     ).toThrow(/native.*two-stage/);
   });
 
-  test("requires all Notion data source ids only when requested", () => {
-    const config = loadRuntimeConfig({});
-    expect(() => requireNotionDataSourceIds(config)).toThrow(/NOTION_DS_BOOKS/);
-  });
+
 });

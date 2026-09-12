@@ -1,4 +1,5 @@
 import { WriteHistoryView } from "./WriteHistoryView";
+import { CollectionsView } from "./CollectionsView";
 import { useEffect, useState, type CSSProperties } from "react";
 import { MonoLabel } from "../kit";
 import { useInstalled, usePhoneFrame } from "./frame";
@@ -246,6 +247,8 @@ function DesktopHome() {
 
       {route.view === "Chat" ? <ChatView chat={chat} voice={voice} /> : null}
       {route.view !== "Chat" ? <VoiceIndicator voice={voice} onReturn={() => setRoute({ view: "Chat" })} /> : null}
+      {home.status === "ready" && route.view === "Collections" ? <CollectionsView /> : null}
+
 
       {home.status === "ready" && route.view === "Activity" ? (
         <Activity home={home.data} resolved={resolved} onInvoke={invoke} />

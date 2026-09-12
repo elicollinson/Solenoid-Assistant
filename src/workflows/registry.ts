@@ -215,15 +215,15 @@ const WORKFLOWS: readonly RunnableWorkflow[] = [
         output: result,
         effects: [
           `Looked at ${plural(result.returned, "screenshot")} out of ${result.totalInWindow} in the window.`,
-          `Created ${plural(created.length, "Notion entry", "Notion entries")} and updated ${updated.length}.`,
+          `Created ${plural(created.length, "collection item", "collection items")} and updated ${updated.length}.`,
           ...(result.quarantined ? [`Quarantined ${plural(result.quarantined, "screenshot")}.`] : []),
           ...(result.failed ? [`${plural(result.failed, "screenshot")} failed on the way through.`] : []),
         ],
         prose: [
-          `I classified ${plural(result.returned, "screenshot")} from since ${result.windowStart}, sourced a content card for everything I recognised, and wrote each one into the gallery.`,
+          `I classified ${plural(result.returned, "screenshot")} from since ${result.windowStart}, sourced a content card for everything I recognised, and saved each one to Collections.`,
           ingested.length
-            ? `Into Notion: ${ingested.map((shot) => shot.contentCard?.name ?? shot.classification?.name).join(", ")}.`
-            : "Nothing reached Notion — either nothing was recognisable, or everything I recognised was already there.",
+            ? `Saved to Collections: ${ingested.map((shot) => shot.contentCard?.name ?? shot.classification?.name).join(", ")}.`
+            : "Nothing new was saved — either nothing was recognisable, or everything I recognised was already there.",
         ],
       };
     },

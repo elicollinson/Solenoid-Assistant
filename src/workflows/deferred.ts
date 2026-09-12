@@ -13,18 +13,9 @@ import { newWriteCall, withWriteCall } from "../core/writeExecution";
 //
 // ## Where a tool comes back from
 //
-// Two sources, because there are two kinds of tool in this service.
-//
-//   * Ours. Every one lives in a group in ../tools/groups.ts, and a group is a
-//     factory over `{ db, okf }` — which is exactly why they are factories. So
-//     the catalog is rebuilt here against the same handles and the tool is
-//     found by name. Nothing about it is stale: it was never anything but a
-//     closure over a database handle.
-//
-//   * A remote server's. `notion-create-pages` belongs to an MCP client, and
-//     the one this app keeps alive at startup (../mcp/notionCache.ts) is the
-//     same connection the run used. A server that is not connected means the
-//     call cannot be made, which is said out loud rather than guessed at.
+// Local tools live in ../tools/groups.ts. Rebuild the group against the current
+// handles and find the tool by name. A tool no longer in this build cannot run;
+// a historical deferred action must never reconnect a retired integration.
 //
 // ## What is checked before it runs
 //
@@ -38,13 +29,11 @@ import { and, eq } from "drizzle-orm";
 import type { AgentTool } from "../core/tools";
 import { readDeferredWrite, settleDeferredWrite } from "../db/mutations/workflows";
 import { TOOL_GROUP_CATALOG, type ToolGroupContext } from "../tools/groups";
-import { getNotionMcpClient } from "../mcp/notionCache";
-import { loadMcpTools } from "../mcp/adapter";
 import { capabilityFor, resolvePermission } from "./permissions";
 
 /** Why a deferred call could not be made. Each is a different sentence to a
  *  person, which is why they are not one boolean. */
-export type RefusalReason = "denied" | "unknown_tool" | "disconnected";
+export type RefusalReason = "denied" | "unknown_tool";
 
 /** `summary` is the feed entry's TITLE, so it is one short sentence and never
  *  the payload: the title is Space Grotesk prose in a single row beside a badge
@@ -59,8 +48,7 @@ export type DeferredOutcome =
 /**
  * Find the tool a deferred call names.
  *
- * Async only because of the MCP branch. Ours are synchronous — a group factory
- * is a closure over handles the caller already has.
+ * A group factory is a closure over handles the caller already has.
  */
 export async function resolveDeferredTool(
   context: ToolGroupContext,
@@ -71,19 +59,14 @@ export async function resolveDeferredTool(
     if (found) return found;
   }
 
-  // Not ours. The only other tools this service ever holds come from an MCP
-  // server, and the only one it keeps connected is Notion.
-  const client = getNotionMcpClient();
-  if (!client) return undefined;
-  const remote = await loadMcpTools(client);
-  return remote.find((tool) => tool.definition.function.name === name);
+  return undefined;
 }
 
 /**
  * Make the call, or say why not.
  *
  * Never throws for an ordinary refusal: "the rule now says deny" and "that
- * server is not connected" are answers a person needs to read, not exceptions.
+ * tool is no longer available" are answers a person needs to read, not exceptions.
  * A tool that throws while running is caught and reported as a failure, exactly
  * as ../core/rawAgent.ts does for a live one — the record has to say the write
  * was attempted and did not land.
@@ -92,7 +75,7 @@ export async function runDeferredWrite(
   db: Db,
   call: { runId: string; tool: string; args: unknown; requestId?: string },
   context: ToolGroupContext,
-  /** Where a tool comes back from. The catalog plus the MCP cache, everywhere
+  /** Where a tool comes back from. The current tool catalog, everywhere
    *  but a test — what is worth checking here is the bookkeeping around a call,
    *  not the ten factories that build one. Same bargain as `lookup` in
    *  ./runner.ts. */
@@ -123,18 +106,11 @@ export async function runDeferredWrite(
 
   const tool = await resolve(call.tool);
   if (!tool) {
-    const remote = call.tool.includes("-") && !getNotionMcpClient();
-    return remote
-      ? {
-        ran: false,
-        reason: "disconnected",
-        summary: `Not done: ${call.tool} belongs to a server this app is not connected to right now.`,
-      }
-      : {
-        ran: false,
-        reason: "unknown_tool",
-        summary: `Not done: this build has no tool called ${call.tool}.`,
-      };
+    return {
+      ran: false,
+      reason: "unknown_tool",
+      summary: `Not done: this build has no tool called ${call.tool}.`,
+    };
   }
 
   try {

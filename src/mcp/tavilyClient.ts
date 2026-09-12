@@ -1,5 +1,5 @@
 // Tavily MCP client — connects to Tavily's hosted MCP server for live web
-// access (search, extract, crawl, map). Unlike Notion, Tavily uses a simple
+// access (search, extract, crawl, map). Tavily uses a simple
 // API key in the URL query string — no OAuth flow needed.
 //
 // The server endpoint is:
@@ -107,7 +107,7 @@ export async function connectToTavilyMcp(apiKey?: string): Promise<Client> {
 }
 
 // ---------------------------------------------------------------------------
-// Client class (mirrors the NotionMcpClient shape for consistency)
+// Client lifecycle
 // ---------------------------------------------------------------------------
 
 export class TavilyMcpClient {

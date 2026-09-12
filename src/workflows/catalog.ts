@@ -87,12 +87,6 @@ export const KNOWN_WRITE_CAPABILITIES: readonly WriteCapabilityInfo[] = [
     ],
   },
   {
-    capability: "notion.write",
-    label: "Notion Workspace",
-    description: "Create and update pages in Notion workspace",
-    tools: ["notion-create-pages", "notion-update-page"],
-  },
-  {
     capability: "tavily.write",
     label: "Tavily Search",
     description: "Execute web search queries",
@@ -216,25 +210,18 @@ export const WORKFLOW_CATALOG: readonly WorkflowCatalogEntry[] = [
     slug: "screenshot-ingestion",
     name: "Screenshot ingestion",
     description:
-      "Classify recent screenshots, source a content card for everything that isn't rejected, and write it into the Notion gallery. This one writes to your workspace.",
+      "Classify recent screenshots, source a content card for everything that isn't rejected, and save it into your app-owned Collections.",
     trigger: "on_demand",
     cadence: "On demand",
     rrule: null,
-    // Two, because two MCP servers are reached. `notion.write` is the real
-    // one: it creates and updates pages in your workspace. `tavily.write` is
-    // an artefact of ../mcp/adapter.ts marking every remote tool a write — a
-    // remote server does not say whether a call changes anything, so the safe
-    // guess is that it does, and a web search is caught by it.
-    permissions: [
-      { capability: "notion.write", mode: "allow" },
-      { capability: "tavily.write", mode: "allow" },
-    ],
+    // Remote search tools use the MCP adapter's write permission gate.
+    permissions: [{ capability: "tavily.write", mode: "allow" }],
     inputs: [
       field("hoursBack", "Hours back", { kind: "number", default: 24 }),
       field("limit", "Most screenshots", {
         kind: "number",
         default: 5,
-        help: "Each one costs a vision call, a web search and a Notion write.",
+        help: "Each one costs a vision call, a web search and a local save.",
       }),
     ],
   },

@@ -93,7 +93,7 @@ Four services, one image:
 | Path in container | Backed by | Mode | Reasoning |
 | --- | --- | --- | --- |
 | `/app/data/solenoid.db` | named volume `solenoid-data` | rw | ext4 inside the VM: correct SQLite locking. Costs you direct Finder access — see backups below. |
-| `/app/.env` | bind `../.env` | **rw** | `src/mcp/notionClient.ts` rotates the Notion refresh token straight back into `.env`. Mount it read-only or hand it in as a Docker secret and the token rotation silently breaks. |
+| `/app/.env` | bind `../.env` | **ro** | Runtime configuration and secrets. The app does not write credentials back into this file. |
 | `/app/okf` | bind `../okf` | rw | Markdown meant to be read and edited by hand. Plain file writes, so the bind mount is safe here in a way it is not for SQLite. |
 | `/app/models` | bind `../models` | ro | ~500MB, licence-gated, gitignored. Mount, don't bake. |
 | `/hostmirror` | bind `../hostmirror` | ro | Phase 2 only. |
@@ -134,7 +134,6 @@ over `.env` under Bun, so the container-only overrides live in
 | `MODEL_ARMOR_TEMPLATE_ID` | `base-detector` | `base-detector` | Google Cloud Model Armor template name. |
 | `OPENAI_BASE_URL` | LAN IP or `localhost` | `http://host.docker.internal:1234/v1` **if LM Studio runs on this Mac** | A LAN IP needs no change. `localhost` does. |
 | `OLLAMA_API_URL` | `https://ollama.com` or `localhost:11434` | `http://host.docker.internal:11434` for a local Ollama | Same reason. |
-| `NOTION_MCP_REDIRECT_URI` | `http://localhost:3001/callback` | unchanged | Run `bun run auth:notion` **on the host**, not in the container — it opens a browser and binds :3001. The tokens land in the mounted `.env`. |
 
 ### The one code change worth making (Phase 2)
 
@@ -170,7 +169,7 @@ Take option 1.
 - **`bun run serve:tailscale`** — needs the `tailscale` CLI and the daemon's
   state. It proxies to `127.0.0.1:3000`, which is exactly where compose
   publishes. No change.
-- **`bun run auth:notion`**, `verify:model-armor`, `make:icons` — one-off
+- **`verify:model-armor`**, `make:icons` — one-off
   developer commands; keep running them on the host against the same checkout.
 
 ---
@@ -273,7 +272,6 @@ leave the two Photos workflows as host-only and say so in the UI.
 | --- | --- | --- |
 | SQLite across the VM boundary | **high** — silent corruption | Named volume; one writer; never bind-mount the `.db`. |
 | Two containers migrating at once | medium | One-shot `migrate` service with `service_completed_successfully`. |
-| `.env` mounted read-only | medium | Notion token rotation fails ~8h in, quietly. Mount rw. |
 | `latest` Phoenix tag | medium | Pin it. |
 | `onnxruntime-node` on the wrong libc/arch | medium | Debian slim; install inside the image; `node_modules` in `.dockerignore`. |
 | Full Disk Access for the launchd mirror job | medium | macOS grants FDA per *binary*; granting it to Terminal is not enough. Expect one round of "zero contacts loaded" before it takes. |
@@ -303,3 +301,13 @@ Both plists have `USERNAME` placeholders. `compose.yaml` mounts
 The `log-monitoring` workflow uses the existing VictoriaLogs endpoint and shared
 SQLite database. Configuration, dry-run activation, collection limits, and the
 mini-cloud shared environment and manual rollout are documented in [log-monitoring.md](../docs/log-monitoring.md).
+
+
+## Import saved collections after release
+
+Deploy the Collections code/schema first, then back up the live SQLite database
+consistently. Privately copy the saved collection snapshot to the instance and
+run `bun run import:collections --snapshot <file.json> --apply --database <live-db>`.
+The importer is offline and requires no Notion credentials. Verify every snapshot
+record and retain the backup for rollback. Do not replace the live database with
+the isolated preview DB. See [the import guide](../docs/collections-import.md).

@@ -66,6 +66,20 @@
       "breakpoints": true
     },
     {
+      "idx": 9,
+      "version": "6",
+      "when": 1789236267656,
+      "tag": "0009_collections",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1789236469885,
+      "tag": "0010_collection_imports",
+      "breakpoints": true
+    },
+    {
       "idx": 12,
       "version": "6",
       "when": 1789236471885,

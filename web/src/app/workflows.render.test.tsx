@@ -340,6 +340,7 @@ describe("a workflow with code behind it", () => {
     // The row's controls only appear under the pointer, so what is checked here
     // is the flag they are drawn from and the row itself.
     expect(after.rows.filter((row) => row.runnable).map((row) => row.slug).sort()).toEqual([
+      "log-monitoring",
       "message-extraction",
       "safety-classification",
       "screenshot-classification",

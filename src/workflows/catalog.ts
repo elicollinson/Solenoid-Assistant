@@ -26,6 +26,7 @@ export interface WriteCapabilityInfo {
 }
 
 export const KNOWN_WRITE_CAPABILITIES: readonly WriteCapabilityInfo[] = [
+  { capability: "github.write", label: "GitHub Incidents", description: "Create evidence-based log incident issues in the configured repository", tools: ["github_create_incident"] },
   {
     capability: "okf.write",
     label: "OKF Memory",
@@ -160,6 +161,16 @@ function field(
 }
 
 export const WORKFLOW_CATALOG: readonly WorkflowCatalogEntry[] = [
+  {
+    slug: "log-monitoring",
+    name: "Service log monitoring",
+    description: "Analyze all VictoriaLogs services together, correlate failures, and file actionable incidents with sanitized evidence and duplicate prevention.",
+    trigger: "schedule",
+    cadence: "Hourly",
+    rrule: "FREQ=HOURLY;BYMINUTE=0",
+    permissions: [{ capability: "github.write", mode: "allow" }],
+    inputs: [field("dryRun", "Dry run", { kind: "text", default: "false", help: "Preview incidents without publishing or advancing scan progress." })],
+  },
   {
     slug: "message-extraction",
     name: "iMessage extraction",

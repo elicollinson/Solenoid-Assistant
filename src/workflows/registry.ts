@@ -1,3 +1,5 @@
+import type { Db } from "../db";
+import { scanLogs } from "./logMonitoring";
 import { assertCollected } from "../sources/store";
 // What happens when you press Run.
 //
@@ -34,6 +36,10 @@ export interface WorkflowOutcome {
 
 /** What the runner tells a workflow about the run it is inside. */
 export interface WorkflowContext {
+  db?: Db;
+  /** Optional user guidance for this execution only. Shared Agent entry points
+   * inherit it automatically, including nested calls in this async execution. */
+  guidance?: string;
   /** Raised when the run is stopped from the surface. A workflow that reaches
    *  something abortable should pass this to it; one that does not simply runs
    *  to the end and has its result dropped. */
@@ -84,6 +90,16 @@ function when(at: Date): string {
 }
 
 const WORKFLOWS: readonly RunnableWorkflow[] = [
+  define({
+    slug: "log-monitoring",
+    schema: z.object({ dryRun: z.preprocess(value => value === "true" ? true : value === "false" || value === "" ? false : value, z.boolean().default(false)) }),
+    execute: async (args, context) => {
+      const result = await scanLogs(args, context);
+      return { output: result,
+        effects: result.issues ? result.issues.map(i => `${i.status}: ${i.url ?? i.title ?? "incident"}`) : [],
+        prose: result.services ? [`Reviewed ${result.records} records across ${Object.keys(result.services).length} observed services in one agent conversation.`, result.coverage, ...result.gaps] : [result.message] };
+    },
+  }),
   define({
     slug: "message-extraction",
     schema: z.object({

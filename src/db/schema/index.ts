@@ -17,3 +17,4 @@ export * from "./search";
 export * from "./settings";
 
 export * from "./sources";
+export * from "./logMonitoring";

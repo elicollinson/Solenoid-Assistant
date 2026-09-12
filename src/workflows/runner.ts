@@ -21,8 +21,11 @@ import { log as baseLog, withLogContext } from "../core/logger";
 const log = baseLog.child("workflow");
 import { SemanticConventions, safeJson, withSpanKind } from "../core/tracing";
 import { catalogEntry } from "./catalog";
-import { parseWorkflowArgs, runnableWorkflow, type RunnableWorkflow, type WorkflowOutcome } from "./registry";
+import { WorkflowArgsError, parseWorkflowArgs, runnableWorkflow, type RunnableWorkflow, type WorkflowOutcome } from "./registry";
 import { withRunPermissions } from "./permissions";
+import { withRunGuidance, workflowGuidanceSchema } from "../core/runGuidance";
+import { withoutTurn } from "../chat/turn";
+import { z } from "zod";
 
 /** Thrown when the slug names nothing this database knows — HTTP 404. */
 export class UnknownWorkflowError extends Error {
@@ -58,6 +61,10 @@ export interface StartedRun {
 
 export interface StartOptions {
   now?: Date;
+  /** User guidance for this execution; never saved as workflow configuration. */
+  guidance?: string;
+  /** Invocation provenance, supplied by the caller, never by the model. */
+  source?: { kind: "chat"; conversationId?: string };
   /**
    * Who set this off. Defaults to a person pressing Run.
    *
@@ -205,6 +212,9 @@ export function startWorkflowRun(db: Db, slug: string, rawArgs: unknown, options
 
   // Throws WorkflowArgsError, which the route turns into a 400.
   const args = parseWorkflowArgs(slug, rawArgs, runnable);
+  const parsedGuidance = workflowGuidanceSchema.safeParse(options.guidance);
+  if (!parsedGuidance.success) throw new WorkflowArgsError(slug, z.prettifyError(parsedGuidance.error));
+  const guidance = parsedGuidance.data || undefined;
 
   const [previous] = db
     .select({ ordinal: s.workflowRuns.ordinal })
@@ -240,8 +250,12 @@ export function startWorkflowRun(db: Db, slug: string, rawArgs: unknown, options
     t.update(s.workflows).set({ lastRunId: runId }).where(eq(s.workflows.id, workflow.id)).run();
   });
 
-  write(db, runId, 0, "info", `Run ${ordinal} started by you.`, now);
-  write(db, runId, 1, "debug", `Arguments: ${safeJson(args)}`, now);
+  write(db, runId, 0, "info", `Run ${ordinal} started ${options.source?.kind === "chat" ? "from chat" : trigger === "schedule" ? "by the schedule" : "by you"}.`, now);
+  // Durable even for cancelled or crashed runs. Ordinary invocations retain
+  // the existing arguments log contract.
+  write(db, runId, 1, "debug", guidance || options.source
+    ? `Invocation: ${safeJson({ args, guidance, source: options.source })}`
+    : `Arguments: ${safeJson(args)}`, now);
 
   const controller = new AbortController();
   inFlight.set(runId, controller);
@@ -249,7 +263,8 @@ export function startWorkflowRun(db: Db, slug: string, rawArgs: unknown, options
   return {
     runId,
     ordinal,
-    settled: execute(db, runId, runnable, args, ordinal, controller.signal, workflow.id),
+    settled: withoutTurn(() => withRunGuidance(guidance, () =>
+      execute(db, runId, runnable, args, ordinal, controller.signal, workflow.id, guidance))),
   };
 }
 
@@ -268,6 +283,7 @@ function execute(
   ordinal: number,
   signal: AbortSignal,
   workflowId: string,
+  guidance?: string,
 ): Promise<void> {
   // Everything the work says, at any depth, comes out carrying this run's id
   // without a single signature between here and there having to mention it.
@@ -284,7 +300,7 @@ function execute(
     // remember would be a hole exactly where a hole is least affordable.
     () => withRunPermissions(
       { db, workflowId, runId, slug: runnable.slug },
-      () => run(db, runId, runnable, args, ordinal, signal),
+      () => run(db, runId, runnable, args, ordinal, signal, guidance),
     ),
   );
 }
@@ -296,6 +312,7 @@ async function run(
   args: unknown,
   ordinal: number,
   signal: AbortSignal,
+  guidance?: string,
 ): Promise<void> {
   const slug = runnable.slug;
   const startedAt = Date.now();
@@ -314,7 +331,7 @@ async function run(
         // makes the three views of one run the same run: the Trace tab, the
         // Phoenix span, and `trace_id:"..."` in the log store.
         rememberTrace(db, runId, span);
-        const result = await runnable.execute(args, { signal });
+        const result = await runnable.execute(args, { signal, db, ...(guidance ? { guidance } : {}) });
         span.setAttributes({
           [SemanticConventions.OUTPUT_VALUE]: safeJson(result.output),
           [SemanticConventions.OUTPUT_MIME_TYPE]: "application/json",

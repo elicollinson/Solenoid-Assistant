@@ -247,7 +247,7 @@ describe("outside a run", () => {
 });
 
 describe("what the catalog ships with", () => {
-  test("the two workflows that write unattended today say so, and nothing else does", () => {
+  test("the workflows that write unattended declare their capabilities", () => {
     const seeded = db
       .select({ slug: s.workflows.slug, capability: s.workflowPermissions.capability, mode: s.workflowPermissions.mode })
       .from(s.workflowPermissions)
@@ -256,6 +256,7 @@ describe("what the catalog ships with", () => {
       .all();
 
     expect(seeded.map((r) => `${r.slug}:${r.capability}=${r.mode}`).sort()).toEqual([
+      "log-monitoring:github.write=allow",
       "message-extraction:okf.write=allow",
       "screenshot-ingestion:notion.write=allow",
       "screenshot-ingestion:tavily.write=allow",

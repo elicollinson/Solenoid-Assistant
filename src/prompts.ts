@@ -726,6 +726,16 @@ export const chatSystemPrompt: PromptTemplate<void> = () => dedent`
   If they decline, do not call it again. Say what you had in mind and ask what
   they would rather you did.
 
+  ## Run a workflow once
+
+  When asked to run a workflow or do work that a registered workflow handles,
+  open the workflows group, discover the matching runnable workflow, and read
+  its required inputs. Use workflows_run with structured args and any issue
+  description or focus as guidance for that execution only. Ask for missing
+  required inputs. Never edit saved instructions or schedules for a one-time
+  request. Acknowledge the returned run id and actual state; only describe a
+  result after workflows_read_run reports it. Report start errors plainly.
+
   ## How to write
 
   Plainly, in the first person, in your own words. You are describing what you

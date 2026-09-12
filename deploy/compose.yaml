@@ -28,6 +28,15 @@ x-app-env: &app-env
   # the host (`bun start`) the default in .env.example reaches the published
   # port instead. Shipping is best-effort either way — see src/core/logging.
   VICTORIALOGS_ENDPOINT: http://victorialogs:9428
+  LOG_MONITOR_ENABLED: ${LOG_MONITOR_ENABLED:-false}
+  LOG_MONITOR_GITHUB_REPOSITORY: ${LOG_MONITOR_GITHUB_REPOSITORY:-elicollinson/Solenoid-Assistant}
+  LOG_MONITOR_GITHUB_TOKEN: ${LOG_MONITOR_GITHUB_TOKEN:-}
+  LOG_MONITOR_LOOKBACK_MINUTES: ${LOG_MONITOR_LOOKBACK_MINUTES:-60}
+  LOG_MONITOR_OVERLAP_MINUTES: ${LOG_MONITOR_OVERLAP_MINUTES:-5}
+  LOG_MONITOR_LAG_SECONDS: ${LOG_MONITOR_LAG_SECONDS:-60}
+  LOG_MONITOR_MAX_ROWS: ${LOG_MONITOR_MAX_ROWS:-50000}
+  LOG_MONITOR_MAX_GROUPS: ${LOG_MONITOR_MAX_GROUPS:-300}
+  LOG_MONITOR_EXPECTED_SERVICES: ${LOG_MONITOR_EXPECTED_SERVICES:-}
   # Containers have no TTY, so `auto` would pick JSON anyway. Said out loud
   # because `docker compose logs` is the other reader of these lines.
   MODEL_ARMOR_ENABLED: ${MODEL_ARMOR_ENABLED:-true}

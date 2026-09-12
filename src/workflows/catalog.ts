@@ -37,7 +37,7 @@ export const KNOWN_WRITE_CAPABILITIES: readonly WriteCapabilityInfo[] = [
     capability: "okf.write",
     label: "OKF Memory",
     description: "Write facts, summaries, and memories to the local OKF store",
-    tools: ["okf_create", "okf_patch", "okf_move", "okf_deprecate"],
+    tools: ["okf_create", "okf_patch", "okf_move", "okf_deprecate", "okf_apply_reflection"],
   },
   {
     capability: "calendar.write",
@@ -161,6 +161,7 @@ function field(
 }
 
 export const WORKFLOW_CATALOG: readonly WorkflowCatalogEntry[] = [
+  { slug: "okf-reflection", name: "Memory reflection", description: "Connect related memories and update OKF with cited syntheses, preserving original accounts.", trigger: "on_demand", cadence: "On demand", rrule: null, permissions: [{ capability: "okf.write", mode: "allow" }], inputs: [] },
   {
     slug: "log-monitoring",
     name: "Service log monitoring",

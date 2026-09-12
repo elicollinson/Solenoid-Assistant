@@ -1,3 +1,6 @@
+import { hasPendingFileWrite, HistoryConflict } from "../../writeHistory/history";
+import { conceptLinks } from "../../okf/links";
+import { lastVerifiedAt, trustTier } from "../../okf/trust";
 // okf/ → okf_objects, okf_fields, okf_conflicts, links, okf_sync_state.
 //
 // A projection, not a copy: the filesystem stays the source of truth and this
@@ -16,7 +19,7 @@
 //   * narratives. The agent's prose about a memory is the memory: it is already
 //     in `description` and the body, both stored verbatim. A second copy in
 //     `narratives` would be the same words with a second place to go stale.
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import * as s from "../schema";
@@ -168,6 +171,8 @@ export async function reindexOkf(db: Db, options: ReindexOptions = {}): Promise<
   const root = options.root ?? "okf";
   const now = options.now ?? new Date();
 
+  const writeRevision = () => JSON.stringify(db.$client.query("SELECT id,execution FROM okf_writes ORDER BY id").all());
+  const beforeWrites = writeRevision();
   const bundle = await openBundle(root);
   const { concepts, problems } = await scanConcepts(bundle);
 
@@ -195,17 +200,32 @@ export async function reindexOkf(db: Db, options: ReindexOptions = {}): Promise<
       id: okfObjectId(uri),
       concept,
       chronology: chronologies.get(concept.id),
-      related: relatedConcepts(concept.body),
+      related: conceptLinks(concept.id, concept.body).filter(l => l.kind === "concept" && l.id).map(l => l.id!),
     });
   }
 
   const known = new Set(prepared.map((p) => p.conceptId));
 
   return db.transaction((t) => {
+    if (hasPendingFileWrite(db, root) || beforeWrites !== writeRevision()) throw new HistoryConflict("Knowledge write is incomplete; finish or recover it before refreshing");
     let fieldCount = 0;
     let conflictCount = 0;
     let linkCount = 0;
 
+    // Keep evidence identities as tombstones, but exclude vanished files from
+    // current knowledge. A parse error is not a deletion.
+    if (!problems.length) {
+      for (const old of t.select().from(s.okfObjects).all()) {
+        if (!known.has(old.uri.replace(/^okf:/, ""))) {
+          t.update(s.okfObjects).set({ status: "missing" }).where(eq(s.okfObjects.id, old.id)).run();
+          t.update(s.okfFields).set({ retiredAt: now }).where(eq(s.okfFields.objectId, old.id)).run();
+        }
+      }
+    }
+    // Only this indexer's namespaced edges can be reconciled. Manual/evidence
+    // links retain their independent ownership.
+    if (!problems.length) t.delete(s.links).where(sql`substr(${s.links.id},1,5) = 'okfl_'`).run();
+    else for (const item of prepared) t.delete(s.links).where(and(eq(s.links.fromId, item.id), sql`substr(${s.links.id},1,5) = 'okfl_'`)).run();
     for (const item of prepared) {
       const { concept, uri, id, chronology } = item;
       const frontmatter = concept.frontmatter;
@@ -245,6 +265,7 @@ export async function reindexOkf(db: Db, options: ReindexOptions = {}): Promise<
         contentSha256: stat?.sha ?? null,
         generatedBy: gen.by,
         generatedAt: gen.at,
+        verifiedAt: trustTier(frontmatter) === "unverified" ? null : when(lastVerifiedAt(frontmatter)),
         staleAfter: when(frontmatter.stale_after),
         createdAt: created,
         updatedAt: updated,
@@ -300,7 +321,7 @@ export async function reindexOkf(db: Db, options: ReindexOptions = {}): Promise<
           ordinal: index,
           label: field.label,
           value: field.value,
-          assertedAt: gen.at,
+          assertedAt: held.find(f => f.id === fieldId)?.assertedAt ?? gen.at,
           sourceLabel: label,
           provenance,
           conflictGroupId: groups[index] ?? null,
@@ -369,7 +390,7 @@ export async function reindexOkf(db: Db, options: ReindexOptions = {}): Promise<
         const toId = okfObjectId(uriFor(target));
         if (toId === item.id) continue;
         t.insert(s.links)
-          .values({ id: ulid(), fromId: item.id, toId, rel: "references", createdAt: now, createdBy: "agent" })
+          .values({ id: `okfl_${sha256(`${item.id}:${toId}`)}`, fromId: item.id, toId, rel: "references", createdAt: now, createdBy: "agent" })
           .onConflictDoNothing()
           .run();
         linkCount++;

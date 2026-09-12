@@ -31,6 +31,7 @@
     "make:icons": "bun run scripts/make-icons.ts",
     "serve:tailscale": "bun run scripts/serve-tailscale.ts",
     "db:index-okf": "bun run scripts/db-index-okf.ts",
+    "okf:embeddings": "bun run scripts/okf-embeddings.ts",
     "source:collect": "bun run scripts/collect-host-data.ts",
     "source:catch-up": "bun run scripts/source-catch-up.ts",
     "import:collections": "bun run scripts/import-collections.ts"

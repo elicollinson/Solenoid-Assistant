@@ -54,6 +54,12 @@ export async function resolveDeferredTool(
   name: string,
 ): Promise<AgentTool | undefined> {
   // This deterministic workflow write is not exposed to an agent's tool groups.
+  if (name === "okf_apply_reflection") {
+    const { reflectionWriteTool } = await import("./dream");
+    const { createHistoryRuntime } = await import("../writeHistory/runtime");
+    const { OKF_ROOT } = await import("../knowledgeSearch/runtime");
+    return reflectionWriteTool(createHistoryRuntime(context.db, OKF_ROOT));
+  }
   if (name === "collections_save_screenshot") return collectionWriteTool(context.db);
   for (const factory of Object.values(TOOL_GROUP_CATALOG)) {
     const found = factory(context).tools.find((tool) => tool.definition.function.name === name);

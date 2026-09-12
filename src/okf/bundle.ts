@@ -5,6 +5,7 @@
 // resolve/guard seam, the same way the iMessage tools expose no parameter that
 // could reach past the trust boundary: an out-of-bundle write is not
 // expressible in the tool vocabulary.
+import { realpathSync } from "node:fs";
 import { mkdir, rename } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import * as posix from "node:path/posix";
@@ -131,4 +132,16 @@ export async function writeFileAtomic(path: string, contents: string): Promise<v
   const tmp = `${path}.tmp-${process.pid}-${++tmpCounter}`;
   await Bun.write(tmp, contents);
   await rename(tmp, path);
+}
+
+/** Resolve aliases even before a new bundle exists, so locks and search use one identity. */
+export function canonicalBundleRoot(root: string): string {
+  const full = resolve(root);
+  try { return realpathSync(full); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const parent = dirname(full);
+    if (parent === full) return full;
+    return join(canonicalBundleRoot(parent), posix.basename(full));
+  }
 }

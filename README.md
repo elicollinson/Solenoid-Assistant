@@ -10,6 +10,7 @@ A local Bun service for experimenting with tool-using agents and personal-assist
 - `osxphotos` for screenshot workflows
 - Optional Tavily credentials for live web search
 - Optional [Pushover reminder notifications](docs/pushover-reminders.md), delivered at the reminder's due time
+- Optional [Gemini-backed OKF search and memory reflection](docs/okf-semantic-search-setup.md), using the existing Google identity and Workflows screen
 
 ## Setup
 

@@ -1,31 +1,28 @@
 import { rejectCollectedPhoto } from "../sources/assets";
 import { createClassifierAgent } from "../agents/classifier";
 import { createContentCardSourcingAgent } from "../agents/contentCardSourcing";
-import { createRecommendationIngestionAgent } from "../agents/recommendationIngestion";
+import { getDb, type Db } from "../db";
+import { collectionSourceExists, type LocalIngestionResult } from "../db/mutations/collections";
+import { currentConsent } from "../core/consent";
+import { collectionWriteTool } from "./collectionWrite";
+import type { Collection } from "../shared/collections";
 import type { AgentResource } from "../agents/resource";
 import {
   contentCardSchema,
-  recommendationIngestionSchema,
   type ClassificationResult,
   type ContentCard,
-  type RecommendationIngestionInput,
-  type RecommendationIngestionResult,
 } from "../prompts";
 import {
   classifyScreenshots,
   type ClassifyScreenshotsParams,
   type ClassifyScreenshotsResult,
 } from "../tools/photos";
-import {
-  loadProcessed,
-  markAsIngested,
-  saveProcessed,
-} from "../utils/screenshotsProcessed";
+import { loadProcessed } from "../utils/screenshotsProcessed";
 import { runIsolated } from "../utils/fanout";
 
 function classificationToCollection(
   classification: ClassificationResult["classification"],
-): RecommendationIngestionInput["collection"] {
+): Collection {
   switch (classification) {
     case "Book":
       return "book";
@@ -69,7 +66,7 @@ export interface ScreenshotIngestionItem {
   path: string;
   classification: ClassificationResult | null;
   contentCard: ContentCard | null;
-  ingestion: RecommendationIngestionResult | null;
+  ingestion: LocalIngestionResult | null;
   status: ScreenshotIngestionStatus;
   error?: string;
 }
@@ -87,9 +84,8 @@ export interface ScreenshotIngestionResult {
 export interface ScreenshotIngestionDependencies {
   classify?: typeof classifyRecentScreenshots;
   createContentResource?: typeof createContentCardSourcingAgent;
-  createRecommendationResource?: typeof createRecommendationIngestionAgent;
+  db?: Db;
   loadProcessed?: typeof loadProcessed;
-  saveProcessed?: typeof saveProcessed;
 }
 
 export async function ingestRecentScreenshots(
@@ -100,20 +96,10 @@ export async function ingestRecentScreenshots(
     dependencies.classify ?? classifyRecentScreenshots
   )(params);
   let contentResource: AgentResource | undefined;
-  let recommendationResource: AgentResource | undefined;
 
   try {
-    contentResource = await (
-      dependencies.createContentResource ?? createContentCardSourcingAgent
-    )();
-    recommendationResource = await (
-      dependencies.createRecommendationResource ??
-      createRecommendationIngestionAgent
-    )();
-
     const processed = await (dependencies.loadProcessed ?? loadProcessed)();
-    const contentAgent = contentResource.agent;
-    const recommendationAgent = recommendationResource.agent;
+    const db = dependencies.db ?? getDb();
     const batch = await runIsolated({
       items: classified.screenshots,
       key: (screenshot) => screenshot.uuid,
@@ -140,6 +126,7 @@ export async function ingestRecentScreenshots(
       }
       const classification = screenshot.classification;
 
+      if (collectionSourceExists(db, screenshot.uuid)) return { ...base, status: "skipped" };
       const existing = processed[screenshot.uuid];
       if (existing) {
         return {
@@ -163,40 +150,31 @@ export async function ingestRecentScreenshots(
         };
       }
 
-      const contentCard = await contentAgent.run(
+      contentResource ??= await (dependencies.createContentResource ?? createContentCardSourcingAgent)();
+      const contentCard = await contentResource.agent.run(
         classification.name,
         contentCardSchema,
       ) as ContentCard;
 
-      const input: RecommendationIngestionInput = {
-        name: contentCard.name,
-        url: contentCard.url,
-        description: contentCard.description || undefined,
-        image_url: contentCard.coverImageUrl || undefined,
+      const write = collectionWriteTool(db);
+      const input = write.schema.parse({
+        uuid: screenshot.uuid, filename: screenshot.filename, date: screenshot.date,
+        path: screenshot.path, classification, contentCard,
         collection: classificationToCollection(classification.classification),
-      };
-
-      const ingestion = await recommendationAgent.run(
-        JSON.stringify(input),
-        recommendationIngestionSchema,
-      );
-      if (ingestion.status !== "error") {
-        markAsIngested(
-          processed,
-          screenshot.uuid,
-          classification.classification,
-          classification.name,
-        );
-        // Persist after each successful side effect. If a later scanner
-        // failure aborts the batch, completed Notion writes remain recorded.
-        await (dependencies.saveProcessed ?? saveProcessed)(processed);
-      }
+      });
+      const gate = currentConsent();
+      if (!gate) throw new Error("Collection saves require a workflow permission context");
+      const verdict = await gate({
+        tool: write.definition.function.name, kind: write.kind, args: input,
+        description: write.definition.function.description,
+      });
+      if (!verdict.allow) return { ...base, contentCard, status: "skipped", error: verdict.tell };
+      const ingestion = await write.execute(input) as LocalIngestionResult;
       return {
         ...base,
         contentCard,
         ingestion,
-        status: ingestion.status === "error" ? "failed" : "ingested",
-        error: ingestion.error ?? undefined,
+        status: "ingested",
       };
     },
     });
@@ -239,6 +217,5 @@ export async function ingestRecentScreenshots(
     };
   } finally {
     await contentResource?.close();
-    await recommendationResource?.close();
   }
 }

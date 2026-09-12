@@ -166,7 +166,7 @@ export const CHECK_KIND = ["probe", "read", "write"] as const;
  */
 export const connectionChecks = sqliteTable("connection_checks", {
   id: text().primaryKey(),
-  /** The setting that names what was reached: "notion.ds.books". */
+  /** The setting that names what was reached: "tavily.search". */
   settingKey: text().notNull().references(() => settings.key, { onDelete: "cascade" }),
   at: tsReq(),
   kind: text({ enum: CHECK_KIND }).notNull().default("probe"),

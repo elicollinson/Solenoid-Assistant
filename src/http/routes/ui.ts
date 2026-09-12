@@ -1,3 +1,4 @@
+import { createCollectionRoutes } from "./collections";
 import { Elysia, t } from "elysia";
 import { isSurface, type Surface } from "../../shared/surface";
 import { getDb, type Db } from "../../db";
@@ -80,6 +81,7 @@ export function createUiRoutes(
   const surface = t.Object({ surface: t.Optional(t.Union([t.Literal("desktop"), t.Literal("phone")])) });
 
   return new Elysia({ name: "routes.ui" })
+    .use(createCollectionRoutes(resolveDb))
     .get("/api/home", ({ query }) => loadHome(resolveDb(), new Date(), asked(query)), {
       query: surface,
       detail: { summary: "Everything the home surface draws: header, rail, feed, aside" },

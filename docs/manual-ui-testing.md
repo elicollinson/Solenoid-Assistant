@@ -7,7 +7,7 @@ phone screens that the repository does not implement.
 
 Use it for exploratory UI checks, release qualification, and evidence-backed
 bug reports. Do not treat it as permission to run workflows against personal
-messages, Photos, or a production Notion workspace.
+messages, Photos, or production collections.
 
 ## Current product boundary
 
@@ -136,7 +136,7 @@ For every failed or blocked case capture:
 5. The matching server log time and request/run ID where available.
 
 Do not attach unredacted message bodies, screenshots, contact data, memory
-files, provider tokens, or Notion content to a shared issue.
+files, provider tokens, or private collection content to a shared issue.
 
 ## Desktop cases
 
@@ -399,8 +399,8 @@ disposable target for every write.
 | F-05 Recommendation race | Open the same recommendation in two browser tabs, answer in the first, then answer in the second. | The second 409 causes its optimistic answer to roll back rather than claiming the write succeeded. |
 | F-06 Shell offline | Build with `bun run build:web`, serve with `bun run start:server`, load `http://localhost:3000` online once, then use DevTools Offline and reload. | The cached shell opens; live API reads fail visibly. Network inspection shows `/api` was not served from the service worker/cache. |
 | I-01 iMessage/Contacts | macOS host only; Bun must have Full Disk Access, the account needs a sanitized Messages/Contacts set, and Prompt Guard/model routes must work. Run **iMessage extraction** over a narrow known window. | The run records the exact window, distinguishes zero messages from processed/quarantined/failed conversations, and produces trace/result/log evidence. A missing grant ends as a visible workflow failure. |
-| I-02 Photos read | macOS host only; `osxphotos`, Photos access, local originals/iCloud access, Prompt Guard, and the image model are required. Run **Screenshot classification** with limit 1. | One read-only run reports returned/recognized/rejected/quarantined/failed counts. Nothing is written to Notion. |
-| I-03 Notion ingestion | All I-02 prerequisites plus Tavily and authenticated Notion MCP/data-source IDs pointing at a sacrificial workspace. Run **Screenshot ingestion** with limit 1. | The run identifies created/updated entries or explains why nothing reached Notion. Confirm the exact test entry externally, capture its ID, then delete it in cleanup. |
+| I-02 Photos read | macOS host only; `osxphotos`, Photos access, local originals/iCloud access, Prompt Guard, and the image model are required. Run **Screenshot classification** with limit 1. | One read-only run reports returned/recognized/rejected/quarantined/failed counts. No collection items are created by classification alone. |
+| I-03 Collection ingestion | All I-02 prerequisites plus Tavily and an isolated app database. Run **Screenshot ingestion** with limit 1. | The run identifies saved items or explains why nothing was saved. Open Collections, verify details and screenshot provenance, then discard the test DB. No external destination is used. |
 | I-04 PWA install | Production build on localhost, or HTTPS through Tailscale Serve for a phone. | Browser offers installation; installed app fills its window, uses the committed icon, honors portrait/safe areas, and still shows live API failure rather than cached data when backend access is lost. |
 | I-05 Access boundary | Keep `HOST` at its default and test from the host, then optionally through an already-approved Tailscale Serve route. | Host can reach the UI/API; an ordinary LAN peer cannot reach `:3000`; a tailnet member can reach the HTTPS Serve URL. There is no app-level login. |
 
@@ -471,8 +471,8 @@ state transition.
 1. Restore any workflow pause state and standing instruction changed during the
    run. Remove the `UI QA delete me` reminder through the supported test-data
    path or discard the entire disposable database.
-2. Delete any test Notion entry and exported screenshot created by optional
-   integration cases. Revoke temporary tokens or test connections.
+2. Discard the isolated test collections database and exported screenshots from
+   optional integration cases. Revoke temporary test tokens or connections.
 3. Stop the Vite and server processes. If Tailscale Serve was enabled only for
    this run, disable it with `bun run serve:tailscale --off`.
 4. Remove the exact disposable directory printed in `SOLENOID_UI_TEST_DIR` only

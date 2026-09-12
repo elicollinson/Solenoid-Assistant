@@ -111,8 +111,8 @@ describe("GET /api/runs/:runId/logs", () => {
 
   test("returns exact tool arguments and structured results to the UI", async () => {
     const record = { _time: "2026-08-26T10:00:01.000Z", run_id: runId,
-      _msg: '[tool] github_find_issues({"terms":["Notion authentication"],"page":1})',
-      arguments: { terms: ["Notion authentication"], page: 1 },
+      _msg: '[tool] github_find_issues({"terms":["Provider authentication"],"page":1})',
+      arguments: { terms: ["Provider authentication"], page: 1 },
       result: { issues: [{ number: 123, body: 'Original "quoted" evidence' }] },
       payload: { nested: [false, null, { token: "example-value" }] },
     };

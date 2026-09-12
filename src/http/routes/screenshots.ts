@@ -310,8 +310,7 @@ export const screenshotRoutes = new Elysia({ name: "routes.screenshots" })
       }
 
       try {
-        // Under `screenshot-ingestion`'s own rules — the same Notion writes the
-        // scheduled run makes, governed by the same rows rather than by nothing.
+        // Use the same workflow context as scheduled runs.
         return await withWorkflowPermissions(getDb(), "screenshot-ingestion", () =>
           ingestRecentScreenshots({ hoursBack, fromTime, limit }),
         );
@@ -332,7 +331,7 @@ export const screenshotRoutes = new Elysia({ name: "routes.screenshots" })
     {
       detail: {
         summary:
-          "Classify recent screenshots, source a content card for each non-rejected item, and ingest it into the Notion gallery database. Returns the per-screenshot ingestion status.",
+          "Classify recent screenshots, source a content card for each non-rejected item, and save it into app-owned collections. Returns the per-screenshot ingestion status.",
       },
       query: t.Object({
         hoursBack: t.Optional(
@@ -354,7 +353,7 @@ export const screenshotRoutes = new Elysia({ name: "routes.screenshots" })
             minimum: 1,
             maximum: 500,
             description:
-              "Maximum screenshots to process (default 50 — vision + web + Notion calls are expensive).",
+              "Maximum screenshots to process (default 50 — vision + web calls are expensive).",
           }),
         ),
       }),
@@ -407,18 +406,8 @@ export const screenshotRoutes = new Elysia({ name: "routes.screenshots" })
                   status: t.Union([
                     t.Literal("created"),
                     t.Literal("updated"),
-                    t.Literal("error"),
                   ]),
-                  match: t.Union([
-                    t.Literal("exact"),
-                    t.Literal("none"),
-                    t.Literal("unsure"),
-                    t.Null(),
-                  ]),
-                  page_id: t.Union([t.String(), t.Null()]),
-                  page_url: t.Union([t.String(), t.Null()]),
-                  warnings: t.Array(t.String()),
-                  error: t.Union([t.String(), t.Null()]),
+                  itemId: t.String(),
                 }),
               ),
               status: t.Union([

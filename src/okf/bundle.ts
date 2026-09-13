@@ -22,6 +22,8 @@ export class OkfError extends Error {
 
 /** Filenames with defined meaning that MUST NOT be concept documents (§3.1). */
 export const RESERVED_BASENAMES = ["index", "log"] as const;
+/** The application bundle: `okf/` at the repository root. */
+export const DEFAULT_OKF_ROOT = resolve(import.meta.dir, "../../okf");
 
 export const INDEX_FILENAME = "index.md";
 export const LOG_FILENAME = "log.md";

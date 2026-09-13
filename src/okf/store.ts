@@ -55,6 +55,8 @@ import { validateBundle, type ValidationReport } from "./validate";
  * Frontmatter keys the store owns. A caller reaching them through `extra`
  * would be routing around the guarantees above, so it is refused by name.
  */
+export type Indexing = IndexStatus | { error: string };
+
 const GUARDED_KEYS = new Set([
   "type",
   "title",
@@ -102,7 +104,7 @@ export interface ConceptSummary {
   tags?: string[];
   trust: TrustTier;
   stale: boolean;
-  indexing?: IndexStatus | { error: string };
+  indexing?: Indexing;
 }
 
 export interface ReadResult extends ConceptSummary {
@@ -296,9 +298,7 @@ export class OkfStore {
   // --- write --------------------------------------------------------------
 
   create(input: CreateInput): Promise<ConceptSummary & { path: string }> {
-    const handler = !this.stageOnly && fileMutationHandler();
-    if (handler) return handler(this.bundle.root, this.actor, "okf_create", root => new OkfStore({ ...this.opts, root, index: undefined }, true).create(input));
-    return this.gate(async () => {
+    return this.captured("okf_create", staged => staged.create(input), () => this.gate(async () => {
       this.prepareIndexWrite();
       const id = normalizeConceptId(input.id);
       const path = conceptPath(this.bundle, id);
@@ -342,13 +342,11 @@ export class OkfStore {
         `Established [${input.title ?? titleFromId(id)}](/${id}.md).`,
       );
       return { ...this.summarize(id, frontmatter), path, ...this.indexWritten([id]) };
-    });
+    }));
   }
 
   patch(input: PatchInput): Promise<ConceptSummary> {
-    const handler = !this.stageOnly && fileMutationHandler();
-    if (handler) return handler(this.bundle.root, this.actor, "okf_patch", root => new OkfStore({ ...this.opts, root, index: undefined }, true).patch(input));
-    return this.gate(async () => {
+    return this.captured("okf_patch", staged => staged.patch(input), () => this.gate(async () => {
       this.prepareIndexWrite();
       const id = normalizeConceptId(input.id);
       const concept = await this.load(id);
@@ -385,17 +383,15 @@ export class OkfStore {
       await regenerateIndexChain(this.bundle, parentDirId(id));
       await appendLogEntry(this.bundle, "Update", `Updated [${displayTitle(id, frontmatter)}](/${id}.md).`);
       return { ...this.summarize(id, frontmatter), ...this.indexWritten([id]) };
-    });
+    }));
   }
 
   move(
     from: string,
     to: string,
     opts: { updateLinks?: boolean } = {},
-  ): Promise<{ from: string; to: string; rewrittenIn: string[]; indexing?: IndexStatus | { error: string } }> {
-    const handler = !this.stageOnly && fileMutationHandler();
-    if (handler) return handler(this.bundle.root, this.actor, "okf_move", root => new OkfStore({ ...this.opts, root, index: undefined }, true).move(from, to, opts));
-    return this.gate(async () => {
+  ): Promise<{ from: string; to: string; rewrittenIn: string[]; indexing?: Indexing }> {
+    return this.captured("okf_move", staged => staged.move(from, to, opts), () => this.gate(async () => {
       this.prepareIndexWrite();
       const fromId = normalizeConceptId(from);
       const toId = normalizeConceptId(to);
@@ -447,7 +443,7 @@ export class OkfStore {
         `Moved [${displayTitle(toId, concept.frontmatter)}](/${toId}.md) from \`${fromId}\`.`,
       );
       return { from: fromId, to: toId, rewrittenIn: rewrittenIn.sort(), ...this.indexWritten([toId, ...rewrittenIn]) };
-    });
+    }));
   }
 
   /**
@@ -460,9 +456,7 @@ export class OkfStore {
     id: string,
     opts: { reason?: string; supersededBy?: string } = {},
   ): Promise<ConceptSummary & { supersededByExists?: boolean }> {
-    const handler = !this.stageOnly && fileMutationHandler();
-    if (handler) return handler(this.bundle.root, this.actor, "okf_deprecate", root => new OkfStore({ ...this.opts, root, index: undefined }, true).deprecate(id, opts));
-    return this.gate(async () => {
+    return this.captured("okf_deprecate", staged => staged.deprecate(id, opts), () => this.gate(async () => {
       this.prepareIndexWrite();
       const conceptId = normalizeConceptId(id);
       const concept = await this.load(conceptId);
@@ -501,12 +495,19 @@ export class OkfStore {
       };
       if (supersededByExists !== undefined) summary.supersededByExists = supersededByExists;
       return { ...summary, ...this.indexWritten([conceptId]) };
-    });
+    }));
   }
 
   // --- internals ----------------------------------------------------------
 
-  private indexWritten(ids: string[]): { indexing?: IndexStatus | { error: string } } {
+  /** Route a write through the app's capture journal when one is installed. The
+   * journal stages a copy of the bundle and re-runs the same method against it. */
+  private captured<T>(tool: string, staged: (store: OkfStore) => Promise<T>, direct: () => Promise<T>): Promise<T> {
+    const handler = !this.stageOnly && fileMutationHandler();
+    if (!handler) return direct();
+    return handler(this.bundle.root, this.actor, tool, root => staged(new OkfStore({ ...this.opts, root, index: undefined }, true)));
+  }
+  private indexWritten(ids: string[]): { indexing?: Indexing } {
     if (!this.index) return {};
     try { return { indexing: this.index.reconcile({ enroll: ids }) }; }
     catch { return { indexing: { error: "Memory saved; search indexing unavailable. Worker reconciliation will retry." } }; }

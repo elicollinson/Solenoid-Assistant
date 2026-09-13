@@ -6,6 +6,10 @@ export const hash = (value: string) => createHash("sha256").update(value).digest
 export class HistoryConflict extends Error {}
 export class HistoryUnavailable extends Error {}
 export interface HistoryRow { id: string; tool: string; actor: string; execution: string; inverseOf: string | null }
+/** A pid we cannot signal (EPERM) still counts as alive; only ESRCH proves it is gone. */
+export function isAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code !== "ESRCH"; }
+}
 
 /** Internal OKF write journal, not an application activity log or review queue.
  * After-images make interrupted multi-file writes recoverable without rerunning
@@ -33,6 +37,22 @@ export class WriteHistory {
     if (!row?.payload || (!recovery && row.expires_at <= this.now())) throw new HistoryUnavailable("Undo data is unavailable or expired");
     if (row.version !== 1 || hash(row.payload) !== row.digest) throw new HistoryUnavailable("Saved change failed its version or integrity check");
     return JSON.parse(row.payload) as T;
+  }
+  /** Cross-process writers cannot steal a live owner's lock. A dead owner's lock
+   * is taken only by explicit recovery (`recovering`). */
+  lock(resource: string, owner: string, recovering = false): void {
+    const db = this.db.$client;
+    db.transaction(() => {
+      const held = db.query("SELECT owner,pid FROM okf_write_locks WHERE resource=?").get(resource) as { owner: string; pid: number } | null;
+      if (held) {
+        if (!recovering || isAlive(held.pid)) throw new HistoryConflict("Bundle is locked; wait for its writer or recover after it stops");
+        db.query("DELETE FROM okf_write_locks WHERE resource=?").run(resource);
+      }
+      db.query("INSERT INTO okf_write_locks(resource,owner,pid,acquired_at) VALUES(?,?,?,?)").run(resource, owner, process.pid, this.now());
+    }).immediate();
+  }
+  unlock(resource: string, owner: string): void {
+    this.db.$client.query("DELETE FROM okf_write_locks WHERE resource=? AND owner=?").run(resource, owner);
   }
   prune(): void {
     this.db.$client.query("DELETE FROM okf_writes WHERE expires_at<? AND execution IN ('committed','no_effect') AND refresh_pending=0").run(this.now());

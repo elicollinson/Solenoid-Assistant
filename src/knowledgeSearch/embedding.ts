@@ -1,8 +1,7 @@
 import { GoogleGenAI, type GoogleGenAIOptions, type EmbedContentParameters, type EmbedContentResponse } from "@google/genai";
-import { createHash } from "node:crypto";
 import { GoogleCredentialsError, loadGoogleCredentials } from "../core/googleCredentials";
-
-export const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+import { hash } from "../writeHistory/history";
+export { hash };
 export type EmbeddingConfig = {
   enabled: boolean;
   project?: string;
@@ -25,6 +24,8 @@ export function embeddingConfig(env: Record<string, string | undefined> = proces
     dailyTokens, project: env.OKF_EMBEDDING_PROJECT || env.GOOGLE_CLOUD_PROJECT || env.MODEL_ARMOR_PROJECT_ID || env.GCP_PROJECT, location };
 }
 export const configId = (c: EmbeddingConfig) => hash(`vertex:${c.model}:${c.dimensions}:okf-sections-v1:retrieval-v1:f32le-unit`);
+/** Conservative UTF-8 byte bound on one formatted input; autoTruncate=false is the server-side guard. */
+export const maxInputBytes = (c: EmbeddingConfig) => c.model === "gemini-embedding-001" ? 1900 : 7000;
 export const formatInput = (c: EmbeddingConfig, text: string, kind: "document" | "query") =>
   c.model === "gemini-embedding-2" ? (kind === "document" ? `title: OKF memory | text: ${text}` : `task: search result | query: ${text}`) : text;
 
@@ -61,10 +62,7 @@ export function googleEmbeddings(config: EmbeddingConfig, call?: EmbedCall,
     if (!config.enabled) throw new EmbeddingError("disabled");
     if (!config.project) throw new EmbeddingError("missing_project");
     const text = formatInput(config, input, kind);
-    // Conservative byte bound, plus server-side rejection of oversize input.
-    if (Buffer.byteLength(text) > (config.model === "gemini-embedding-001" ? 1900 : 7000)) {
-      throw new EmbeddingError("input_too_large");
-    }
+    if (Buffer.byteLength(text) > maxInputBytes(config)) throw new EmbeddingError("input_too_large");
     try {
       const request: EmbedContentParameters = { model: config.model, contents: text,
         config: { outputDimensionality: config.dimensions, autoTruncate: false,

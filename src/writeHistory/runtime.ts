@@ -1,26 +1,24 @@
-import { canonicalBundleRoot } from "../okf/bundle";
-import { knowledgeIndex, OKF_ROOT } from "../knowledgeSearch/runtime";
+import { canonicalBundleRoot, DEFAULT_OKF_ROOT } from "../okf/bundle";
+import { knowledgeIndex } from "../knowledgeSearch/runtime";
+import type { KnowledgeIndex } from "../knowledgeSearch";
 import { getDb, type Db } from "../db";
-import { reindexOkf } from "../db/okf/reindex";
+import { createKnowledgeRefresh } from "../db/okf/refresh";
 import { WriteHistory } from "./history";
 import { FileHistory, configureFileMutation } from "./files";
 
-export function createHistoryRuntime(db: Db, root: string, refresh?: (root: string, concepts: string[]) => Promise<void>) {
+export function createHistoryRuntime(db: Db, root: string, refresh?: (root: string, concepts: string[]) => Promise<void>,
+  index: KnowledgeIndex = knowledgeIndex(root, () => db)) {
   root = canonicalBundleRoot(root);
-  const history = new WriteHistory(db), index = knowledgeIndex(root, () => db);
-  const files = new FileHistory(history, refresh ?? (async (root, concepts) => {
-    const result = await reindexOkf(db, { root });
-    if (result.problems.length) throw new Error("Knowledge refresh incomplete");
-    knowledgeIndex(root, () => db).reconcile({ enroll: concepts });
+  const history = new WriteHistory(db), reindex = createKnowledgeRefresh(root);
+  const files = new FileHistory(history, refresh ?? (async (_root, concepts) => {
+    await reindex(db);
+    index.reconcile({ enroll: concepts });
   }));
-  return { history, files, root, neighbors: async (id: string, sha: string, limit: number) => {
-    const result = index.neighbors(id, sha, limit);
-    return { ...result, status: result.status === "ready" ? "ready" as const : "unavailable" as const };
-  } };
+  return { history, files, root, neighbors: index.neighbors.bind(index) };
 }
 export type HistoryRuntime = ReturnType<typeof createHistoryRuntime>;
 let runtime: HistoryRuntime | undefined;
-export function historyRuntime(): HistoryRuntime { return runtime ??= createHistoryRuntime(getDb(), OKF_ROOT); }
+export function historyRuntime(): HistoryRuntime { return runtime ??= createHistoryRuntime(getDb(), DEFAULT_OKF_ROOT); }
 export function installHistoryRuntime() {
   const runtime = historyRuntime();
   runtime.history.db.$client.exec("PRAGMA synchronous = FULL");

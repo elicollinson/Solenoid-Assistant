@@ -1,10 +1,9 @@
-import { join } from "node:path";
 import { getDb, type Db } from "../db";
+import { DEFAULT_OKF_ROOT } from "../okf/bundle";
 import { embeddingConfig } from "./embedding";
 import { KnowledgeIndex } from "./index";
 
-export const OKF_ROOT = join(import.meta.dir, "../../okf");
-export function knowledgeIndex(root = OKF_ROOT, db: () => Db = getDb) {
+export function knowledgeIndex(root = DEFAULT_OKF_ROOT, db: () => Db = getDb) {
   return new KnowledgeIndex(db, root, embeddingConfig());
 }
 export function startEmbeddingWorker(index: KnowledgeIndex, report: (state: string) => void) {
@@ -14,9 +13,6 @@ export function startEmbeddingWorker(index: KnowledgeIndex, report: (state: stri
     if (stopped || pending) return;
     pending = (async () => {
       try {
-        // Even disabled installations establish a baseline. Initial existing
-        // memories need explicit enrollment; subsequent writes can be recovered.
-        index.reconcile();
         const result = await index.processOne();
         if (!["disabled", "idle", "ready", "superseded"].includes(result)) report(result);
       } catch { report("index_unavailable"); }

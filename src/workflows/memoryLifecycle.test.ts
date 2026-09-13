@@ -30,11 +30,7 @@ async function setup() {
   } };
   const index = new KnowledgeIndex(() => db, root, config, provider);
   const refresh = async () => { await reindexOkf(db, { root }); index.reconcile({ enroll: "all" }); };
-  const runtime = createHistoryRuntime(db, root, refresh);
-  runtime.neighbors = async (id, sha, limit) => {
-    const result = index.neighbors(id, sha, limit);
-    return { ...result, status: result.status === "ready" ? "ready" : "unavailable" };
-  };
+  const runtime = createHistoryRuntime(db, root, refresh, index);
   configureFileMutation((root, actor, tool, stage) => runtime.files.mutate(root, actor, tool, stage));
   const store = new OkfStore({ root, actor: "human:synthetic", index });
   const drain = async () => { for (let i = 0; i < 100; i++) if (await index.processOne() === "idle") return; throw new Error("queue did not settle"); };

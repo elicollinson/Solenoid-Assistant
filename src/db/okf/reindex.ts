@@ -1,4 +1,4 @@
-import { hasPendingFileWrite, HistoryConflict } from "../../writeHistory/history";
+import { hasPendingFileWrite, HistoryConflict, hash as sha256 } from "../../writeHistory/history";
 import { conceptLinks } from "../../okf/links";
 import { lastVerifiedAt, trustTier } from "../../okf/trust";
 // okf/ → okf_objects, okf_fields, okf_conflicts, links, okf_sync_state.
@@ -19,8 +19,7 @@ import { lastVerifiedAt, trustTier } from "../../okf/trust";
 //   * narratives. The agent's prose about a memory is the memory: it is already
 //     in `description` and the body, both stored verbatim. A second copy in
 //     `narratives` would be the same words with a second place to go stale.
-import { and, eq, sql } from "drizzle-orm";
-import { createHash } from "node:crypto";
+import { and, eq, like } from "drizzle-orm";
 import { basename } from "node:path";
 import * as s from "../schema";
 import { okfFieldIds, okfObjectId, ulid, type Db } from "../index";
@@ -48,7 +47,6 @@ export interface ReindexOptions {
  *  only insofar as the concept id is the path, which is what OKF defines. */
 export const uriFor = (conceptId: string) => `okf:${conceptId}`;
 
-const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
 /**
  * Frontmatter dates are ISO strings or nothing. Anything else is dropped rather
@@ -141,22 +139,6 @@ export function sourceLabel(sources: readonly SourceEntry[]): string | null {
   return first.resource ?? first.title ?? null;
 }
 
-/** `## Related` links, resolved to the concepts they name. */
-const LINK = /\[([^\]]*)\]\(([^)]+)\)/g;
-export function relatedConcepts(body: string): string[] {
-  const out: string[] = [];
-  LINK.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = LINK.exec(body)) !== null) {
-    const target = match[2] ?? "";
-    if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("#")) continue;
-    const path = (target.split("#")[0] ?? "").replace(/^\//, "");
-    if (!path.endsWith(".md")) continue;
-    const id = path.slice(0, -3);
-    if (!out.includes(id)) out.push(id);
-  }
-  return out;
-}
 
 interface Prepared {
   conceptId: string;
@@ -212,20 +194,22 @@ export async function reindexOkf(db: Db, options: ReindexOptions = {}): Promise<
     let conflictCount = 0;
     let linkCount = 0;
 
-    // Keep evidence identities as tombstones, but exclude vanished files from
-    // current knowledge. A parse error is not a deletion.
-    if (!problems.length) {
+    // Only this indexer's namespaced edges can be reconciled. Manual/evidence
+    // links retain their independent ownership.
+    const indexerLinks = like(s.links.id, "okfl_%");
+    if (problems.length) {
+      // A parse error is not a deletion: keep every object, refresh only the parsed ones' edges.
+      for (const item of prepared) t.delete(s.links).where(and(eq(s.links.fromId, item.id), indexerLinks)).run();
+    } else {
+      // Keep evidence identities as tombstones, but exclude vanished files from current knowledge.
       for (const old of t.select().from(s.okfObjects).all()) {
         if (!known.has(old.uri.replace(/^okf:/, ""))) {
           t.update(s.okfObjects).set({ status: "missing" }).where(eq(s.okfObjects.id, old.id)).run();
           t.update(s.okfFields).set({ retiredAt: now }).where(eq(s.okfFields.objectId, old.id)).run();
         }
       }
+      t.delete(s.links).where(indexerLinks).run();
     }
-    // Only this indexer's namespaced edges can be reconciled. Manual/evidence
-    // links retain their independent ownership.
-    if (!problems.length) t.delete(s.links).where(sql`substr(${s.links.id},1,5) = 'okfl_'`).run();
-    else for (const item of prepared) t.delete(s.links).where(and(eq(s.links.fromId, item.id), sql`substr(${s.links.id},1,5) = 'okfl_'`)).run();
     for (const item of prepared) {
       const { concept, uri, id, chronology } = item;
       const frontmatter = concept.frontmatter;
@@ -298,6 +282,7 @@ export async function reindexOkf(db: Db, options: ReindexOptions = {}): Promise<
       // back out as it renumbers them; the retired ones stay parked, ordered
       // among themselves and clear of anything the file can produce.
       const held = t.select().from(s.okfFields).where(eq(s.okfFields.objectId, id)).all();
+      const heldById = new Map(held.map((f) => [f.id, f]));
       let park = Math.min(0, ...held.map((f) => f.ordinal));
       for (const existing of held) {
         park -= 1;
@@ -321,7 +306,7 @@ export async function reindexOkf(db: Db, options: ReindexOptions = {}): Promise<
           ordinal: index,
           label: field.label,
           value: field.value,
-          assertedAt: held.find(f => f.id === fieldId)?.assertedAt ?? gen.at,
+          assertedAt: heldById.get(fieldId)?.assertedAt ?? gen.at,
           sourceLabel: label,
           provenance,
           conflictGroupId: groups[index] ?? null,

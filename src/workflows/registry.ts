@@ -24,6 +24,10 @@ import {
   ingestRecentScreenshots,
 } from "./screenshotIngestion";
 import { WORKFLOW_CATALOG } from "./catalog";
+import { DreamWorkflow } from "./dream";
+import { resolvePermission } from "./permissions";
+import { createHistoryRuntime, historyRuntime } from "../writeHistory/runtime";
+import { DEFAULT_OKF_ROOT } from "../okf/bundle";
 
 export interface WorkflowOutcome {
   /** What the workflow returned, kept verbatim. */
@@ -91,12 +95,8 @@ function when(at: Date): string {
 
 const WORKFLOWS: readonly RunnableWorkflow[] = [
   define({ slug: "okf-reflection", schema: z.object({}), execute: async (_args, context) => {
-    const { historyRuntime, createHistoryRuntime } = await import("../writeHistory/runtime");
-    const { OKF_ROOT } = await import("../knowledgeSearch/runtime");
-    const { DreamWorkflow } = await import("./dream");
     context.signal.throwIfAborted();
-    const runtime = context.db ? createHistoryRuntime(context.db, OKF_ROOT) : historyRuntime();
-    const { resolvePermission } = await import("./permissions");
+    const runtime = context.db ? createHistoryRuntime(context.db, DEFAULT_OKF_ROOT) : historyRuntime();
     const row = runtime.history.db.$client.query("SELECT id FROM workflows WHERE slug='okf-reflection'").get() as { id: string } | null;
     if (resolvePermission(runtime.history.db, row?.id, "okf.write").mode === "deny") throw new Error("Current permission denies memory reflection");
     const output = await new DreamWorkflow(runtime).run(context.signal);

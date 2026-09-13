@@ -1,18 +1,18 @@
-import { hasPendingFileWrite } from "../writeHistory/history";
+import { hasPendingFileWrite, hash } from "../writeHistory/history";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { canonicalBundleRoot } from "../okf/bundle";
+import { canonicalBundleRoot, INDEX_FILENAME, LOG_FILENAME } from "../okf/bundle";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { SQLQueryBindings } from "bun:sqlite";
 import type { Db } from "../db";
 import { okfObjectId } from "../db/ids";
 import { parseDocument } from "../okf/concept";
-import { isStale, meetsTrust, statusOf, trustTier } from "../okf/trust";
+import { isoDate, isStale, meetsTrust, statusOf, trustTier } from "../okf/trust";
 import type { SearchInput } from "../okf/store";
 import { extractFields } from "../db/okf/fields";
-import { provenanceOf, sourceEntries } from "../db/okf/reindex";
+import { provenanceOf, sourceEntries, uriFor } from "../db/okf/reindex";
 import { shelfFor } from "../db/okf/classify";
-import { configId, decode, EmbeddingError, encode, formatInput, googleEmbeddings, hash, normalize,
+import { configId, decode, EmbeddingError, encode, formatInput, googleEmbeddings, maxInputBytes, normalize,
   type EmbeddingConfig, type EmbeddingProvider } from "./embedding";
 
 type Document = { scope: string; concept_id: string; source_hash: string; approved_config: string | null;
@@ -20,6 +20,8 @@ type Document = { scope: string; concept_id: string; source_hash: string; approv
 type Chunk = { scope: string; concept_id: string; config_id: string; input_hash: string; input: string;
   excerpt: string; vector: Uint8Array | null; state: string; attempts: number; owner: string | null };
 type Scan = { documents: Document[]; problems: string[] };
+type ReadyVectors = Map<string, { values: number[]; excerpt: string }[]>;
+const tagsOf = (fm: Record<string, unknown>) => Array.isArray(fm.tags) ? fm.tags.map(String) : [];
 export type SearchOptions = SearchInput & { group?: string; includeBody?: boolean };
 export type IndexStatus = { enabled: boolean; configId: string; eligible: number; ready: number; pending: number;
   failed: number; unindexed: number; problems: number; reservedTokens: number; dailyTokens: number };
@@ -35,15 +37,14 @@ function scan(root: string): Scan {
       const rel = dir ? `${dir}/${entry.name}` : entry.name;
       if (entry.isSymbolicLink()) throw new Error("Knowledge store contains a symlink");
       if (entry.isDirectory()) { walk(rel); continue; }
-      if (!entry.isFile() || !entry.name.endsWith(".md") || ["index.md", "log.md"].includes(entry.name)) continue;
+      if (!entry.isFile() || !entry.name.endsWith(".md") || [INDEX_FILENAME, LOG_FILENAME].includes(entry.name)) continue;
       const raw = readFileSync(join(root, rel), "utf8");
       const id = rel.slice(0, -3);
       try {
         const { frontmatter: fm, body } = parseDocument(raw);
         if (!fm) { problems.push(id); continue; }
         const title = typeof fm.title === "string" ? fm.title : id;
-        const tags = Array.isArray(fm.tags) ? fm.tags.map(String) : [];
-        const header = [title, String(fm.description ?? ""), tags.join(" "),
+        const header = [title, String(fm.description ?? ""), tagsOf(fm).join(" "),
           ...extractFields(body).map(f => `${f.label}: ${f.value}`)].join("\n");
         documents.push({ scope: root, concept_id: id, source_hash: hash(raw), approved_config: null,
           title, header, body, frontmatter: JSON.stringify(fm) });
@@ -98,6 +99,7 @@ export class KnowledgeIndex {
   private run(query: string, ...args: SQLQueryBindings[]) { return this.sql.query(query).run(...args); }
   private documents() { return this.all<Document>("SELECT * FROM okf_search_documents WHERE scope=?", this.root); }
   private key(id: string) { return `okf-search:${hash(this.root)}:${id}`; }
+  private today() { return isoDate(new Date(this.now())); }
 
   private writeInProgress() {
     return hasPendingFileWrite(this.dbFactory(), this.root);
@@ -167,17 +169,19 @@ export class KnowledgeIndex {
 
   status(problems = 0): IndexStatus {
     const docs = this.documents().filter(d => statusOf(JSON.parse(d.frontmatter)) !== "deprecated");
-    const chunks = this.all<Chunk>("SELECT * FROM okf_search_chunks WHERE scope=? AND config_id=?", this.root, this.configId);
+    const states = new Map<string, string[]>();
+    for (const c of this.all<Pick<Chunk, "concept_id" | "state">>("SELECT concept_id,state FROM okf_search_chunks WHERE scope=? AND config_id=?", this.root, this.configId)) {
+      states.set(c.concept_id, [...states.get(c.concept_id) ?? [], c.state]);
+    }
     let ready = 0, pending = 0, failed = 0, unindexed = 0;
     for (const doc of docs) {
-      const held = chunks.filter(c => c.concept_id === doc.concept_id);
+      const held = states.get(doc.concept_id) ?? [];
       if (doc.approved_config !== this.configId || !held.length) unindexed++;
-      else if (held.some(c => c.state === "failed")) failed++;
-      else if (held.every(c => c.state === "ready")) ready++;
+      else if (held.includes("failed")) failed++;
+      else if (held.every(s => s === "ready")) ready++;
       else pending++;
     }
-    const day = new Date(this.now()).toISOString().slice(0, 10);
-    const used = this.all<{ reserved_tokens: number }>("SELECT reserved_tokens FROM okf_embedding_usage WHERE day=?", day)[0]?.reserved_tokens ?? 0;
+    const used = this.all<{ reserved_tokens: number }>("SELECT reserved_tokens FROM okf_embedding_usage WHERE day=?", this.today())[0]?.reserved_tokens ?? 0;
     return { enabled: this.config.enabled, configId: this.configId, eligible: docs.length, ready, pending, failed,
       unindexed, problems, reservedTokens: used, dailyTokens: this.config.dailyTokens };
   }
@@ -199,8 +203,8 @@ export class KnowledgeIndex {
     // or timed-out call: it may already have been billed remotely.
     const tokens = Buffer.byteLength(formatInput(this.config, input, kind));
     if (!this.config.project) throw new EmbeddingError("missing_project");
-    if (tokens > (this.config.model === "gemini-embedding-001" ? 1900 : 7000)) throw new EmbeddingError("input_too_large");
-    const day = new Date(this.now()).toISOString().slice(0, 10);
+    if (tokens > maxInputBytes(this.config)) throw new EmbeddingError("input_too_large");
+    const day = this.today();
     const allowed = this.sql.transaction(() => {
       this.run("INSERT OR IGNORE INTO okf_embedding_usage VALUES (?,0)", day);
       return this.run(`UPDATE okf_embedding_usage SET reserved_tokens=reserved_tokens+?
@@ -211,10 +215,12 @@ export class KnowledgeIndex {
 
   /** One leased job per tick. No paid batch or corpus-wide fanout. */
   async processOne(): Promise<string> {
+    if (this.writeInProgress()) return "write_in_progress";
+    // Even disabled installations establish a baseline. Initial existing
+    // memories need explicit enrollment; subsequent writes can be recovered.
+    this.reconcile();
     if (!this.config.enabled) return "disabled";
     if (!this.config.project) return "missing_project";
-    if (this.writeInProgress()) return "write_in_progress";
-    this.reconcile();
     const owner = randomUUID();
     const job = this.sql.transaction(() => {
       const candidate = this.all<Chunk>(`SELECT c.* FROM okf_search_chunks c JOIN okf_search_documents d
@@ -233,8 +239,9 @@ export class KnowledgeIndex {
       this.reserve(job.input, "document");
       const vector = normalize(await this.provider.embed(job.input, "document"), this.config.dimensions);
       if (this.writeInProgress()) throw new EmbeddingError("write_in_progress", true);
-      // Files may have changed while awaiting Google. Reconcile before publishing.
-      this.reconcile();
+      // The file may have changed while awaiting Google. Reconcile before publishing.
+      const doc = this.all<Pick<Document, "concept_id" | "source_hash">>("SELECT concept_id,source_hash FROM okf_search_documents WHERE scope=? AND concept_id=?", this.root, job.concept_id)[0];
+      if (!doc || !this.current(doc)) this.reconcile();
       const wrote = this.run(`UPDATE okf_search_chunks SET vector=?,state='ready',owner=NULL,lease_until=0,error=NULL
         WHERE scope=? AND concept_id=? AND config_id=? AND input_hash=? AND owner=?`,
         encode(vector), this.root, job.concept_id, this.configId, job.input_hash, owner).changes;
@@ -243,7 +250,7 @@ export class KnowledgeIndex {
       const safe = error instanceof EmbeddingError ? error : new EmbeddingError("index_unavailable", true);
       const budget = safe.code === "daily_budget_exhausted";
       const retry = budget || (safe.retryable && job.attempts < 4);
-      const next = budget ? Date.parse(new Date(this.now()).toISOString().slice(0, 10)) + 86_400_000
+      const next = budget ? Date.parse(this.today()) + 86_400_000
         : this.now() + Math.min(300_000, 1000 * 2 ** job.attempts) + Math.floor(Math.random() * 1000);
       this.run(`UPDATE okf_search_chunks SET state=?,error=?,next_attempt=?,owner=NULL,lease_until=0,
         attempts=attempts-? WHERE scope=? AND concept_id=? AND config_id=? AND input_hash=? AND owner=?`,
@@ -252,16 +259,16 @@ export class KnowledgeIndex {
     }
   }
 
-  private current(doc: Document) {
+  private current(doc: Pick<Document, "concept_id" | "source_hash">) {
     try { return hash(readFileSync(join(this.root, `${doc.concept_id}.md`), "utf8")) === doc.source_hash; }
     catch { return false; }
   }
   containsObject(objectId: string) {
-    return this.documents().some(doc => okfObjectId(`okf:${doc.concept_id}`) === objectId && this.current(doc));
+    return this.documents().some(doc => okfObjectId(uriFor(doc.concept_id)) === objectId && this.current(doc));
   }
   private eligible(doc: Document, opts: SearchOptions) {
     const fm = JSON.parse(doc.frontmatter) as Record<string, unknown>;
-    const tags = Array.isArray(fm.tags) ? fm.tags.map(String) : [];
+    const tags = tagsOf(fm);
     return (!opts.type || String(fm.type ?? "").toLowerCase() === opts.type.toLowerCase()) &&
       (opts.status ? statusOf(fm) === opts.status : statusOf(fm) !== "deprecated") &&
       (!opts.minTrust || meetsTrust(fm, opts.minTrust)) &&
@@ -284,7 +291,7 @@ export class KnowledgeIndex {
     }
     const docs = this.documents().filter(d => this.eligible(d, opts));
     const needle = query.toLowerCase();
-    const lexical = docs.filter(d => !query || `okf:${d.concept_id}\n${d.header}${opts.includeBody === false ? "" : `\n${d.body}`}`.toLowerCase().includes(needle));
+    const lexical = docs.filter(d => !query || `${uriFor(d.concept_id)}\n${d.header}${opts.includeBody === false ? "" : `\n${d.body}`}`.toLowerCase().includes(needle));
     lexical.sort((a, b) => Number(b.title.toLowerCase() === needle) - Number(a.title.toLowerCase() === needle) || a.concept_id.localeCompare(b.concept_id));
     const ranks = new Map<string, { score: number; channels: string[]; excerpt?: string; cosine?: number }>();
     const add = (id: string, rank: number, channel: string, extra = {}) => {
@@ -302,29 +309,30 @@ export class KnowledgeIndex {
       for (const hit of fts) { const id = lookup.get(hit.subject_id); if (id) add(id, ++rank, "fts"); }
     }
     if (vector) {
-      const scored = this.vectorScores(docs, vector);
+      const scored = this.vectorScores(this.readyVectors(docs), vector);
       scored.slice(0, 50).forEach((hit, i) => add(hit.id, i + 1, "semantic", { cosine: hit.score, excerpt: hit.excerpt }));
     }
-    const results = docs.filter(d => ranks.has(d.concept_id) && this.current(d)).sort((a, b) => {
-      const exact = (d: Document) => query && (d.title.toLowerCase() === needle || d.concept_id.toLowerCase() === needle || `okf:${d.concept_id}`.toLowerCase() === needle) ? 1 : 0;
-      return exact(b) - exact(a) || ranks.get(b.concept_id)!.score - ranks.get(a.concept_id)!.score || a.concept_id.localeCompare(b.concept_id);
-    }).map(doc => {
+    const exact = (d: Document) => query && (d.title.toLowerCase() === needle || d.concept_id.toLowerCase() === needle || uriFor(d.concept_id).toLowerCase() === needle) ? 1 : 0;
+    const results = docs.filter(d => ranks.has(d.concept_id) && this.current(d)).sort((a, b) =>
+      exact(b) - exact(a) || ranks.get(b.concept_id)!.score - ranks.get(a.concept_id)!.score || a.concept_id.localeCompare(b.concept_id),
+    ).map(doc => {
       const fm = JSON.parse(doc.frontmatter) as Record<string, unknown>;
       const ranked = ranks.get(doc.concept_id)!;
       const fields = extractFields(doc.body);
+      const tags = tagsOf(fm), description = String(fm.description ?? "");
       const matchedIn = [doc.title.toLowerCase().includes(needle) ? "title" : "",
-        String(fm.description ?? "").toLowerCase().includes(needle) ? "blurb" : "",
-        (Array.isArray(fm.tags) ? fm.tags : []).some(t => String(t).toLowerCase().includes(needle)) ? "tag" : "",
+        description.toLowerCase().includes(needle) ? "blurb" : "",
+        tags.some(t => t.toLowerCase().includes(needle)) ? "tag" : "",
         fields.some(f => `${f.label} ${f.value}`.toLowerCase().includes(needle)) ? "fact" : "",
         opts.includeBody !== false && doc.body.toLowerCase().includes(needle) ? "prose" : "",
         ...ranked.channels.filter(c => c !== "substring")].filter(Boolean);
       const pos = doc.body.toLowerCase().indexOf(needle);
       const snippet = opts.includeBody === false ? undefined : (ranked.excerpt ?? doc.body.slice(Math.max(0, pos - 80), Math.max(0, pos - 80) + 400)).slice(0, 400);
-      return { id: okfObjectId(`okf:${doc.concept_id}`), conceptId: doc.concept_id, uri: `okf:${doc.concept_id}`,
-        title: doc.title, name: doc.title, description: String(fm.description ?? ""), blurb: String(fm.description ?? ""),
-        type: String(fm.type ?? ""), tags: Array.isArray(fm.tags) ? fm.tags.map(String) : [],
+      return { id: okfObjectId(uriFor(doc.concept_id)), conceptId: doc.concept_id, uri: uriFor(doc.concept_id),
+        title: doc.title, name: doc.title, description, blurb: description,
+        type: String(fm.type ?? ""), tags,
         status: statusOf(fm), trust: trustTier(fm), stale: isStale(fm, new Date(this.now())),
-        group: shelfFor(Array.isArray(fm.tags) ? fm.tags.map(String) : []).group ?? "Everything else",
+        group: shelfFor(tags).group ?? "Everything else",
         sourceSha256: doc.source_hash, score: ranked.score, cosine: ranked.cosine, matchedIn,
         facts: fields.filter(f => `${f.label} ${f.value}`.toLowerCase().includes(needle)).map(f => ({ label: f.label, value: f.value, provenance: provenanceOf(sourceEntries(fm)) })),
         ...(snippet ? { snippet, excerpt: snippet } : {}) };
@@ -332,19 +340,29 @@ export class KnowledgeIndex {
     return { query, mode: vector ? "hybrid" : "lexical", reason: reason || undefined, indexing,
       matched: results.length, results: results.slice(0, opts.limit ?? 20) };
   }
-  private vectorScores(docs: Document[], vector: number[]) {
-    const chunks = this.all<Chunk>("SELECT * FROM okf_search_chunks WHERE scope=? AND config_id=?", this.root, this.configId);
-    const scores: { id: string; score: number; excerpt: string }[] = [];
+  /** Decoded vectors for documents whose every chunk is ready; a corrupt vector
+   * excludes its document from semantic ranking. */
+  private readyVectors(docs: Document[]): ReadyVectors {
+    const held = new Map<string, Chunk[]>();
+    for (const c of this.all<Chunk>("SELECT * FROM okf_search_chunks WHERE scope=? AND config_id=?", this.root, this.configId)) {
+      held.set(c.concept_id, [...held.get(c.concept_id) ?? [], c]);
+    }
+    const ready: ReadyVectors = new Map();
     for (const doc of docs) {
-      const held = chunks.filter(c => c.concept_id === doc.concept_id);
-      if (doc.approved_config !== this.configId || !held.length || held.some(c => c.state !== "ready" || !c.vector)) continue;
-      let best = { id: doc.concept_id, score: -Infinity, excerpt: "" };
-      for (const c of held) {
-        try {
-          const values = decode(c.vector!, this.config.dimensions);
-          const score = values.reduce((sum, value, i) => sum + value * vector[i]!, 0);
-          if (score > best.score) best = { id: doc.concept_id, score, excerpt: c.excerpt };
-        } catch { best = { id: doc.concept_id, score: -Infinity, excerpt: "" }; break; }
+      const chunks = held.get(doc.concept_id);
+      if (doc.approved_config !== this.configId || !chunks?.length || chunks.some(c => c.state !== "ready" || !c.vector)) continue;
+      try { ready.set(doc.concept_id, chunks.map(c => ({ values: decode(c.vector!, this.config.dimensions), excerpt: c.excerpt }))); }
+      catch { /* excluded */ }
+    }
+    return ready;
+  }
+  private vectorScores(ready: ReadyVectors, vector: number[]) {
+    const scores: { id: string; score: number; excerpt: string }[] = [];
+    for (const [id, chunks] of ready) {
+      let best = { id, score: -Infinity, excerpt: "" };
+      for (const c of chunks) {
+        const score = c.values.reduce((sum, value, i) => sum + value * vector[i]!, 0);
+        if (score > best.score) best = { id, score, excerpt: c.excerpt };
       }
       if (Number.isFinite(best.score)) scores.push(best);
     }
@@ -355,16 +373,19 @@ export class KnowledgeIndex {
     const indexing = this.reconcile();
     const docs = this.documents().filter(d => this.eligible(d, {}));
     const source = docs.find(d => d.concept_id === conceptId);
-    const held = this.all<Chunk>("SELECT * FROM okf_search_chunks WHERE scope=? AND concept_id=? AND config_id=?", this.root, conceptId, this.configId);
-    if (this.writeInProgress() || !source || source.source_hash !== expectedSourceSha256 || !held.length || held.some(c => !c.vector || c.state !== "ready")) {
-      return { status: "unavailable", indexing, candidates: [] };
+    const ready = this.readyVectors(docs);
+    const held = ready.get(conceptId);
+    if (this.writeInProgress() || !source || source.source_hash !== expectedSourceSha256 || !held) {
+      return { status: "unavailable" as const, indexing, candidates: [] };
     }
+    ready.delete(conceptId);
     const best = new Map<string, { id: string; score: number; excerpt: string }>();
-    for (const chunk of held) for (const hit of this.vectorScores(docs.filter(d => d !== source), decode(chunk.vector!, this.config.dimensions))) {
+    for (const chunk of held) for (const hit of this.vectorScores(ready, chunk.values)) {
       if (hit.score > (best.get(hit.id)?.score ?? -Infinity)) best.set(hit.id, hit);
     }
-    return { status: "ready", indexing, configId: this.configId, candidates: [...best.values()].sort((a, b) => b.score - a.score)
-      .slice(0, Math.min(100, Math.max(1, limit))).map(hit => ({ ...hit, uri: `okf:${hit.id}`,
-        sourceSha256: docs.find(d => d.concept_id === hit.id)!.source_hash })) };
+    const byId = new Map(docs.map(d => [d.concept_id, d]));
+    return { status: "ready" as const, indexing, configId: this.configId, candidates: [...best.values()].sort((a, b) => b.score - a.score)
+      .slice(0, Math.min(100, Math.max(1, limit))).map(hit => ({ ...hit, uri: uriFor(hit.id),
+        sourceSha256: byId.get(hit.id)!.source_hash })) };
   }
 }

@@ -32,8 +32,7 @@ qualifiers, attribution, differing accounts and exceptions; describe conflicts r
 Each claim must cite exact, nonempty verbatim quotes from the supplied source bodies using their sourceId.
 A connection or difference must cite at least two sources. Cover every supplied source. Do not invent
 facts, genres, identities, causal explanations or certainty. This is an inferred synthesis, not factual verification. If identity is uncertain, say uncertain; the workflow will keep those accounts separate.` });
-  const result = signal ? await agent.runWithSignal(signal, input, synthesisSchema) : await agent.run(input, synthesisSchema);
-  return validateSynthesis(result, sources);
+  return signal ? agent.runWithSignal(signal, input, synthesisSchema) : agent.run(input, synthesisSchema);
 };
 
 export function validateSynthesis(value: unknown, sources: SynthesisSource[]): DreamSynthesis {

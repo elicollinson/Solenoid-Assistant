@@ -23,8 +23,9 @@
 // What this file deliberately cannot do: set `verified`, name its own actor, or
 // delete anything. The first two are the trust tier (§5.3) and the third is the
 // bundle's memory of what was once believed (§5.4).
-import { join } from "node:path";
 import { knowledgeIndex } from "../knowledgeSearch/runtime";
+import { DEFAULT_OKF_ROOT } from "../okf/bundle";
+export { DEFAULT_OKF_ROOT };
 import { z } from "zod";
 import { defineTool, type AgentTool } from "../core/tools";
 import {
@@ -359,7 +360,6 @@ export function createOkfTools(opts: OkfStoreOptions): OkfTools {
  * server was launched from, so the store's location silently depended on the
  * launch directory.
  */
-export const DEFAULT_OKF_ROOT = join(import.meta.dir, "../../okf");
 
 /**
  * The actor when the caller names none.

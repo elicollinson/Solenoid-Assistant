@@ -1,5 +1,7 @@
+import { installHistoryRuntime } from "./writeHistory/runtime";
 import { consumeScreenshot } from "./sources/consumer";
 import { deliverDueReminder, REMINDER_POLL_MS } from "./pushover/delivery";
+import { knowledgeIndex, startEmbeddingWorker } from "./knowledgeSearch/runtime";
 // The cron worker: runs what the DATABASE says to run, when it says to.
 //
 // Runs as its own process (`bun run start:worker`), separate from the HTTP
@@ -47,6 +49,9 @@ const scheduler = log.child("scheduler");
 const RELOAD_MS = 30_000;
 
 const db = getDb();
+const okfCapture = installHistoryRuntime();
+const stopEmbeddings = startEmbeddingWorker(knowledgeIndex(undefined, () => db),
+  state => scheduler.warn(`Knowledge embedding worker: ${state}`));
 let jobs: Cron[] = [];
 let fingerprint = "";
 
@@ -153,6 +158,7 @@ function reload(first: boolean): void {
 reload(true);
 const poll = setInterval(() => {
   try {
+    void okfCapture.files.maintain().catch(() => scheduler.warn("OKF recovery needs attention; current memories preserved"));
     reload(false);
   } catch (error) {
     // A bad read must not kill the worker: the jobs already built keep firing,
@@ -162,6 +168,7 @@ const poll = setInterval(() => {
 }, RELOAD_MS);
 
 installShutdownHandler(async () => {
+  await stopEmbeddings();
   clearInterval(poll);
   clearInterval(sourceTimer);
   clearInterval(reminderTimer);

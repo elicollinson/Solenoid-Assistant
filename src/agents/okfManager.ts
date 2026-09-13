@@ -1,6 +1,7 @@
 
-import { join } from "node:path";
 import { Agent } from "../core/rawAgent";
+import { knowledgeIndex } from "../knowledgeSearch/runtime";
+import { DEFAULT_OKF_ROOT } from "../okf/bundle";
 import { createOkfTools } from "../tools/okf";
 import { okfManagerPrompt } from "../prompts";
 import { createModelRoutes } from "../core/providerFactory";
@@ -20,9 +21,11 @@ export function createOkfManagerAgent(
   options: CreateOkfManagerAgentOptions = {},
 ): Agent {
   const config = options.config ?? loadRuntimeConfig();
+  const root = options.root ?? DEFAULT_OKF_ROOT;
   const { all } = createOkfTools({
-    root: options.root ?? join(import.meta.dir, "../../okf"),
+    root,
     actor: options.actor ?? "okfManagerAgent",
+    index: knowledgeIndex(root),
   });
   return new Agent({
     name: "okf-manager",

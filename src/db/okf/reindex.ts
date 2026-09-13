@@ -1,3 +1,6 @@
+import { hasPendingFileWrite, HistoryConflict, hash as sha256 } from "../../writeHistory/history";
+import { conceptLinks } from "../../okf/links";
+import { lastVerifiedAt, trustTier } from "../../okf/trust";
 // okf/ → okf_objects, okf_fields, okf_conflicts, links, okf_sync_state.
 //
 // A projection, not a copy: the filesystem stays the source of truth and this
@@ -16,8 +19,7 @@
 //   * narratives. The agent's prose about a memory is the memory: it is already
 //     in `description` and the body, both stored verbatim. A second copy in
 //     `narratives` would be the same words with a second place to go stale.
-import { and, eq } from "drizzle-orm";
-import { createHash } from "node:crypto";
+import { and, eq, like } from "drizzle-orm";
 import { basename } from "node:path";
 import * as s from "../schema";
 import { okfFieldIds, okfObjectId, ulid, type Db } from "../index";
@@ -45,7 +47,6 @@ export interface ReindexOptions {
  *  only insofar as the concept id is the path, which is what OKF defines. */
 export const uriFor = (conceptId: string) => `okf:${conceptId}`;
 
-const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
 /**
  * Frontmatter dates are ISO strings or nothing. Anything else is dropped rather
@@ -138,22 +139,6 @@ export function sourceLabel(sources: readonly SourceEntry[]): string | null {
   return first.resource ?? first.title ?? null;
 }
 
-/** `## Related` links, resolved to the concepts they name. */
-const LINK = /\[([^\]]*)\]\(([^)]+)\)/g;
-export function relatedConcepts(body: string): string[] {
-  const out: string[] = [];
-  LINK.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = LINK.exec(body)) !== null) {
-    const target = match[2] ?? "";
-    if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("#")) continue;
-    const path = (target.split("#")[0] ?? "").replace(/^\//, "");
-    if (!path.endsWith(".md")) continue;
-    const id = path.slice(0, -3);
-    if (!out.includes(id)) out.push(id);
-  }
-  return out;
-}
 
 interface Prepared {
   conceptId: string;
@@ -168,6 +153,8 @@ export async function reindexOkf(db: Db, options: ReindexOptions = {}): Promise<
   const root = options.root ?? "okf";
   const now = options.now ?? new Date();
 
+  const writeRevision = () => JSON.stringify(db.$client.query("SELECT id,execution FROM okf_writes ORDER BY id").all());
+  const beforeWrites = writeRevision();
   const bundle = await openBundle(root);
   const { concepts, problems } = await scanConcepts(bundle);
 
@@ -195,17 +182,34 @@ export async function reindexOkf(db: Db, options: ReindexOptions = {}): Promise<
       id: okfObjectId(uri),
       concept,
       chronology: chronologies.get(concept.id),
-      related: relatedConcepts(concept.body),
+      related: conceptLinks(concept.id, concept.body).filter(l => l.kind === "concept" && l.id).map(l => l.id!),
     });
   }
 
   const known = new Set(prepared.map((p) => p.conceptId));
 
   return db.transaction((t) => {
+    if (hasPendingFileWrite(db, root) || beforeWrites !== writeRevision()) throw new HistoryConflict("Knowledge write is incomplete; finish or recover it before refreshing");
     let fieldCount = 0;
     let conflictCount = 0;
     let linkCount = 0;
 
+    // Only this indexer's namespaced edges can be reconciled. Manual/evidence
+    // links retain their independent ownership.
+    const indexerLinks = like(s.links.id, "okfl_%");
+    if (problems.length) {
+      // A parse error is not a deletion: keep every object, refresh only the parsed ones' edges.
+      for (const item of prepared) t.delete(s.links).where(and(eq(s.links.fromId, item.id), indexerLinks)).run();
+    } else {
+      // Keep evidence identities as tombstones, but exclude vanished files from current knowledge.
+      for (const old of t.select().from(s.okfObjects).all()) {
+        if (!known.has(old.uri.replace(/^okf:/, ""))) {
+          t.update(s.okfObjects).set({ status: "missing" }).where(eq(s.okfObjects.id, old.id)).run();
+          t.update(s.okfFields).set({ retiredAt: now }).where(eq(s.okfFields.objectId, old.id)).run();
+        }
+      }
+      t.delete(s.links).where(indexerLinks).run();
+    }
     for (const item of prepared) {
       const { concept, uri, id, chronology } = item;
       const frontmatter = concept.frontmatter;
@@ -245,6 +249,7 @@ export async function reindexOkf(db: Db, options: ReindexOptions = {}): Promise<
         contentSha256: stat?.sha ?? null,
         generatedBy: gen.by,
         generatedAt: gen.at,
+        verifiedAt: trustTier(frontmatter) === "unverified" ? null : when(lastVerifiedAt(frontmatter)),
         staleAfter: when(frontmatter.stale_after),
         createdAt: created,
         updatedAt: updated,
@@ -277,6 +282,7 @@ export async function reindexOkf(db: Db, options: ReindexOptions = {}): Promise<
       // back out as it renumbers them; the retired ones stay parked, ordered
       // among themselves and clear of anything the file can produce.
       const held = t.select().from(s.okfFields).where(eq(s.okfFields.objectId, id)).all();
+      const heldById = new Map(held.map((f) => [f.id, f]));
       let park = Math.min(0, ...held.map((f) => f.ordinal));
       for (const existing of held) {
         park -= 1;
@@ -300,7 +306,7 @@ export async function reindexOkf(db: Db, options: ReindexOptions = {}): Promise<
           ordinal: index,
           label: field.label,
           value: field.value,
-          assertedAt: gen.at,
+          assertedAt: heldById.get(fieldId)?.assertedAt ?? gen.at,
           sourceLabel: label,
           provenance,
           conflictGroupId: groups[index] ?? null,
@@ -369,7 +375,7 @@ export async function reindexOkf(db: Db, options: ReindexOptions = {}): Promise<
         const toId = okfObjectId(uriFor(target));
         if (toId === item.id) continue;
         t.insert(s.links)
-          .values({ id: ulid(), fromId: item.id, toId, rel: "references", createdAt: now, createdBy: "agent" })
+          .values({ id: `okfl_${sha256(`${item.id}:${toId}`)}`, fromId: item.id, toId, rel: "references", createdAt: now, createdBy: "agent" })
           .onConflictDoNothing()
           .run();
         linkCount++;

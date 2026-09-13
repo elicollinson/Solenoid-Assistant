@@ -23,7 +23,9 @@
 // What this file deliberately cannot do: set `verified`, name its own actor, or
 // delete anything. The first two are the trust tier (§5.3) and the third is the
 // bundle's memory of what was once believed (§5.4).
-import { join } from "node:path";
+import { knowledgeIndex } from "../knowledgeSearch/runtime";
+import { DEFAULT_OKF_ROOT } from "../okf/bundle";
+export { DEFAULT_OKF_ROOT };
 import { z } from "zod";
 import { defineTool, type AgentTool } from "../core/tools";
 import {
@@ -191,11 +193,12 @@ export function createOkfTools(opts: OkfStoreOptions): OkfTools {
     name: "okf_search",
     kind: "read",
     description:
-      "Find concepts by text and/or by their metadata. Text matches the id, title, description " +
+      "Find concepts with hybrid text and semantic search when embeddings are ready; otherwise uses local text. " +
+      "The response reports indexing coverage and fallback reasons. Text matches the id, title, description " +
       "and body; the filters narrow by frontmatter. Use it before creating anything, to avoid " +
       "writing a concept that already exists.",
     schema: z.object({
-      query: z.string().optional().describe("Case-insensitive text to look for. Omit to filter only."),
+      query: z.string().optional().describe("Subject, phrase, or meaning to find. Omit to filter only."),
       type: z.string().optional().describe("Exact concept type, e.g. 'Metric', 'Playbook'."),
       tags: z
         .array(z.string())
@@ -357,7 +360,6 @@ export function createOkfTools(opts: OkfStoreOptions): OkfTools {
  * server was launched from, so the store's location silently depended on the
  * launch directory.
  */
-export const DEFAULT_OKF_ROOT = join(import.meta.dir, "../../okf");
 
 /**
  * The actor when the caller names none.
@@ -594,6 +596,7 @@ export function okfGroup(context: ToolGroupContext): ToolGroup {
   const tools = createOkfTools({
     root: context.okf?.root ?? DEFAULT_OKF_ROOT,
     actor: context.okf?.actor ?? DEFAULT_OKF_ACTOR,
+    index: knowledgeIndex(context.okf?.root ?? DEFAULT_OKF_ROOT, () => context.db),
   });
   return defineToolGroup({
     name: "okf",

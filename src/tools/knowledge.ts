@@ -45,13 +45,12 @@ import { loadKnowledge, loadKnowledgeObject } from "../db/queries/knowledge";
 import { GROUPS } from "../db/okf/classify";
 import type { ToolGroupContext } from "./groups";
 import { limit } from "./_shared";
+import { knowledgeIndex } from "../knowledgeSearch/runtime";
+import { createKnowledgeRefresh } from "../db/okf/refresh";
 
 // ---------------------------------------------------------------------------
 // Small helpers, kept out of the tool bodies
 // ---------------------------------------------------------------------------
-
-/** How much of a memory's body a search hit is quoted with. */
-const EXCERPT_RADIUS = 90;
 
 /**
  * An object's id, whether the caller passed the id or the uri.
@@ -72,16 +71,6 @@ function resolveObjectId(db: Db, idOrUri: string): string | undefined {
     .from(s.okfObjects)
     .where(eq(s.okfObjects.uri, idOrUri))
     .get()?.id;
-}
-
-/** The text around the first occurrence, so a hit can be judged without a read. */
-function excerpt(haystack: string, needle: string): string | null {
-  const at = haystack.toLowerCase().indexOf(needle);
-  if (at < 0) return null;
-  const from = Math.max(0, at - EXCERPT_RADIUS);
-  const to = Math.min(haystack.length, at + needle.length + EXCERPT_RADIUS);
-  const body = haystack.slice(from, to).replace(/\s+/g, " ").trim();
-  return `${from > 0 ? "…" : ""}${body}${to < haystack.length ? "…" : ""}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +228,8 @@ const limitSchema = limit({ keeps: "the ones nearest the top of the list" });
 
 export function knowledgeGroup(context: ToolGroupContext): ToolGroup {
   const { db } = context;
+  const index = knowledgeIndex(context.okf?.root, () => db);
+  const refresh = createKnowledgeRefresh(index.root);
 
   const list = defineTool({
     name: "knowledge_list",
@@ -297,9 +288,11 @@ export function knowledgeGroup(context: ToolGroupContext): ToolGroup {
         .min(1)
         .describe("The memory's id from knowledge_list or knowledge_search. Its 'okf:...' uri works too, so you need not check which one you kept."),
     }),
-    execute: ({ id }) => {
+    execute: async ({ id }) => {
+      await refresh(db);
+      index.reconcile();
       const objectId = resolveObjectId(db, id);
-      const memory = objectId ? loadKnowledgeObject(db, objectId) : null;
+      const memory = objectId && index.containsObject(objectId) ? loadKnowledgeObject(db, objectId) : null;
       return memory ?? { error: `No memory with id or uri ${id}` };
     },
   });
@@ -308,13 +301,9 @@ export function knowledgeGroup(context: ToolGroupContext): ToolGroup {
     name: "knowledge_search",
     kind: "read",
     description:
-      "Find memories mentioning a word or phrase, in their title, their blurb, their prose or the facts they " +
-      "state. Answers with one row per memory saying WHERE it matched and quoting the text around the hit, so " +
-      "you can tell a passing mention from the memory that is actually about it before spending a read. " +
-      "This is a plain substring match, case-insensitive and not stemmed: 'walk' finds 'walking', 'walked' " +
-      "does not find 'walk', and nothing here understands synonyms. Search for the plainest word the file " +
-      "would use, and search twice with different words rather than trusting one empty result — an empty " +
-      "result means those characters do not appear, not that nothing is known about the subject.",
+      "Find memories using local keyword and semantic retrieval. Semantic search is available only when " +
+      "embeddings are enabled and ready; mode, reason and indexing coverage explain any fallback. " +
+      "Returns source excerpts and provenance. Similarity is relevance, not proof: read a memory before asserting its facts.",
     schema: z.object({
       query: z
         .string()
@@ -327,65 +316,9 @@ export function knowledgeGroup(context: ToolGroupContext): ToolGroup {
         .describe("Search the memories' prose as well as their titles, blurbs and facts. Turn this off to find only memories that are ABOUT the term rather than ones that mention it in passing."),
       limit: limitSchema,
     }),
-    execute: ({ query, group, includeBody, limit }) => {
-      const needle = query.toLowerCase();
-
-      // Matched in TypeScript rather than in SQL. The FTS5 `search` table this
-      // database carries is written by the app on commit and the OKF reindexer
-      // does not write it, so a query against it would answer "nothing known"
-      // about a store that knows plenty. A scan of a few hundred memories is
-      // cheap and, unlike a silently empty index, honest.
-      const objects = db
-        .select()
-        .from(s.okfObjects)
-        .orderBy(desc(s.okfObjects.updatedAt))
-        .all()
-        .filter((object) => (group ? (object.groupLabel ?? "Everything else") === group : true));
-
-      const fields = db
-        .select()
-        .from(s.okfFields)
-        .where(isNull(s.okfFields.retiredAt))
-        .orderBy(s.okfFields.ordinal)
-        .all();
-
-      const factsFor = new Map<string, typeof fields>();
-      for (const field of fields) {
-        const held = factsFor.get(field.objectId);
-        if (held) held.push(field);
-        else factsFor.set(field.objectId, [field]);
-      }
-
-      const rows = [];
-      for (const object of objects) {
-        if (rows.length >= limit) break;
-        const where: string[] = [];
-        if (object.title.toLowerCase().includes(needle)) where.push("title");
-        if (object.description?.toLowerCase().includes(needle)) where.push("blurb");
-        if (object.tags.some((tag) => tag.toLowerCase().includes(needle))) where.push("tag");
-
-        const facts = (factsFor.get(object.id) ?? []).filter(
-          (field) =>
-            field.label.toLowerCase().includes(needle) || field.value.toLowerCase().includes(needle),
-        );
-        if (facts.length) where.push("fact");
-
-        const body = includeBody ? excerpt(object.bodyText, needle) : null;
-        if (body) where.push("prose");
-        if (!where.length) continue;
-
-        rows.push({
-          id: object.id,
-          uri: object.uri,
-          name: object.title,
-          group: object.groupLabel ?? "Everything else",
-          matchedIn: where,
-          blurb: object.description ?? "",
-          facts: facts.map((field) => ({ label: field.label, value: field.value, provenance: field.provenance })),
-          ...(body ? { excerpt: body } : {}),
-        });
-      }
-      return { query, count: rows.length, rows };
+    execute: async ({ query, group, includeBody, limit }) => {
+      const found = await index.search({ query, group, includeBody, limit });
+      return { ...found, count: found.results.length, rows: found.results };
     },
   });
 

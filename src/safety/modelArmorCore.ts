@@ -1,4 +1,5 @@
-import { GoogleAuth, type JWTInput } from "google-auth-library";
+import { GoogleAuth } from "google-auth-library";
+import { loadGoogleCredentials } from "../core/googleCredentials";
 
 export type PromptTextParts = readonly [string, ...string[]];
 
@@ -151,28 +152,7 @@ export class ModelArmorScanner {
     }
 
     if (!this.auth) {
-      let credentials: JWTInput | undefined;
-      const credsJson =
-        this.options.credentialsJson ||
-        process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
-      const credsBase64 =
-        this.options.credentialsBase64 ||
-        process.env.GOOGLE_APPLICATION_CREDENTIALS_BASE64;
-
-      if (credsJson) {
-        try {
-          credentials = JSON.parse(credsJson);
-        } catch (error) {
-          throw new Error("Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON as valid JSON", { cause: error });
-        }
-      } else if (credsBase64) {
-        try {
-          const decoded = Buffer.from(credsBase64, "base64").toString("utf8");
-          credentials = JSON.parse(decoded);
-        } catch (error) {
-          throw new Error("Failed to parse GOOGLE_APPLICATION_CREDENTIALS_BASE64 as valid base64 JSON", { cause: error });
-        }
-      }
+      const credentials = loadGoogleCredentials(this.options);
 
       this.auth = new GoogleAuth({
         scopes: ["https://www.googleapis.com/auth/cloud-platform"],

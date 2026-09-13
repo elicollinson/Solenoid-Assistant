@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import { GoogleAuth } from "google-auth-library";
 import { ModelArmorScanner } from "./modelArmorCore";
 
 function mockResponse(body: unknown, init: ResponseInit = {}): Response {
@@ -10,6 +11,39 @@ function mockResponse(body: unknown, init: ResponseInit = {}): Response {
 }
 
 describe("ModelArmorScanner", () => {
+  test("shared inline loader reaches Google auth lazily and preserves the Model Armor request", async () => {
+    const credentials = { type: "service_account", client_email: "synthetic@example.invalid", private_key: "synthetic-secret" };
+    let seen: unknown;
+    const auth = spyOn(GoogleAuth.prototype, "getClient").mockImplementation(async function (this: GoogleAuth) {
+      seen = this.jsonContent;
+      return { getAccessToken: async () => ({ token: "synthetic-token" }) } as never;
+    });
+    try {
+      const scanner = new ModelArmorScanner({ projectId: "synthetic", credentialsJson: JSON.stringify(credentials),
+        fetchFn: async (_url, init) => {
+          expect(init?.headers).toMatchObject({ "Content-Type": "application/json", Authorization: "Bearer synthetic-token" });
+          return mockResponse({ sanitizationResult: { filterMatchState: "NO_MATCH_FOUND", invocationResult: "SUCCESS",
+            filterResults: { pi_and_jailbreak: { piAndJailbreakFilterResult: { executionState: "EXECUTION_SUCCESS", matchState: "NO_MATCH_FOUND" } } } } });
+        } });
+      expect(seen).toBeUndefined();
+      await scanner.assess(["A fictional otter"]);
+      expect(seen).toEqual(credentials);
+    } finally { auth.mockRestore(); }
+  });
+
+  test("malformed inline credentials fail without secrets or parser causes, but empty input stays lazy", async () => {
+    const scanner = new ModelArmorScanner({ projectId: "synthetic", credentialsJson: "synthetic-secret{" });
+    expect((await scanner.assess([" "])).blocked).toBe(false);
+    try { await scanner.assess(["A fictional otter"]); }
+    catch (error) {
+      expect(String(error)).toContain("Invalid Google credentials");
+      expect(String(error)).not.toContain("synthetic-secret");
+      expect((error as Error).cause).toBeUndefined();
+      return;
+    }
+    throw new Error("malformed credentials unexpectedly accepted");
+  });
+
   test("returns BENIGN when Model Armor returns NO_MATCH_FOUND", async () => {
     let requestedUrl = "";
     let requestHeaders: Record<string, string> | undefined;

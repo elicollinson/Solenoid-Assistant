@@ -24,6 +24,10 @@ import {
   ingestRecentScreenshots,
 } from "./screenshotIngestion";
 import { WORKFLOW_CATALOG } from "./catalog";
+import { DreamWorkflow } from "./dream";
+import { resolvePermission } from "./permissions";
+import { createHistoryRuntime, historyRuntime } from "../writeHistory/runtime";
+import { DEFAULT_OKF_ROOT } from "../okf/bundle";
 
 export interface WorkflowOutcome {
   /** What the workflow returned, kept verbatim. */
@@ -90,6 +94,14 @@ function when(at: Date): string {
 }
 
 const WORKFLOWS: readonly RunnableWorkflow[] = [
+  define({ slug: "okf-reflection", schema: z.object({}), execute: async (_args, context) => {
+    context.signal.throwIfAborted();
+    const runtime = context.db ? createHistoryRuntime(context.db, DEFAULT_OKF_ROOT) : historyRuntime();
+    const row = runtime.history.db.$client.query("SELECT id FROM workflows WHERE slug='okf-reflection'").get() as { id: string } | null;
+    if (resolvePermission(runtime.history.db, row?.id, "okf.write").mode === "deny") throw new Error("Current permission denies memory reflection");
+    const output = await new DreamWorkflow(runtime).run(context.signal);
+    return { output, effects: output.updates.map(update => `Updated ${update.title}; source accounts retained.`), prose: [`Connected ${output.updates.length} memory groups; ${output.uncertain} uncertain groups were kept separate, ${output.unavailable} seeds lacked ready embeddings, and ${output.deferred} writes were held by workflow permissions.`] };
+  } }),
   define({
     slug: "log-monitoring",
     schema: z.object({ dryRun: z.preprocess(value => value === "true" ? true : value === "false" || value === "" ? false : value, z.boolean().default(false)) }),

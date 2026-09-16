@@ -72,7 +72,7 @@ const EMPTY_LIVE: LiveTurn = {
 };
 
 const voice: VoiceModeState = {
-  active: false, status: "idle", isSpeaking: false, isMuted: false,
+  active: false, status: "idle", isSpeaking: false, isWorking: false, isMuted: false,
   error: null, analyserNode: null, startVoice: async () => {}, stopVoice: noop, toggleMute: noop,
 };
 

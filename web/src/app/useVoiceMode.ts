@@ -9,6 +9,7 @@ export interface VoiceModeState {
   active: boolean;
   status: "idle" | "connecting" | "open" | "error";
   isSpeaking: boolean;
+  isWorking: boolean;
   isMuted: boolean;
   error: string | null;
   analyserNode: AnalyserNode | null;
@@ -21,6 +22,7 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
   const [active, setActive] = useState(false);
   const [status, setStatus] = useState<"idle" | "connecting" | "open" | "error">("idle");
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isWorking, setIsWorking] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [analyserNode, setAnalyserNode] = useState<AnalyserNode | null>(null);
@@ -88,6 +90,7 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
       audioCtxRef.current = null;
     }
 
+    setIsWorking(false);
     setActive(false);
     setStatus("idle");
     setIsSpeaking(false);
@@ -207,6 +210,7 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
             text?: string;
             message?: string;
             reason?: string;
+            working?: boolean;
           };
 
           if (msg.type === "ready") {
@@ -219,6 +223,10 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
           } else if (msg.type === "interrupted") {
             // User interrupted the model: cut off playback
             stopAudioPlayback();
+            setIsSpeaking(false);
+          } else if (msg.type === "interaction_status") {
+            setIsWorking(Boolean(msg.working));
+          } else if (msg.type === "audio_turn_complete") {
             setIsSpeaking(false);
           } else if (msg.type === "turn_complete") {
             setIsSpeaking(false);
@@ -339,6 +347,7 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
     active,
     status,
     isSpeaking,
+    isWorking,
     isMuted,
     error,
     analyserNode,

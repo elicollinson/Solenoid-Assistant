@@ -7,6 +7,7 @@ export interface RetroWigglyLineProps {
   compact?: boolean;
   analyserNode?: AnalyserNode | null;
   isSpeaking?: boolean;
+  isWorking?: boolean;
   isMuted?: boolean;
   onToggleMute?: () => void;
   onEndVoice?: () => void;
@@ -26,6 +27,7 @@ export function RetroWigglyLine({
   compact = false,
   analyserNode,
   isSpeaking = false,
+  isWorking = false,
   isMuted = false,
   onToggleMute,
   onEndVoice,
@@ -210,7 +212,7 @@ export function RetroWigglyLine({
             }}
           />
           <span style={{ color: "var(--text-1)", fontWeight: 500 }}>
-            {isMuted ? "Stream Open · Muted" : "Live Stream Open"}
+            {isMuted ? "Stream Open · Muted" : isWorking ? "Working · Stream Open" : "Live Stream Open"}
           </span>
           <span style={{ color: "var(--text-4)" }}>· Gemini Live</span>
         </span>

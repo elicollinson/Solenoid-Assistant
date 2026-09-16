@@ -671,19 +671,24 @@ bottom-right waveform returns to the ongoing conversation. On phones it takes
 the ask button's place above the tab bar. Ending voice or selecting a different
 conversation closes the microphone and connection.
 
-Voice uses Gemini 3.8 Live directly for speech and tool use. Set `GEMINI_API_KEY`
-and optionally `GEMINI_VOICE` (default `Sulafat`). `GEMINI_LIVE_MODEL` defaults to
-`models/gemini-3.8-live`; remove an older override or set that value explicitly,
-then restart the server (or recreate its container) after deploying this version.
-The browser audio transport is unchanged. Spoken assistant responses are saved
-from output audio transcription, and function declarations explicitly use
-blocking calls so a tool result stays within the existing conversation turn.
+Voice uses Gemini 3.8 Live Extended Thinking directly for speech and tool use.
+Set `GEMINI_API_KEY` and optionally `GEMINI_VOICE` (default `Sulafat`).
+`GEMINI_LIVE_MODEL` defaults to `models/gemini-3.8-live-extended-thinking` and
+`GEMINI_LIVE_THINKING_LEVEL` defaults to `high` (also accepts `medium` or `low`).
+Remove an older model override or set the new value explicitly, then restart the
+server (or recreate its container) after deploying this version.
 
-Do not select `gemini-3.8-live-extended-thinking` through the model override yet.
-It requires non-blocking tools, an `interactionStatus`-aware lifecycle, and a
-supported thinking level (`low`, `medium`, or `high`). Standard 3.8 Live rejects
-`thinkingConfig`, so this integration omits it. See Google's
-[migration guide](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live).
+Tools run without blocking audio. Ending a spoken turn does not end the
+interaction: the UI continues showing work in progress until Gemini reports
+`interactionStatus: IDLE` and no local tools remain pending. The assistant's
+spoken transcript and tool summary are then saved together. Cancelled tool
+results and results arriving after disconnection are discarded; cancelling a
+request cannot undo an external action that already started.
+
+For comparison, `GEMINI_LIVE_MODEL=models/gemini-3.8-live` selects standard 3.8.
+That mode omits thinking configuration and uses blocking function calls. The
+thinking-level setting has no effect on standard 3.8. See Google's
+[Extended Thinking migration guide](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live-extended-thinking).
 
 A chat with the agent is a conversation, `channel = 'agent_chat'`, and its turns
 are `messages`. It is not a third stack beside texts and email, because the

@@ -122,6 +122,28 @@ function button(text: string) {
 async function click(text: string) { await act(async () => { button(text).click(); }); }
 function indicator() { return container.querySelector<HTMLButtonElement>('button[aria-label$="Return to ongoing conversation"]'); }
 
+test("voice keeps listening and shows background work after a spoken turn ends", async () => {
+  await mount(1240);
+  await click("Voice");
+  const socket = sockets[0]!;
+  await act(async () => socket.receive({ type: "ready" }));
+  await click("Activity");
+  await act(async () => {
+    socket.receive({ type: "interaction_status", working: true });
+    socket.receive({ type: "audio_turn_complete" });
+  });
+  expect(indicator()?.getAttribute("aria-label")).toContain("Voice working");
+  expect(socket.closed).toBe(false);
+  await act(async () => socket.receive({ type: "audio", data: "AAAAAA==", mimeType: "audio/pcm;rate=24000" }));
+  expect(contexts[0]!.plays).toBe(1);
+  await act(async () => {
+    socket.receive({ type: "interaction_status", working: false });
+    socket.receive({ type: "turn_complete" });
+  });
+  expect(indicator()?.getAttribute("aria-label")).toContain("Voice active");
+  expect(socket.closed).toBe(false);
+});
+
 for (const width of [1240, 390]) {
   test(`fresh chat and uninterrupted voice through navigation at ${width}px`, async () => {
     await mount(width);

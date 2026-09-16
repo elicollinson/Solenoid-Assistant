@@ -79,7 +79,11 @@ const runtimeConfigSchema = z.object({
   ),
   TAVILY_API_KEY: optionalEnvString,
   GEMINI_API_KEY: optionalEnvString,
-  GEMINI_LIVE_MODEL: optionalEnvString.default("models/gemini-3.8-live"),
+  GEMINI_LIVE_MODEL: optionalEnvString.default("models/gemini-3.8-live-extended-thinking"),
+  GEMINI_LIVE_THINKING_LEVEL: z.preprocess(
+    (value) => value === "" ? undefined : value,
+    z.enum(["low", "medium", "high"]).default("high"),
+  ),
   GEMINI_VOICE: optionalEnvString.default("Sulafat"),
 });
 
@@ -141,6 +145,7 @@ export interface RuntimeConfig {
   gemini: {
     apiKey?: string;
     liveModel: string;
+    thinkingLevel: "low" | "medium" | "high";
     voice: string;
   };
 }
@@ -285,6 +290,7 @@ export function loadRuntimeConfig(
         ? { apiKey: parsed.GEMINI_API_KEY ?? process.env.GEMINI_API_KEY }
         : {}),
       liveModel: parsed.GEMINI_LIVE_MODEL,
+      thinkingLevel: parsed.GEMINI_LIVE_THINKING_LEVEL,
       voice: parsed.GEMINI_VOICE,
     },
   };

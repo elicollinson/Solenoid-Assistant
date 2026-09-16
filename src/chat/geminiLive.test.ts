@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { Behavior, Live, LiveServerMessage, type LiveServerContent, type LiveConnectParameters, type Session } from "@google/genai";
+import { Behavior, InteractionStatus, ThinkingLevel, Live, LiveServerMessage, type LiveServerContent, type LiveConnectParameters, type Session } from "@google/genai";
 import { loadRuntimeConfig } from "../core/config";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,7 +28,7 @@ beforeEach(() => {
 });
 
 describe("Gemini 3.8 Live protocol", () => {
-  test("connects without thinking config and persists spoken transcripts without model thoughts", async () => {
+  test("connects with high thinking and persists spoken transcripts without model thoughts", async () => {
     let connection!: LiveConnectParameters;
     const events: GeminiLiveEvent[] = [];
     const connect = spyOn(Live.prototype, "connect").mockImplementation(async (params) => {
@@ -45,13 +45,13 @@ describe("Gemini 3.8 Live protocol", () => {
       await session.start();
       const receive = (serverContent: LiveServerContent) =>
         connection.callbacks.onmessage(Object.assign(new LiveServerMessage(), { serverContent }));
-      expect(connection.model).toBe("models/gemini-3.8-live");
-      expect(connection.config).not.toHaveProperty("thinkingConfig");
+      expect(connection.model).toBe("models/gemini-3.8-live-extended-thinking");
+      expect(connection.config?.thinkingConfig).toEqual({ thinkingLevel: ThinkingLevel.HIGH });
       expect(connection.config?.outputAudioTranscription).toEqual({});
       const tools = connection.config?.tools as Array<{ functionDeclarations?: Array<{ behavior?: Behavior }> }>;
       const declarations = tools.flatMap((tool) => tool.functionDeclarations ?? []);
       expect(declarations.length).toBeGreaterThan(50);
-      expect(declarations.every((tool) => tool.behavior === Behavior.BLOCKING)).toBe(true);
+      expect(declarations.every((tool) => tool.behavior === Behavior.NON_BLOCKING)).toBe(true);
       expect(loadChat(db, conversationId).model).toBe(connection.model);
 
       await receive({
@@ -65,6 +65,7 @@ describe("Gemini 3.8 Live protocol", () => {
       await receive({
         outputTranscription: { text: "meeting is at noon.", finished: true },
         turnComplete: true,
+        interactionStatus: InteractionStatus.IDLE,
       });
       expect(loadChat(db, conversationId).turns.map((turn) => turn.body)).toEqual([
         "Your next meeting is at noon.",
@@ -76,10 +77,12 @@ describe("Gemini 3.8 Live protocol", () => {
         outputTranscription: { text: "I can also" },
         interrupted: true,
         turnComplete: true,
+        interactionStatus: InteractionStatus.IDLE,
       });
       await receive({
         outputTranscription: { text: "Okay, stopping." },
         turnComplete: true,
+        interactionStatus: InteractionStatus.IDLE,
       });
       expect(events).toContainEqual({ type: "interrupted" });
       expect(loadChat(db, conversationId).turns.map((turn) => turn.body)).toEqual([
@@ -95,6 +98,99 @@ describe("Gemini 3.8 Live protocol", () => {
 afterEach(() => {
   db.$client.close();
   rmSync(dir, { recursive: true, force: true });
+});
+
+async function withLiveHarness(
+  run: (h: {
+    session: GeminiLiveSession;
+    connection: LiveConnectParameters;
+    events: GeminiLiveEvent[];
+    responses: unknown[];
+    receive: (message: Partial<LiveServerMessage>) => Promise<void>;
+    addTool: (execute: () => Promise<unknown>) => void;
+  }) => Promise<void>,
+  env: Record<string, string> = {},
+) {
+  let connection!: LiveConnectParameters;
+  const events: GeminiLiveEvent[] = [];
+  const responses: unknown[] = [];
+  const connect = spyOn(Live.prototype, "connect").mockImplementation(async (params) => {
+    connection = params;
+    return { close() {}, sendToolResponse: (response: unknown) => responses.push(response) } as unknown as Session;
+  });
+  const session = new GeminiLiveSession({ db, conversationId,
+    config: loadRuntimeConfig({ GEMINI_API_KEY: "test-only", ...env }), onEvent: (event) => events.push(event) });
+  try {
+    await session.start();
+    await run({ session, connection, events, responses,
+      receive: async (message) => { await connection.callbacks.onmessage(Object.assign(new LiveServerMessage(), message)); },
+      addTool: (execute) => {
+        const tools = (session as unknown as { toolsByName: Map<string, unknown> }).toolsByName;
+        tools.set("test_lookup", { name: "test_lookup", kind: "read", execute });
+      },
+    });
+  } finally {
+    session.close();
+    connect.mockRestore();
+  }
+}
+
+test("keeps audio responsive while tools run and completes only at server IDLE", async () => {
+  await withLiveHarness(async ({ receive, addTool, responses, events }) => {
+    let resolveTool!: (value: unknown) => void;
+    addTool(() => new Promise((resolve) => { resolveTool = resolve; }));
+    await receive({ toolCall: { functionCalls: [{ id: "lookup-1", name: "test_lookup", args: {} }] },
+      serverContent: { modelTurn: { parts: [{ inlineData: { data: "AAAA" } }] },
+        outputTranscription: { text: "Checking that." }, turnComplete: true,
+        interactionStatus: InteractionStatus.IN_PROGRESS } });
+    expect(events.some((event) => event.type === "audio")).toBe(true);
+    expect(events).toContainEqual({ type: "audio_turn_complete" });
+    expect(events).toContainEqual({ type: "interaction_status", working: true });
+    expect(loadChat(db, conversationId).turns).toHaveLength(0);
+    expect(responses).toHaveLength(0);
+    // Even an early IDLE must not finalize while a local tool is unfinished.
+    await receive({ serverContent: { interactionStatus: InteractionStatus.IDLE } });
+    expect(loadChat(db, conversationId).turns).toHaveLength(0);
+    resolveTool({ answer: "noon" });
+    await Promise.resolve();
+    expect(responses).toEqual([{ functionResponses: [{ id: "lookup-1", name: "test_lookup", response: { answer: "noon" } }] }]);
+    await receive({ serverContent: { outputTranscription: { text: "It is at noon." }, turnComplete: true,
+      interactionStatus: InteractionStatus.IN_PROGRESS } });
+    expect(loadChat(db, conversationId).turns).toHaveLength(0);
+    await receive({ serverContent: { interactionStatus: InteractionStatus.IDLE } });
+    await receive({ serverContent: { interactionStatus: InteractionStatus.IDLE } });
+    const turns = loadChat(db, conversationId).turns;
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.body).toBe("Checking that.\nIt is at noon.");
+    expect(turns[0]!.toolSummary).toContain("lookup");
+    expect(events.filter((event) => event.type === "turn_complete")).toHaveLength(1);
+  });
+});
+
+for (const stop of ["cancel", "close"] as const) {
+  test(`does not deliver stale tool results after ${stop}`, async () => {
+    await withLiveHarness(async ({ session, receive, addTool, responses, events }) => {
+      let resolveTool!: (value: unknown) => void;
+      addTool(() => new Promise((resolve) => { resolveTool = resolve; }));
+      await receive({ toolCall: { functionCalls: [{ id: "lookup-1", name: "test_lookup" }] } });
+      if (stop === "close") session.close();
+      else await receive({ toolCallCancellation: { ids: ["lookup-1"] } });
+      resolveTool({ answer: "obsolete" });
+      await Promise.resolve();
+      expect(responses).toHaveLength(0);
+      expect(events.filter((event) => event.type === "tool")).toHaveLength(0);
+    });
+  });
+}
+
+test("standard 3.8 override omits thinking and retains blocking tool behavior", async () => {
+  await withLiveHarness(async ({ connection, receive }) => {
+    expect(connection.config).not.toHaveProperty("thinkingConfig");
+    const tools = connection.config?.tools as Array<{ functionDeclarations?: Array<{ behavior?: Behavior }> }>;
+    expect(tools.flatMap((tool) => tool.functionDeclarations ?? []).every((tool) => tool.behavior === Behavior.BLOCKING)).toBe(true);
+    await receive({ serverContent: { outputTranscription: { text: "Hello." }, turnComplete: true } });
+    expect(loadChat(db, conversationId).turns[0]!.body).toBe("Hello.");
+  }, { GEMINI_LIVE_MODEL: "models/gemini-3.8-live" });
 });
 
 describe("WAV & MIME helpers", () => {
@@ -278,10 +374,10 @@ describe("GeminiLiveSession tool initialization", () => {
   });
 
   test("tracks conversation voice invocation in database", () => {
-    markConversationVoiceInvoked(db, conversationId, "models/gemini-3.8-live");
+    markConversationVoiceInvoked(db, conversationId, "models/gemini-3.8-live-extended-thinking");
 
     const chat = loadChat(db, conversationId);
     expect(chat.voiceInvoked).toBe(true);
-    expect(chat.model).toBe("models/gemini-3.8-live");
+    expect(chat.model).toBe("models/gemini-3.8-live-extended-thinking");
   });
 });

@@ -463,7 +463,7 @@ export function noteApprovalOutcome(db: Db, decisionId: string, followed: string
 export function markConversationVoiceInvoked(
   db: Db,
   conversationId: string,
-  model = "models/gemini-3.8-live",
+  model = "models/gemini-3.8-live-extended-thinking",
 ): void {
   db.update(s.conversations)
     .set({

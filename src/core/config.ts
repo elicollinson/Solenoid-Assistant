@@ -79,7 +79,7 @@ const runtimeConfigSchema = z.object({
   ),
   TAVILY_API_KEY: optionalEnvString,
   GEMINI_API_KEY: optionalEnvString,
-  GEMINI_LIVE_MODEL: optionalEnvString.default("models/gemini-3.1-flash-live-preview"),
+  GEMINI_LIVE_MODEL: optionalEnvString.default("models/gemini-3.8-live"),
   GEMINI_VOICE: optionalEnvString.default("Sulafat"),
 });
 

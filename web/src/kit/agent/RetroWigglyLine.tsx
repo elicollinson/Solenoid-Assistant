@@ -212,7 +212,7 @@ export function RetroWigglyLine({
           <span style={{ color: "var(--text-1)", fontWeight: 500 }}>
             {isMuted ? "Stream Open · Muted" : "Live Stream Open"}
           </span>
-          <span style={{ color: "var(--text-4)" }}>· Gemini 3.1</span>
+          <span style={{ color: "var(--text-4)" }}>· Gemini Live</span>
         </span>
 
         <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-2)" }}>

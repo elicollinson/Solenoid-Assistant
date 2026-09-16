@@ -94,7 +94,7 @@ export function ChatView({ chat, voice }: { chat: ChatState; voice: VoiceModeSta
                     backgroundColor: chat.voiceInvoked || voice.active ? "var(--signal-green)" : "var(--text-4)",
                   }}
                 />
-                {chat.voiceInvoked || voice.active ? "Gemini 3.1 Live Flash" : "Gemma 4 31B"}
+                {chat.voiceInvoked || voice.active ? "Gemini Live" : "Gemma 4 31B"}
               </span>
             ) : null}
 

@@ -2,7 +2,8 @@ import {
   GoogleGenAI,
   Modality,
   MediaResolution,
-  ThinkingLevel,
+  Behavior,
+  type LiveConnectConfig,
   type FunctionDeclaration,
   type LiveServerMessage,
   type Session,
@@ -297,6 +298,7 @@ export class GeminiLiveSession {
 
       this.declarations.push({
         name: loader,
+        behavior: Behavior.BLOCKING,
         description: `Load schema, tools and instructions for the ${group.name} group: ${group.summary}`,
         parameters: {
           type: "OBJECT",
@@ -316,6 +318,7 @@ export class GeminiLiveSession {
 
         this.declarations.push({
           name: func.name,
+          behavior: Behavior.BLOCKING,
           description: func.description,
           parameters: sanitizeGeminiSchema(func.parameters) as unknown as FunctionDeclaration["parameters"],
         });
@@ -330,19 +333,18 @@ export class GeminiLiveSession {
     }
 
     const ai = new GoogleGenAI({ apiKey });
-    const model = this.config.gemini.liveModel || "models/gemini-3.1-flash-live-preview";
+    const model = this.config.gemini.liveModel || "models/gemini-3.8-live";
 
     const datedPrompt = `${chatSystemPrompt()}\n\n${today()}`;
 
     // Mark conversation as voice-invoked in the DB
     markConversationVoiceInvoked(this.db, this.conversationId, model);
 
-    const liveConfig = {
+    const liveConfig: LiveConnectConfig = {
       responseModalities: [Modality.AUDIO],
       mediaResolution: MediaResolution.MEDIA_RESOLUTION_MEDIUM,
-      thinkingConfig: {
-        thinkingLevel: ThinkingLevel.MINIMAL,
-      },
+      // Gemini 3.8 Live rejects thinkingConfig; spoken text arrives separately.
+      outputAudioTranscription: {},
       speechConfig: {
         voiceConfig: {
           prebuiltVoiceConfig: {
@@ -357,6 +359,8 @@ export class GeminiLiveSession {
       systemInstruction: {
         parts: [{ text: datedPrompt }],
       },
+      // Keep tool results inside the current turn. 3.8 defaults to non-blocking
+      // calls, which require a different turn/state lifecycle.
       tools: [
         { functionDeclarations: this.declarations },
         { googleSearch: {} },
@@ -463,11 +467,15 @@ export class GeminiLiveSession {
             mimeType: part.inlineData.mimeType ?? "audio/pcm;rate=24000",
           });
         }
-        if (part.text) {
-          this.currentTurnText += part.text;
-          this.onEvent({ type: "text", text: part.text });
-        }
+        // AUDIO sessions use outputTranscription below. modelTurn text can
+        // contain thoughts and must not be persisted as the spoken answer.
       }
+    }
+
+    const transcript = message.serverContent?.outputTranscription?.text;
+    if (transcript) {
+      this.currentTurnText += transcript;
+      this.onEvent({ type: "text", text: transcript });
     }
 
     // 3. User interruption signal

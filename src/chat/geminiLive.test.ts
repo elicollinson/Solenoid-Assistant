@@ -1,4 +1,6 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { Behavior, Live, LiveServerMessage, type LiveServerContent, type LiveConnectParameters, type Session } from "@google/genai";
+import { loadRuntimeConfig } from "../core/config";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +10,7 @@ import {
   createWavHeader,
   parseMimeType,
   sanitizeGeminiSchema,
+  type GeminiLiveEvent,
 } from "./geminiLive";
 import { createDb, runMigrations, type Db } from "../db";
 import { loadChat } from "../db/queries/chat";
@@ -22,6 +25,71 @@ beforeEach(() => {
   db = createDb(join(dir, "test.db"));
   runMigrations(db);
   conversationId = startConversation(db);
+});
+
+describe("Gemini 3.8 Live protocol", () => {
+  test("connects without thinking config and persists spoken transcripts without model thoughts", async () => {
+    let connection!: LiveConnectParameters;
+    const events: GeminiLiveEvent[] = [];
+    const connect = spyOn(Live.prototype, "connect").mockImplementation(async (params) => {
+      connection = params;
+      return { close() {} } as Session;
+    });
+    const session = new GeminiLiveSession({
+      db,
+      conversationId,
+      config: loadRuntimeConfig({ GEMINI_API_KEY: "test-only" }),
+      onEvent: (event) => events.push(event),
+    });
+    try {
+      await session.start();
+      const receive = (serverContent: LiveServerContent) =>
+        connection.callbacks.onmessage(Object.assign(new LiveServerMessage(), { serverContent }));
+      expect(connection.model).toBe("models/gemini-3.8-live");
+      expect(connection.config).not.toHaveProperty("thinkingConfig");
+      expect(connection.config?.outputAudioTranscription).toEqual({});
+      const tools = connection.config?.tools as Array<{ functionDeclarations?: Array<{ behavior?: Behavior }> }>;
+      const declarations = tools.flatMap((tool) => tool.functionDeclarations ?? []);
+      expect(declarations.length).toBeGreaterThan(50);
+      expect(declarations.every((tool) => tool.behavior === Behavior.BLOCKING)).toBe(true);
+      expect(loadChat(db, conversationId).model).toBe(connection.model);
+
+      await receive({
+        modelTurn: { parts: [
+          { text: "Internal reasoning", thought: true },
+          { text: "Duplicate model text" },
+          { inlineData: { data: "AAAA", mimeType: "audio/pcm;rate=24000" } },
+        ] },
+        outputTranscription: { text: "Your next " },
+      });
+      await receive({
+        outputTranscription: { text: "meeting is at noon.", finished: true },
+        turnComplete: true,
+      });
+      expect(loadChat(db, conversationId).turns.map((turn) => turn.body)).toEqual([
+        "Your next meeting is at noon.",
+      ]);
+      expect(events).toContainEqual({ type: "audio", data: "AAAA", mimeType: "audio/pcm;rate=24000" });
+
+      // An interrupted turn is saved once and cannot bleed into the next answer.
+      await receive({
+        outputTranscription: { text: "I can also" },
+        interrupted: true,
+        turnComplete: true,
+      });
+      await receive({
+        outputTranscription: { text: "Okay, stopping." },
+        turnComplete: true,
+      });
+      expect(events).toContainEqual({ type: "interrupted" });
+      expect(loadChat(db, conversationId).turns.map((turn) => turn.body)).toEqual([
+        "Your next meeting is at noon.", "I can also", "Okay, stopping.",
+      ]);
+    } finally {
+      session.close();
+      connect.mockRestore();
+    }
+  });
 });
 
 afterEach(() => {
@@ -210,10 +278,10 @@ describe("GeminiLiveSession tool initialization", () => {
   });
 
   test("tracks conversation voice invocation in database", () => {
-    markConversationVoiceInvoked(db, conversationId, "models/gemini-3.1-flash-live-preview");
+    markConversationVoiceInvoked(db, conversationId, "models/gemini-3.8-live");
 
     const chat = loadChat(db, conversationId);
     expect(chat.voiceInvoked).toBe(true);
-    expect(chat.model).toBe("models/gemini-3.1-flash-live-preview");
+    expect(chat.model).toBe("models/gemini-3.8-live");
   });
 });

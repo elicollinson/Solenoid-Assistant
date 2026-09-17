@@ -580,6 +580,9 @@ export class GeminiLiveSession {
     this.closed = true;
     for (const pending of this.pendingCalls.values()) pending.cancelled = true;
     this.pendingCalls.clear();
+    // Stopping voice or losing the socket can happen between spoken turns and
+    // IDLE. Preserve what was already said and completed before closing.
+    this.finishInteraction();
     try {
       this.session?.close();
     } catch {

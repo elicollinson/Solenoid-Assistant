@@ -136,7 +136,7 @@ async function withLiveHarness(
 }
 
 test("keeps audio responsive while tools run and completes only at server IDLE", async () => {
-  await withLiveHarness(async ({ receive, addTool, responses, events }) => {
+  await withLiveHarness(async ({ session, receive, addTool, responses, events }) => {
     let resolveTool!: (value: unknown) => void;
     addTool(() => new Promise((resolve) => { resolveTool = resolve; }));
     await receive({ toolCall: { functionCalls: [{ id: "lookup-1", name: "test_lookup", args: {} }] },
@@ -159,11 +159,52 @@ test("keeps audio responsive while tools run and completes only at server IDLE",
     expect(loadChat(db, conversationId).turns).toHaveLength(0);
     await receive({ serverContent: { interactionStatus: InteractionStatus.IDLE } });
     await receive({ serverContent: { interactionStatus: InteractionStatus.IDLE } });
+    session.close(); // Closing an already-persisted interaction must not duplicate it.
     const turns = loadChat(db, conversationId).turns;
     expect(turns).toHaveLength(1);
     expect(turns[0]!.body).toBe("Checking that.\nIt is at noon.");
     expect(turns[0]!.toolSummary).toContain("lookup");
     expect(events.filter((event) => event.type === "turn_complete")).toHaveLength(1);
+  });
+});
+
+for (const closeVia of ["stop", "disconnect"] as const) {
+  test(`preserves partial speech and completed tool summaries on ${closeVia}`, async () => {
+    await withLiveHarness(async ({ session, connection, receive, addTool, responses, events }) => {
+      addTool(async () => ({ answer: "noon" }));
+      await receive({ toolCall: { functionCalls: [{ id: "completed", name: "test_lookup" }] } });
+      await Promise.resolve();
+      expect(responses).toHaveLength(1);
+
+      let resolvePending!: (value: unknown) => void;
+      addTool(() => new Promise((resolve) => { resolvePending = resolve; }));
+      await receive({ toolCall: { functionCalls: [{ id: "pending", name: "test_lookup" }] },
+        serverContent: { outputTranscription: { text: "Your meeting is at noon. Checking the location." },
+          turnComplete: true, interactionStatus: InteractionStatus.IN_PROGRESS } });
+      expect(loadChat(db, conversationId).turns).toHaveLength(0);
+
+      if (closeVia === "stop") session.close();
+      else connection.callbacks.onclose?.({ reason: "Connection lost" } as CloseEvent);
+      session.close(); // A later socket callback/cleanup must be harmless.
+      resolvePending({ answer: "late result" });
+      await Promise.resolve();
+      await receive({ serverContent: { outputTranscription: { text: "Late speech" }, interactionStatus: InteractionStatus.IDLE } });
+
+      const turns = loadChat(db, conversationId).turns;
+      expect(turns).toHaveLength(1);
+      expect(turns[0]!.body).toBe("Your meeting is at noon. Checking the location.");
+      expect(turns[0]!.toolSummary).toBe("1 tool call · test.lookup");
+      expect(responses).toHaveLength(1);
+      expect(events.filter((event) => event.type === "turn_complete")).toHaveLength(1);
+    });
+  });
+}
+
+test("closing an empty voice session does not create a transcript", async () => {
+  await withLiveHarness(async ({ session, events }) => {
+    session.close();
+    expect(loadChat(db, conversationId).turns).toHaveLength(0);
+    expect(events.filter((event) => event.type === "turn_complete")).toHaveLength(0);
   });
 });
 

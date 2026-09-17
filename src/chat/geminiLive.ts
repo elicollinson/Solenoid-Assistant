@@ -13,6 +13,7 @@ import {
 } from "@google/genai";
 import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 import type { Db } from "../db";
+import { loadChat } from "../db/queries/chat";
 import { TOOL_GROUP_CATALOG, buildToolGroups, type ToolGroupContext } from "../tools/groups";
 import { ToolBelt, loaderName } from "../core/toolGroups";
 import { chatSystemPrompt } from "../prompts";
@@ -90,6 +91,8 @@ export function convertToWav(rawData: string[], mimeType: string): Buffer {
 
 export type GeminiLiveEvent =
   | { type: "ready"; model: string; conversationId: string }
+  | { type: "reconnecting" }
+  | { type: "mode_change_rejected"; message: string }
   | { type: "audio"; data: string; mimeType: string }
   | { type: "text"; text: string }
   | { type: "user_text"; text: string }
@@ -270,6 +273,9 @@ export class GeminiLiveSession {
   private readonly onEvent: (event: GeminiLiveEvent) => void;
   private session?: Session;
   private closed = false;
+  private connectionGeneration = 0;
+  private connecting = false;
+  private currentUserText = "";
   private readonly toolsByName = new Map<string, ExecutableTool>();
   private readonly declarations: FunctionDeclaration[] = [];
   private currentTurnText = "";
@@ -285,7 +291,8 @@ export class GeminiLiveSession {
   constructor(options: GeminiLiveSessionOptions) {
     this.db = options.db;
     this.conversationId = options.conversationId;
-    this.config = options.config ?? loadRuntimeConfig();
+    const config = options.config ?? loadRuntimeConfig();
+    this.config = { ...config, gemini: { ...config.gemini } };
     this.onEvent = options.onEvent;
 
     this.initTools();
@@ -338,6 +345,10 @@ export class GeminiLiveSession {
   }
 
   async start(): Promise<void> {
+    if (this.closed) return;
+    this.connecting = true;
+    const generation = ++this.connectionGeneration;
+    const current = () => !this.closed && generation === this.connectionGeneration;
     const apiKey = this.config.gemini.apiKey ?? process.env.GEMINI_API_KEY;
     if (!apiKey) {
       throw new Error("GEMINI_API_KEY is not set in environment or config");
@@ -358,6 +369,7 @@ export class GeminiLiveSession {
       ...(this.extendedThinking ? {
         thinkingConfig: { thinkingLevel: ThinkingLevel[this.config.gemini.thinkingLevel.toUpperCase() as "LOW" | "MEDIUM" | "HIGH"] },
       } : {}),
+      inputAudioTranscription: {},
       outputAudioTranscription: {},
       speechConfig: {
         voiceConfig: {
@@ -380,25 +392,43 @@ export class GeminiLiveSession {
       ],
     };
 
+    // A replacement model receives the recent transcript before the mic resumes.
+    const history = loadChat(this.db, this.conversationId).turns.slice(-24).map((turn) => ({
+      role: turn.by === "user" ? "user" : "model",
+      parts: [{ text: [turn.body, turn.toolSummary].filter(Boolean).join("\n").slice(-4000) }],
+    }));
+    let setupAccepted = false;
+    let connected: Session | undefined;
+    let initialized = false;
+    const ready = () => {
+      if (!current() || !setupAccepted || !connected || initialized) return;
+      initialized = true;
+      if (history.length) connected.sendClientContent({ turns: history, turnComplete: false });
+      this.connecting = false;
+      this.onEvent({ type: "ready", model, conversationId: this.conversationId });
+    };
     try {
-      this.session = await ai.live.connect({
+      connected = await ai.live.connect({
         model,
         callbacks: {
           onopen: () => {
-            log.info("Gemini Live connection opened", { conversationId: this.conversationId });
-
+            if (current()) log.info("Gemini Live connection opened", { conversationId: this.conversationId });
           },
           onmessage: async (message: LiveServerMessage) => {
-            if (message.setupComplete && !this.closed) {
-              this.onEvent({ type: "ready", model, conversationId: this.conversationId });
+            if (!current()) return;
+            if (message.setupComplete) {
+              setupAccepted = true;
+              ready();
             }
             await this.handleMessage(message);
           },
           onerror: (e: ErrorEvent) => {
+            if (!current()) return;
             log.warn("Gemini Live connection error", { error: e.message });
             this.onEvent({ type: "error", message: e.message });
           },
           onclose: (e: CloseEvent) => {
+            if (!current()) return;
             this.close();
             log.info("Gemini Live connection closed", { reason: e.reason });
             this.onEvent({ type: "close", reason: e.reason });
@@ -406,12 +436,48 @@ export class GeminiLiveSession {
         },
         config: liveConfig,
       });
+      if (!current()) { connected.close(); return; }
+      this.session = connected;
+      ready();
     } catch (err) {
+      if (!current()) return;
+      this.connecting = false;
       const msg = err instanceof Error ? err.message : String(err);
       log.error("Failed to connect to Gemini Live", { error: msg });
       this.onEvent({ type: "error", message: msg });
       throw err;
     }
+  }
+
+  async setExtendedThinking(enabled: boolean): Promise<void> {
+    if (this.closed) return;
+    if (this.connecting || this.pendingCalls.size || this.serverStatus !== InteractionStatus.IDLE || this.currentUserText) {
+      this.onEvent({ type: "mode_change_rejected", message: "Wait for the current response to finish before changing thinking mode." });
+      return;
+    }
+    if (enabled === this.extendedThinking) {
+      this.onEvent({ type: "ready", model: this.config.gemini.liveModel, conversationId: this.conversationId });
+      return;
+    }
+    this.onEvent({ type: "reconnecting" });
+    this.connectionGeneration++; // Ignore close/audio events from the old model.
+    const previous = this.session;
+    this.session = undefined;
+    this.finishInteraction();
+    previous?.close();
+    this.config.gemini.liveModel = enabled ? "models/gemini-3.8-live-extended-thinking" : "models/gemini-3.8-live";
+    this.toolsByName.clear();
+    this.declarations.length = 0;
+    this.initTools();
+    await this.start();
+  }
+
+  private flushUserTranscript(): void {
+    const text = this.currentUserText.trim();
+    if (!text) return;
+    appendUserMessage(this.db, this.conversationId, text, new Date());
+    this.currentUserText = "";
+    this.onEvent({ type: "user_text", text });
   }
 
   private async handleMessage(message: LiveServerMessage): Promise<void> {
@@ -438,6 +504,10 @@ export class GeminiLiveSession {
       this.serverStatus = InteractionStatus.IN_PROGRESS;
       this.onEvent({ type: "interaction_status", working: true });
     }
+
+    const input = message.serverContent?.inputTranscription;
+    if (input?.text) this.currentUserText += input.text;
+    if (input?.finished) this.flushUserTranscript();
 
     // 2. Server content / Audio / Text
     if (message.serverContent?.modelTurn?.parts) {
@@ -527,6 +597,7 @@ export class GeminiLiveSession {
   }
 
   private finishInteraction(): void {
+    this.flushUserTranscript();
     const body = this.currentTurnText.trim();
     const toolSummary = summarize(this.currentTurnCalls);
     const note = this.openedGroups.size ? `opened ${[...this.openedGroups].join(", ")}` : null;
@@ -543,7 +614,7 @@ export class GeminiLiveSession {
   }
 
   sendAudio(base64Pcm: string): void {
-    if (this.closed || !this.session) return;
+    if (this.closed || this.connecting || !this.session) return;
     try {
       this.session.sendRealtimeInput({
         audio: {
@@ -557,7 +628,7 @@ export class GeminiLiveSession {
   }
 
   sendText(text: string): void {
-    if (this.closed || !this.session) return;
+    if (this.closed || this.connecting || !this.session) return;
     try {
       appendUserMessage(this.db, this.conversationId, text, new Date());
       this.onEvent({ type: "user_text", text });
@@ -578,6 +649,7 @@ export class GeminiLiveSession {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.connectionGeneration++;
     for (const pending of this.pendingCalls.values()) pending.cancelled = true;
     this.pendingCalls.clear();
     // Stopping voice or losing the socket can happen between spoken turns and

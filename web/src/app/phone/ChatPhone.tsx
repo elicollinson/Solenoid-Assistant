@@ -284,6 +284,10 @@ function Thread({ chat, voice, chrome }: { chat: ChatState; voice: VoiceModeStat
             analyserNode={voice.analyserNode}
             isWorking={voice.isWorking} isSpeaking={voice.isSpeaking}
             isMuted={voice.isMuted}
+            extendedThinking={voice.extendedThinking}
+            thinkingDisabled={voice.status !== "open" || voice.isWorking || voice.isSpeaking}
+            reconnecting={voice.status === "connecting"}
+            onToggleThinking={voice.toggleExtendedThinking}
             onToggleMute={voice.toggleMute}
             onEndVoice={voice.stopVoice}
           />

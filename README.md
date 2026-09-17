@@ -678,6 +678,14 @@ Set `GEMINI_API_KEY` and optionally `GEMINI_VOICE` (default `Sulafat`).
 Remove an older model override or set the new value explicitly, then restart the
 server (or recreate its container) after deploying this version.
 
+The open voice controls include an **Extended thinking** switch on desktop and
+phone. It switches between Extended Thinking and standard 3.8 for the current
+voice session, preserving the microphone, mute state, and chat. It is available
+between responses; changing it briefly reconnects Gemini and restores the last
+24 saved turns (up to 4,000 characters each). Spoken user input is transcribed
+and saved too, so the replacement model receives both sides of the conversation.
+New voice sessions use the server's configured default.
+
 Tools run without blocking audio. Ending a spoken turn does not end the
 interaction: the UI continues showing work in progress until Gemini reports
 `interactionStatus: IDLE` and no local tools remain pending. The assistant's

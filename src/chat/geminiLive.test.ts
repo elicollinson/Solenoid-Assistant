@@ -106,6 +106,8 @@ async function withLiveHarness(
     connection: LiveConnectParameters;
     events: GeminiLiveEvent[];
     responses: unknown[];
+    connections: LiveConnectParameters[];
+    clientContents: unknown[];
     receive: (message: Partial<LiveServerMessage>) => Promise<void>;
     addTool: (execute: () => Promise<unknown>) => void;
   }) => Promise<void>,
@@ -114,15 +116,20 @@ async function withLiveHarness(
   let connection!: LiveConnectParameters;
   const events: GeminiLiveEvent[] = [];
   const responses: unknown[] = [];
+  const connections: LiveConnectParameters[] = [];
+  const clientContents: unknown[] = [];
   const connect = spyOn(Live.prototype, "connect").mockImplementation(async (params) => {
     connection = params;
-    return { close() {}, sendToolResponse: (response: unknown) => responses.push(response) } as unknown as Session;
+    connections.push(params);
+    return { close() {}, sendToolResponse: (response: unknown) => responses.push(response),
+      sendClientContent: (content: unknown) => clientContents.push(content) } as unknown as Session;
   });
   const session = new GeminiLiveSession({ db, conversationId,
     config: loadRuntimeConfig({ GEMINI_API_KEY: "test-only", ...env }), onEvent: (event) => events.push(event) });
   try {
     await session.start();
-    await run({ session, connection, events, responses,
+    await connection.callbacks.onmessage(Object.assign(new LiveServerMessage(), { setupComplete: {} }));
+    await run({ session, connection, events, responses, connections, clientContents,
       receive: async (message) => { await connection.callbacks.onmessage(Object.assign(new LiveServerMessage(), message)); },
       addTool: (execute) => {
         const tools = (session as unknown as { toolsByName: Map<string, unknown> }).toolsByName;
@@ -134,6 +141,71 @@ async function withLiveHarness(
     connect.mockRestore();
   }
 }
+
+test("switches models in the same chat, restoring both sides of the transcript", async () => {
+  await withLiveHarness(async ({ session, receive, connections, clientContents, events }) => {
+    await receive({ serverContent: { inputTranscription: { text: "My code is violet-731.", finished: true } } });
+    await receive({ serverContent: { outputTranscription: { text: "Got it." }, interactionStatus: InteractionStatus.IDLE } });
+    const oldConnection = connections[0]!;
+    await session.setExtendedThinking(false);
+    expect(events).toContainEqual({ type: "reconnecting" });
+    expect(connections[1]!.model).toBe("models/gemini-3.8-live");
+    expect(connections[1]!.config).not.toHaveProperty("thinkingConfig");
+    await receive({ setupComplete: {} });
+    expect(clientContents).toEqual([{ turns: [
+      { role: "user", parts: [{ text: "My code is violet-731." }] },
+      { role: "model", parts: [{ text: "Got it." }] },
+    ], turnComplete: false }]);
+    // A late close from the replaced model must not close its replacement.
+    oldConnection.callbacks.onclose?.({ reason: "old connection closed" } as CloseEvent);
+    expect(session.isClosed).toBe(false);
+    await session.setExtendedThinking(true);
+    expect(connections[2]!.model).toBe("models/gemini-3.8-live-extended-thinking");
+    expect(connections[2]!.config?.thinkingConfig?.thinkingLevel).toBe(ThinkingLevel.HIGH);
+    await receive({ setupComplete: {} });
+    expect(loadChat(db, conversationId).turns).toHaveLength(2);
+  });
+});
+
+test("does not replace a model during background work", async () => {
+  await withLiveHarness(async ({ session, receive, connections, events }) => {
+    await receive({ serverContent: { interactionStatus: InteractionStatus.IN_PROGRESS } });
+    await session.setExtendedThinking(false);
+    expect(connections).toHaveLength(1);
+    expect(events.at(-1)?.type).toBe("mode_change_rejected");
+    expect(session.isClosed).toBe(false);
+  });
+});
+
+test("ending voice while a replacement connects closes the late session", async () => {
+  const connections: LiveConnectParameters[] = [];
+  const events: GeminiLiveEvent[] = [];
+  let resolveReplacement!: (session: Session) => void;
+  let closed = 0;
+  const fake = () => ({ close() { closed++; } }) as Session;
+  const connect = spyOn(Live.prototype, "connect").mockImplementation(async (params) => {
+    connections.push(params);
+    if (connections.length === 1) return fake();
+    return new Promise<Session>((resolve) => { resolveReplacement = resolve; });
+  });
+  const session = new GeminiLiveSession({ db, conversationId,
+    config: loadRuntimeConfig({ GEMINI_API_KEY: "test-only" }), onEvent: (event) => events.push(event) });
+  try {
+    await session.start();
+    await connections[0]!.callbacks.onmessage(Object.assign(new LiveServerMessage(), { setupComplete: {} }));
+    const replacement = session.setExtendedThinking(false);
+    session.close();
+    resolveReplacement(fake());
+    await replacement;
+    await connections[1]!.callbacks.onmessage(Object.assign(new LiveServerMessage(), { setupComplete: {} }));
+    expect(closed).toBe(2);
+    expect(session.isClosed).toBe(true);
+    expect(events.filter((event) => event.type === "ready")).toHaveLength(1);
+  } finally {
+    session.close();
+    connect.mockRestore();
+  }
+});
 
 test("keeps audio responsive while tools run and completes only at server IDLE", async () => {
   await withLiveHarness(async ({ session, receive, addTool, responses, events }) => {

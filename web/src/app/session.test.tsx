@@ -122,7 +122,60 @@ function button(text: string) {
 async function click(text: string) { await act(async () => { button(text).click(); }); }
 function indicator() { return container.querySelector<HTMLButtonElement>('button[aria-label$="Return to ongoing conversation"]'); }
 
+test("voice keeps listening and shows background work after a spoken turn ends", async () => {
+  await mount(1240);
+  await click("Voice");
+  const socket = sockets[0]!;
+  await act(async () => socket.receive({ type: "ready" }));
+  await click("Activity");
+  await act(async () => {
+    socket.receive({ type: "interaction_status", working: true });
+    socket.receive({ type: "audio_turn_complete" });
+  });
+  expect(indicator()?.getAttribute("aria-label")).toContain("Voice working");
+  expect(socket.closed).toBe(false);
+  await act(async () => socket.receive({ type: "audio", data: "AAAAAA==", mimeType: "audio/pcm;rate=24000" }));
+  expect(contexts[0]!.plays).toBe(1);
+  await act(async () => {
+    socket.receive({ type: "interaction_status", working: false });
+    socket.receive({ type: "turn_complete" });
+  });
+  expect(indicator()?.getAttribute("aria-label")).toContain("Voice active");
+  expect(socket.closed).toBe(false);
+});
+
 for (const width of [1240, 390]) {
+  test(`thinking switch reconnects the model while retaining microphone and chat at ${width}px`, async () => {
+    await mount(width);
+    await click("Voice");
+    const socket = sockets[0]!;
+    await act(async () => socket.receive({ type: "ready", model: "models/gemini-3.8-live-extended-thinking" }));
+    const toggle = () => container.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Extended thinking"]')!;
+    expect(toggle().getAttribute("aria-checked")).toBe("true");
+    await click("Mute");
+    await act(async () => toggle().click());
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({ type: "set_extended_thinking", enabled: false });
+    expect(toggle().disabled).toBe(true);
+    await act(async () => socket.receive({ type: "reconnecting" }));
+    expect(container.textContent).toContain("Reconnecting");
+    expect(socket.closed).toBe(false);
+    expect(tracks[0]!.stopped).toBe(false);
+    expect(tracks[0]!.enabled).toBe(false);
+    await act(async () => socket.receive({ type: "ready", model: "models/gemini-3.8-live" }));
+    expect(toggle().getAttribute("aria-checked")).toBe("false");
+    expect(toggle().disabled).toBe(false);
+    await act(async () => socket.receive({ type: "interaction_status", working: true }));
+    expect(toggle().disabled).toBe(true);
+    await act(async () => socket.receive({ type: "interaction_status", working: false }));
+    await act(async () => toggle().click());
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({ type: "set_extended_thinking", enabled: true });
+    await act(async () => socket.receive({ type: "ready", model: "models/gemini-3.8-live-extended-thinking" }));
+    expect(toggle().getAttribute("aria-checked")).toBe("true");
+    expect(created).toBe(1);
+    expect(sockets).toHaveLength(1);
+    expect(contexts).toHaveLength(1);
+  });
+
   test(`fresh chat and uninterrupted voice through navigation at ${width}px`, async () => {
     await mount(width);
     expect(created).toBe(1); // StrictMode effect replay must not create duplicates.

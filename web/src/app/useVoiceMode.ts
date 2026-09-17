@@ -9,6 +9,9 @@ export interface VoiceModeState {
   active: boolean;
   status: "idle" | "connecting" | "open" | "error";
   isSpeaking: boolean;
+  isWorking: boolean;
+  extendedThinking: boolean;
+  toggleExtendedThinking: () => void;
   isMuted: boolean;
   error: string | null;
   analyserNode: AnalyserNode | null;
@@ -21,6 +24,9 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
   const [active, setActive] = useState(false);
   const [status, setStatus] = useState<"idle" | "connecting" | "open" | "error">("idle");
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isWorking, setIsWorking] = useState(false);
+  const [extendedThinking, setExtendedThinking] = useState(true);
+  const readyRef = useRef(false);
   const [isMuted, setIsMuted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [analyserNode, setAnalyserNode] = useState<AnalyserNode | null>(null);
@@ -40,6 +46,7 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
 
   const cleanup = useCallback(() => {
     generation.current += 1;
+    readyRef.current = false;
     // 1. Stop mic tracks
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((track) => track.stop());
@@ -88,6 +95,7 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
       audioCtxRef.current = null;
     }
 
+    setIsWorking(false);
     setActive(false);
     setStatus("idle");
     setIsSpeaking(false);
@@ -150,7 +158,7 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
       processorRef.current = processor;
 
       processor.onaudioprocess = (e) => {
-        if (isMutedRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+        if (!readyRef.current || isMutedRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
         const inputData = e.inputBuffer.getChannelData(0);
         // Resample input to 16kHz PCM if needed
@@ -207,11 +215,24 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
             text?: string;
             message?: string;
             reason?: string;
+            working?: boolean;
+            model?: string;
           };
 
           if (msg.type === "ready") {
+            readyRef.current = true;
+            if (msg.model) setExtendedThinking(msg.model.replace(/^models\//, "") === "gemini-3.8-live-extended-thinking");
             setStatus("open");
             setActive(true);
+          } else if (msg.type === "reconnecting") {
+            readyRef.current = false;
+            stopAudioPlayback();
+            setIsSpeaking(false);
+            setStatus("connecting");
+          } else if (msg.type === "mode_change_rejected") {
+            readyRef.current = true;
+            setStatus("open");
+            setError(msg.message ?? "Wait for the current response to finish.");
           } else if (msg.type === "audio" && msg.data) {
             // Play received audio
             playPcmAudio(msg.data, audioCtx, analyser);
@@ -219,6 +240,10 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
           } else if (msg.type === "interrupted") {
             // User interrupted the model: cut off playback
             stopAudioPlayback();
+            setIsSpeaking(false);
+          } else if (msg.type === "interaction_status") {
+            setIsWorking(Boolean(msg.working));
+          } else if (msg.type === "audio_turn_complete") {
             setIsSpeaking(false);
           } else if (msg.type === "turn_complete") {
             setIsSpeaking(false);
@@ -319,6 +344,14 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
     }
   };
 
+  const toggleExtendedThinking = useCallback(() => {
+    if (!readyRef.current || isWorking || isSpeaking || wsRef.current?.readyState !== WebSocket.OPEN) return;
+    readyRef.current = false;
+    setError(null);
+    setStatus("connecting");
+    wsRef.current.send(JSON.stringify({ type: "set_extended_thinking", enabled: !extendedThinking }));
+  }, [extendedThinking, isWorking, isSpeaking]);
+
   const stopVoice = useCallback(() => {
     cleanup();
   }, [cleanup]);
@@ -339,6 +372,9 @@ export function useVoiceMode({ conversationId, onTurnComplete }: UseVoiceModeOpt
     active,
     status,
     isSpeaking,
+    isWorking,
+    extendedThinking,
+    toggleExtendedThinking,
     isMuted,
     error,
     analyserNode,

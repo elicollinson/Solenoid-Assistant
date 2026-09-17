@@ -22,6 +22,16 @@ describe("where it listens", () => {
 });
 
 describe("loadRuntimeConfig", () => {
+  test("defaults voice to Extended Thinking high and validates thinking levels", () => {
+    expect(loadRuntimeConfig({}).gemini.liveModel).toBe("models/gemini-3.8-live-extended-thinking");
+    expect(loadRuntimeConfig({}).gemini.thinkingLevel).toBe("high");
+    expect(loadRuntimeConfig({ GEMINI_LIVE_THINKING_LEVEL: "" }).gemini.thinkingLevel).toBe("high");
+    for (const level of ["low", "medium", "high"] as const) {
+      expect(loadRuntimeConfig({ GEMINI_LIVE_THINKING_LEVEL: level }).gemini.thinkingLevel).toBe(level);
+    }
+    expect(() => loadRuntimeConfig({ GEMINI_LIVE_THINKING_LEVEL: "minimal" })).toThrow();
+  });
+
   test("applies one set of runtime defaults", () => {
     const config = loadRuntimeConfig({});
     expect(config.port).toBe(3000);

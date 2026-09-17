@@ -282,8 +282,12 @@ function Thread({ chat, voice, chrome }: { chat: ChatState; voice: VoiceModeStat
           <RetroWigglyLine
             active={voice.active}
             analyserNode={voice.analyserNode}
-            isSpeaking={voice.isSpeaking}
+            isWorking={voice.isWorking} isSpeaking={voice.isSpeaking}
             isMuted={voice.isMuted}
+            extendedThinking={voice.extendedThinking}
+            thinkingDisabled={voice.status !== "open" || voice.isWorking || voice.isSpeaking}
+            reconnecting={voice.status === "connecting"}
+            onToggleThinking={voice.toggleExtendedThinking}
             onToggleMute={voice.toggleMute}
             onEndVoice={voice.stopVoice}
           />

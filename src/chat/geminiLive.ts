@@ -2,13 +2,18 @@ import {
   GoogleGenAI,
   Modality,
   MediaResolution,
+  Behavior,
+  InteractionStatus,
   ThinkingLevel,
+  type FunctionCall,
+  type LiveConnectConfig,
   type FunctionDeclaration,
   type LiveServerMessage,
   type Session,
 } from "@google/genai";
 import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 import type { Db } from "../db";
+import { loadChat } from "../db/queries/chat";
 import { TOOL_GROUP_CATALOG, buildToolGroups, type ToolGroupContext } from "../tools/groups";
 import { ToolBelt, loaderName } from "../core/toolGroups";
 import { chatSystemPrompt } from "../prompts";
@@ -86,6 +91,8 @@ export function convertToWav(rawData: string[], mimeType: string): Buffer {
 
 export type GeminiLiveEvent =
   | { type: "ready"; model: string; conversationId: string }
+  | { type: "reconnecting" }
+  | { type: "mode_change_rejected"; message: string }
   | { type: "audio"; data: string; mimeType: string }
   | { type: "text"; text: string }
   | { type: "user_text"; text: string }
@@ -99,6 +106,8 @@ export type GeminiLiveEvent =
     }
   | { type: "opened"; group: string }
   | { type: "interrupted" }
+  | { type: "audio_turn_complete" }
+  | { type: "interaction_status"; working: boolean }
   | { type: "turn_complete"; agentText: string; toolSummary: string | null }
   | { type: "error"; message: string }
   | { type: "close"; reason?: string };
@@ -264,16 +273,26 @@ export class GeminiLiveSession {
   private readonly onEvent: (event: GeminiLiveEvent) => void;
   private session?: Session;
   private closed = false;
+  private connectionGeneration = 0;
+  private connecting = false;
+  private currentUserText = "";
   private readonly toolsByName = new Map<string, ExecutableTool>();
   private readonly declarations: FunctionDeclaration[] = [];
   private currentTurnText = "";
   private currentTurnCalls: Array<{ name: string }> = [];
   private openedGroups = new Set<string>();
+  private readonly pendingCalls = new Map<string, { cancelled: boolean }>();
+  private serverStatus = InteractionStatus.IDLE;
+
+  private get extendedThinking(): boolean {
+    return this.config.gemini.liveModel.replace(/^models\//, "") === "gemini-3.8-live-extended-thinking";
+  }
 
   constructor(options: GeminiLiveSessionOptions) {
     this.db = options.db;
     this.conversationId = options.conversationId;
-    this.config = options.config ?? loadRuntimeConfig();
+    const config = options.config ?? loadRuntimeConfig();
+    this.config = { ...config, gemini: { ...config.gemini } };
     this.onEvent = options.onEvent;
 
     this.initTools();
@@ -297,6 +316,7 @@ export class GeminiLiveSession {
 
       this.declarations.push({
         name: loader,
+        behavior: this.extendedThinking ? Behavior.NON_BLOCKING : Behavior.BLOCKING,
         description: `Load schema, tools and instructions for the ${group.name} group: ${group.summary}`,
         parameters: {
           type: "OBJECT",
@@ -316,6 +336,7 @@ export class GeminiLiveSession {
 
         this.declarations.push({
           name: func.name,
+          behavior: this.extendedThinking ? Behavior.NON_BLOCKING : Behavior.BLOCKING,
           description: func.description,
           parameters: sanitizeGeminiSchema(func.parameters) as unknown as FunctionDeclaration["parameters"],
         });
@@ -324,25 +345,32 @@ export class GeminiLiveSession {
   }
 
   async start(): Promise<void> {
+    if (this.closed) return;
+    this.connecting = true;
+    const generation = ++this.connectionGeneration;
+    const current = () => !this.closed && generation === this.connectionGeneration;
     const apiKey = this.config.gemini.apiKey ?? process.env.GEMINI_API_KEY;
     if (!apiKey) {
       throw new Error("GEMINI_API_KEY is not set in environment or config");
     }
 
     const ai = new GoogleGenAI({ apiKey });
-    const model = this.config.gemini.liveModel || "models/gemini-3.1-flash-live-preview";
+    const model = this.config.gemini.liveModel || "models/gemini-3.8-live-extended-thinking";
 
     const datedPrompt = `${chatSystemPrompt()}\n\n${today()}`;
 
     // Mark conversation as voice-invoked in the DB
     markConversationVoiceInvoked(this.db, this.conversationId, model);
 
-    const liveConfig = {
+    const liveConfig: LiveConnectConfig = {
       responseModalities: [Modality.AUDIO],
       mediaResolution: MediaResolution.MEDIA_RESOLUTION_MEDIUM,
-      thinkingConfig: {
-        thinkingLevel: ThinkingLevel.MINIMAL,
-      },
+      // Standard 3.8 rejects thinkingConfig; Extended Thinking requires low/high/medium.
+      ...(this.extendedThinking ? {
+        thinkingConfig: { thinkingLevel: ThinkingLevel[this.config.gemini.thinkingLevel.toUpperCase() as "LOW" | "MEDIUM" | "HIGH"] },
+      } : {}),
+      inputAudioTranscription: {},
+      outputAudioTranscription: {},
       speechConfig: {
         voiceConfig: {
           prebuiltVoiceConfig: {
@@ -357,35 +385,63 @@ export class GeminiLiveSession {
       systemInstruction: {
         parts: [{ text: datedPrompt }],
       },
+      // Extended Thinking only accepts NON_BLOCKING tools and no scheduling options.
       tools: [
         { functionDeclarations: this.declarations },
         { googleSearch: {} },
       ],
     };
 
+    // A replacement model receives the recent transcript before the mic resumes.
+    const history = loadChat(this.db, this.conversationId).turns.slice(-24).map((turn) => ({
+      role: turn.by === "user" ? "user" : "model",
+      parts: [{ text: [turn.body, turn.toolSummary].filter(Boolean).join("\n").slice(-4000) }],
+    }));
+    let setupAccepted = false;
+    let connected: Session | undefined;
+    let initialized = false;
+    const ready = () => {
+      if (!current() || !setupAccepted || !connected || initialized) return;
+      initialized = true;
+      if (history.length) connected.sendClientContent({ turns: history, turnComplete: false });
+      this.connecting = false;
+      this.onEvent({ type: "ready", model, conversationId: this.conversationId });
+    };
     try {
-      this.session = await ai.live.connect({
+      connected = await ai.live.connect({
         model,
         callbacks: {
           onopen: () => {
-            log.info("Gemini Live connection opened", { conversationId: this.conversationId });
-            this.onEvent({ type: "ready", model, conversationId: this.conversationId });
+            if (current()) log.info("Gemini Live connection opened", { conversationId: this.conversationId });
           },
           onmessage: async (message: LiveServerMessage) => {
+            if (!current()) return;
+            if (message.setupComplete) {
+              setupAccepted = true;
+              ready();
+            }
             await this.handleMessage(message);
           },
           onerror: (e: ErrorEvent) => {
+            if (!current()) return;
             log.warn("Gemini Live connection error", { error: e.message });
             this.onEvent({ type: "error", message: e.message });
           },
           onclose: (e: CloseEvent) => {
+            if (!current()) return;
+            this.close();
             log.info("Gemini Live connection closed", { reason: e.reason });
             this.onEvent({ type: "close", reason: e.reason });
           },
         },
         config: liveConfig,
       });
+      if (!current()) { connected.close(); return; }
+      this.session = connected;
+      ready();
     } catch (err) {
+      if (!current()) return;
+      this.connecting = false;
       const msg = err instanceof Error ? err.message : String(err);
       log.error("Failed to connect to Gemini Live", { error: msg });
       this.onEvent({ type: "error", message: msg });
@@ -393,65 +449,65 @@ export class GeminiLiveSession {
     }
   }
 
+  async setExtendedThinking(enabled: boolean): Promise<void> {
+    if (this.closed) return;
+    if (this.connecting || this.pendingCalls.size || this.serverStatus !== InteractionStatus.IDLE || this.currentUserText) {
+      this.onEvent({ type: "mode_change_rejected", message: "Wait for the current response to finish before changing thinking mode." });
+      return;
+    }
+    if (enabled === this.extendedThinking) {
+      this.onEvent({ type: "ready", model: this.config.gemini.liveModel, conversationId: this.conversationId });
+      return;
+    }
+    this.onEvent({ type: "reconnecting" });
+    this.connectionGeneration++; // Ignore close/audio events from the old model.
+    const previous = this.session;
+    this.session = undefined;
+    this.finishInteraction();
+    previous?.close();
+    this.config.gemini.liveModel = enabled ? "models/gemini-3.8-live-extended-thinking" : "models/gemini-3.8-live";
+    this.toolsByName.clear();
+    this.declarations.length = 0;
+    this.initTools();
+    await this.start();
+  }
+
+  private flushUserTranscript(): void {
+    const text = this.currentUserText.trim();
+    if (!text) return;
+    appendUserMessage(this.db, this.conversationId, text, new Date());
+    this.currentUserText = "";
+    this.onEvent({ type: "user_text", text });
+  }
+
   private async handleMessage(message: LiveServerMessage): Promise<void> {
-    // 1. Tool calls
-    if (message.toolCall?.functionCalls && this.session) {
-      for (const call of message.toolCall.functionCalls) {
-        if (!call.id || !call.name) continue;
-        const tool = this.toolsByName.get(call.name);
-        const started = performance.now();
-        let result: unknown;
-        let ok = true;
-
-        if (tool?.isLoader && tool.group) {
-          this.openedGroups.add(tool.group);
-          this.onEvent({ type: "opened", group: tool.group });
-        }
-
-        try {
-          if (!tool) {
-            result = { error: `Tool "${call.name}" is not registered` };
-            ok = false;
-          } else {
-            result = await tool.execute(call.args);
-          }
-        } catch (err) {
-          ok = false;
-          result = { error: err instanceof Error ? err.message : String(err) };
-        }
-
-        const elapsed = performance.now() - started;
-
-        if (!tool?.isLoader) {
-          this.currentTurnCalls.push({ name: call.name });
-          this.onEvent({
-            type: "tool",
-            name: displayName(call.name),
-            kind: tool?.kind ?? "read",
-            arg: displayArg(call.args),
-            duration: displayDuration(elapsed),
-            ok,
-          });
-        }
-
-        try {
-          this.session.sendToolResponse({
-            functionResponses: [
-              {
-                id: call.id,
-                name: call.name,
-                response: typeof result === "object" && result !== null ? (result as Record<string, unknown>) : { output: String(result) },
-              },
-            ],
-          });
-        } catch (err) {
-          log.warn("Failed to send tool response to Gemini Live", {
-            tool: call.name,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
+    if (this.closed) return;
+    for (const id of message.toolCallCancellation?.ids ?? []) {
+      const pending = this.pendingCalls.get(id);
+      if (pending) {
+        pending.cancelled = true;
+        this.pendingCalls.delete(id);
       }
     }
+    // Start tools independently so this message's audio and future server events
+    // are processed immediately, even while an external request is pending.
+    for (const call of message.toolCall?.functionCalls ?? []) {
+      if (!call.id || !call.name || !this.session || this.pendingCalls.has(call.id)) continue;
+      const pending = { cancelled: false };
+      this.pendingCalls.set(call.id, pending);
+      this.serverStatus = InteractionStatus.IN_PROGRESS;
+      this.onEvent({ type: "interaction_status", working: true });
+      void this.executeCall(call, pending);
+    }
+
+    if (message.serverContent?.modelTurn || message.serverContent?.outputTranscription) {
+      this.serverStatus = InteractionStatus.IN_PROGRESS;
+      this.onEvent({ type: "interaction_status", working: true });
+    }
+
+    const input = message.serverContent?.inputTranscription;
+    if (input?.text) this.currentUserText += input.text;
+    if (input?.finished) this.flushUserTranscript();
 
     // 2. Server content / Audio / Text
     if (message.serverContent?.modelTurn?.parts) {
@@ -463,11 +519,15 @@ export class GeminiLiveSession {
             mimeType: part.inlineData.mimeType ?? "audio/pcm;rate=24000",
           });
         }
-        if (part.text) {
-          this.currentTurnText += part.text;
-          this.onEvent({ type: "text", text: part.text });
-        }
+        // AUDIO sessions use outputTranscription below. modelTurn text can
+        // contain thoughts and must not be persisted as the spoken answer.
       }
+    }
+
+    const transcript = message.serverContent?.outputTranscription?.text;
+    if (transcript) {
+      this.currentTurnText += transcript;
+      this.onEvent({ type: "text", text: transcript });
     }
 
     // 3. User interruption signal
@@ -475,35 +535,86 @@ export class GeminiLiveSession {
       this.onEvent({ type: "interrupted" });
     }
 
-    // 4. Turn complete
-    if (message.serverContent?.turnComplete) {
-      const body = this.currentTurnText.trim();
-      const toolSummary = summarize(this.currentTurnCalls);
-      const note = this.openedGroups.size ? `opened ${[...this.openedGroups].join(", ")}` : null;
+    // A spoken turn can end while the model is still reasoning or awaiting tools.
+    // Only IDLE finishes an Extended Thinking interaction. Keep listening after
+    // turnComplete, and retain text/tool summaries across intermediate speech.
+    const content = message.serverContent;
+    if (content?.turnComplete) this.onEvent({ type: "audio_turn_complete" });
+    if (content?.interactionStatus) this.serverStatus = content.interactionStatus;
+    else if (!this.extendedThinking && content?.turnComplete) this.serverStatus = InteractionStatus.IDLE;
 
-      if (body || this.currentTurnCalls.length) {
-        try {
-          appendAgentMessage(this.db, this.conversationId, body || "(Voice response)", { toolSummary, note }, new Date());
-        } catch (err) {
-          log.warn("Failed to persist Gemini Live turn", { error: err instanceof Error ? err.message : String(err) });
-        }
+    const idle = this.serverStatus === InteractionStatus.IDLE && this.pendingCalls.size === 0;
+    if (content?.interactionStatus || content?.turnComplete || message.toolCallCancellation) {
+      this.onEvent({ type: "interaction_status", working: !idle });
+      if (idle && (!this.extendedThinking || content?.interactionStatus === InteractionStatus.IDLE)) this.finishInteraction();
+      else if (content?.turnComplete && this.currentTurnText && !this.currentTurnText.endsWith("\n")) {
+        this.currentTurnText += "\n";
       }
-
-      this.onEvent({
-        type: "turn_complete",
-        agentText: body,
-        toolSummary,
-      });
-
-      // Reset turn accumulator
-      this.currentTurnText = "";
-      this.currentTurnCalls = [];
-      this.openedGroups.clear();
     }
   }
 
+  private async executeCall(call: FunctionCall, pending: { cancelled: boolean }): Promise<void> {
+    const id = call.id!;
+    const name = call.name!;
+    const tool = this.toolsByName.get(name);
+    const started = performance.now();
+    let result: unknown;
+    let ok = true;
+    try {
+      if (tool?.isLoader && tool.group) {
+        this.openedGroups.add(tool.group);
+        this.onEvent({ type: "opened", group: tool.group });
+      }
+      try {
+        if (!tool) {
+          result = { error: `Tool "${name}" is not registered` };
+          ok = false;
+        } else {
+          result = await tool.execute(call.args);
+        }
+      } catch (err) {
+        ok = false;
+        result = { error: err instanceof Error ? err.message : String(err) };
+      }
+      // Cancellation cannot undo a side effect already started, but its stale
+      // result must not revive a cancelled interaction or touch a closed session.
+      if (this.closed || pending.cancelled) return;
+      if (!tool?.isLoader) {
+        this.currentTurnCalls.push({ name });
+        this.onEvent({ type: "tool", name: displayName(name), kind: tool?.kind ?? "read",
+          arg: displayArg(call.args), duration: displayDuration(performance.now() - started), ok });
+      }
+      this.serverStatus = InteractionStatus.IN_PROGRESS;
+      this.session?.sendToolResponse({ functionResponses: [{ id, name,
+        response: typeof result === "object" && result !== null ? result as Record<string, unknown> : { output: String(result) },
+      }] });
+    } catch (err) {
+      log.warn("Failed to send tool response to Gemini Live", { tool: name, error: err instanceof Error ? err.message : String(err) });
+      if (!this.closed) this.onEvent({ type: "error", message: `Failed to return tool result: ${name}` });
+    } finally {
+      if (this.pendingCalls.get(id) === pending) this.pendingCalls.delete(id);
+    }
+  }
+
+  private finishInteraction(): void {
+    this.flushUserTranscript();
+    const body = this.currentTurnText.trim();
+    const toolSummary = summarize(this.currentTurnCalls);
+    const note = this.openedGroups.size ? `opened ${[...this.openedGroups].join(", ")}` : null;
+    if (!body && !this.currentTurnCalls.length && !this.openedGroups.size) return;
+    try {
+      appendAgentMessage(this.db, this.conversationId, body || "(Voice response)", { toolSummary, note }, new Date());
+    } catch (err) {
+      log.warn("Failed to persist Gemini Live turn", { error: err instanceof Error ? err.message : String(err) });
+    }
+    this.onEvent({ type: "turn_complete", agentText: body, toolSummary });
+    this.currentTurnText = "";
+    this.currentTurnCalls = [];
+    this.openedGroups.clear();
+  }
+
   sendAudio(base64Pcm: string): void {
-    if (this.closed || !this.session) return;
+    if (this.closed || this.connecting || !this.session) return;
     try {
       this.session.sendRealtimeInput({
         audio: {
@@ -517,7 +628,7 @@ export class GeminiLiveSession {
   }
 
   sendText(text: string): void {
-    if (this.closed || !this.session) return;
+    if (this.closed || this.connecting || !this.session) return;
     try {
       appendUserMessage(this.db, this.conversationId, text, new Date());
       this.onEvent({ type: "user_text", text });
@@ -538,6 +649,12 @@ export class GeminiLiveSession {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.connectionGeneration++;
+    for (const pending of this.pendingCalls.values()) pending.cancelled = true;
+    this.pendingCalls.clear();
+    // Stopping voice or losing the socket can happen between spoken turns and
+    // IDLE. Preserve what was already said and completed before closing.
+    this.finishInteraction();
     try {
       this.session?.close();
     } catch {

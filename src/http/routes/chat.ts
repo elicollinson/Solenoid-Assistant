@@ -258,18 +258,20 @@ export function createChatRoutes(
           ws.close();
         }
       },
-      message(ws, msg: unknown) {
+      async message(ws, msg: unknown) {
         const liveSession = (ws.data as unknown as { liveSession?: GeminiLiveSession }).liveSession;
         if (!liveSession || liveSession.isClosed) return;
 
         try {
           const payload = typeof msg === "string" ? JSON.parse(msg) : msg;
           if (payload && typeof payload === "object") {
-            const data = payload as { type?: string; data?: string; text?: string };
+            const data = payload as { type?: string; data?: string; text?: string; enabled?: boolean };
             if (data.type === "audio" && typeof data.data === "string") {
               liveSession.sendAudio(data.data);
             } else if (data.type === "text" && typeof data.text === "string") {
               liveSession.sendText(data.text);
+            } else if (data.type === "set_extended_thinking" && typeof data.enabled === "boolean") {
+              await liveSession.setExtendedThinking(data.enabled);
             } else if (data.type === "stop") {
               liveSession.close();
               ws.close();

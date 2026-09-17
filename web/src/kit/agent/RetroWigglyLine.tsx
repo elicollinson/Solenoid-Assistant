@@ -7,7 +7,12 @@ export interface RetroWigglyLineProps {
   compact?: boolean;
   analyserNode?: AnalyserNode | null;
   isSpeaking?: boolean;
+  isWorking?: boolean;
   isMuted?: boolean;
+  extendedThinking?: boolean;
+  thinkingDisabled?: boolean;
+  reconnecting?: boolean;
+  onToggleThinking?: () => void;
   onToggleMute?: () => void;
   onEndVoice?: () => void;
   style?: CSSProperties;
@@ -26,7 +31,12 @@ export function RetroWigglyLine({
   compact = false,
   analyserNode,
   isSpeaking = false,
+  isWorking = false,
   isMuted = false,
+  extendedThinking = true,
+  thinkingDisabled = false,
+  reconnecting = false,
+  onToggleThinking,
   onToggleMute,
   onEndVoice,
   style,
@@ -189,6 +199,7 @@ export function RetroWigglyLine({
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
+          flexWrap: "wrap",
           gap: "var(--sp-3)",
           fontSize: "11px",
           font: "var(--text-mono-meta)",
@@ -210,12 +221,32 @@ export function RetroWigglyLine({
             }}
           />
           <span style={{ color: "var(--text-1)", fontWeight: 500 }}>
-            {isMuted ? "Stream Open · Muted" : "Live Stream Open"}
+            {reconnecting ? "Reconnecting…" : isMuted ? "Stream Open · Muted" : isWorking ? "Working · Stream Open" : "Live Stream Open"}
           </span>
-          <span style={{ color: "var(--text-4)" }}>· Gemini 3.1</span>
+          <span style={{ color: "var(--text-4)" }}>· Gemini Live</span>
         </span>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-2)" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "var(--sp-2)" }}>
+          {onToggleThinking ? (
+            <button
+              type="button"
+              role="switch"
+              aria-label="Extended thinking"
+              aria-checked={extendedThinking}
+              disabled={thinkingDisabled}
+              onClick={onToggleThinking}
+              title={thinkingDisabled ? "Available after the current response finishes" : "Reconnect voice with extended thinking on or off"}
+              style={{
+                border: "1px solid var(--line-strong)", borderRadius: "var(--radius-control)",
+                background: extendedThinking ? "var(--surface-hover)" : "transparent",
+                color: "var(--text-1)", font: "var(--text-mono-control)",
+                fontSize: "10px", padding: "6px 8px", minHeight: "32px",
+                cursor: thinkingDisabled ? "default" : "pointer", opacity: thinkingDisabled ? 0.5 : 1,
+              }}
+            >
+              Extended thinking · {extendedThinking ? "On" : "Off"}
+            </button>
+          ) : null}
           {onToggleMute ? (
             <Button
               variant="bare"

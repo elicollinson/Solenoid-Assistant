@@ -673,6 +673,33 @@ bottom-right waveform returns to the ongoing conversation. On phones it takes
 the ask button's place above the tab bar. Ending voice or selecting a different
 conversation closes the microphone and connection.
 
+Voice uses Gemini 3.8 Live Extended Thinking directly for speech and tool use.
+Set `GEMINI_API_KEY` and optionally `GEMINI_VOICE` (default `Sulafat`).
+`GEMINI_LIVE_MODEL` defaults to `models/gemini-3.8-live-extended-thinking` and
+`GEMINI_LIVE_THINKING_LEVEL` defaults to `high` (also accepts `medium` or `low`).
+Remove an older model override or set the new value explicitly, then restart the
+server (or recreate its container) after deploying this version.
+
+The open voice controls include an **Extended thinking** switch on desktop and
+phone. It switches between Extended Thinking and standard 3.8 for the current
+voice session, preserving the microphone, mute state, and chat. It is available
+between responses; changing it briefly reconnects Gemini and restores the last
+24 saved turns (up to 4,000 characters each). Spoken user input is transcribed
+and saved too, so the replacement model receives both sides of the conversation.
+New voice sessions use the server's configured default.
+
+Tools run without blocking audio. Ending a spoken turn does not end the
+interaction: the UI continues showing work in progress until Gemini reports
+`interactionStatus: IDLE` and no local tools remain pending. The assistant's
+spoken transcript and tool summary are then saved together. Cancelled tool
+results and results arriving after disconnection are discarded; cancelling a
+request cannot undo an external action that already started.
+
+For comparison, `GEMINI_LIVE_MODEL=models/gemini-3.8-live` selects standard 3.8.
+That mode omits thinking configuration and uses blocking function calls. The
+thinking-level setting has no effect on standard 3.8. See Google's
+[Extended Thinking migration guide](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live-extended-thinking).
+
 A chat with the agent is a conversation, `channel = 'agent_chat'`, and its turns
 are `messages`. It is not a third stack beside texts and email, because the
 design draws a text from Fenwick Heating and a turn from the agent with the same

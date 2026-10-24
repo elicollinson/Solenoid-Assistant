@@ -11,7 +11,7 @@
 // a real run and a seeded one are the same shape on screen: a run row, one tool
 // step carrying the arguments and the result, the `changed` effects, the
 // write-up as narratives, and a log line per thing worth saying.
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { ulid, type Db } from "../db";
 import * as s from "../db/schema";
 import { log as baseLog, withLogContext } from "../core/logger";
@@ -105,6 +105,13 @@ const inFlight = new Map<string, AbortController>();
 export function cancelWorkflowRun(db: Db, runId: string, now: Date = new Date()): void {
   const [run] = db.select().from(s.workflowRuns).where(eq(s.workflowRuns.id, runId)).limit(1).all();
   if (!run) throw new UnknownWorkflowError(runId);
+  if (run.state === "queued") {
+    // Nothing has been sent anywhere yet, so this one can be promised exactly.
+    db.delete(s.runQueue).where(eq(s.runQueue.runId, runId)).run();
+    db.update(s.workflowRuns).set({ state: "cancelled", endedAt: now }).where(eq(s.workflowRuns.id, runId)).run();
+    write(db, runId, nextSeq(db, runId), "warn", `Run ${run.ordinal} taken off the queue by you before it started.`, now);
+    return;
+  }
   if (run.state !== "running") throw new NotRunningError(`Run ${run.ordinal} is ${run.state}, not running`);
 
   inFlight.get(runId)?.abort();
@@ -192,15 +199,24 @@ function nextSeq(db: Db, runId: string): number {
   return (last?.seq ?? -1) + 1;
 }
 
+/** A trigger that passed every check, and what it resolved to. */
+interface Admitted {
+  workflow: typeof s.workflows.$inferSelect;
+  runnable: RunnableWorkflow;
+  args: unknown;
+  guidance?: string;
+}
+
 /**
- * Validate, open a run, and start the work.
- *
- * Everything that can be refused is refused before the row is written, so a
+ * Everything that can refuse a trigger, before any row is written, so a
  * rejected trigger leaves no trace of an execution that never happened.
  */
-export function startWorkflowRun(db: Db, slug: string, rawArgs: unknown, options: StartOptions = {}): StartedRun {
-  const now = options.now ?? new Date();
-  const trigger = options.trigger ?? "manual";
+function admit(
+  db: Db,
+  slug: string,
+  rawArgs: unknown,
+  options: Pick<StartOptions, "guidance" | "lookup">,
+): Admitted {
   const lookup = options.lookup ?? runnableWorkflow;
 
   const [workflow] = db.select().from(s.workflows).where(eq(s.workflows.slug, slug)).limit(1).all();
@@ -215,7 +231,17 @@ export function startWorkflowRun(db: Db, slug: string, rawArgs: unknown, options
   const parsedGuidance = workflowGuidanceSchema.safeParse(options.guidance);
   if (!parsedGuidance.success) throw new WorkflowArgsError(slug, z.prettifyError(parsedGuidance.error));
   const guidance = parsedGuidance.data || undefined;
+  return { workflow, runnable, args, ...(guidance ? { guidance } : {}) };
+}
 
+/** Write the run row, and its queue entry when it is going to wait. */
+function openRun(
+  db: Db,
+  { workflow, args }: Admitted,
+  trigger: (typeof s.RUN_TRIGGER)[number],
+  state: "running" | "queued",
+  now: Date,
+): { runId: string; ordinal: number } {
   const [previous] = db
     .select({ ordinal: s.workflowRuns.ordinal })
     .from(s.workflowRuns)
@@ -239,24 +265,25 @@ export function startWorkflowRun(db: Db, slug: string, rawArgs: unknown, options
         // get wrong: only a person can press Run, and only the clock can fire
         // a schedule.
         triggeredBy: trigger === "manual" ? "user" : "system",
-        state: "running",
+        state,
         // One step until a workflow reports its own stages. Said rather than
         // left null, so the detail pane can draw a meter at all.
         stepIndex: 0,
         stepTotal: 1,
-        startedAt: now,
+        // A queued run has not started; it gets its start time when it does.
+        startedAt: state === "running" ? now : null,
       })
       .run();
+    if (state === "queued") {
+      t.insert(s.runQueue).values({ runId, args: args as Record<string, unknown>, queuedAt: now }).run();
+    }
     t.update(s.workflows).set({ lastRunId: runId }).where(eq(s.workflows.id, workflow.id)).run();
   });
+  return { runId, ordinal };
+}
 
-  write(db, runId, 0, "info", `Run ${ordinal} started ${options.source?.kind === "chat" ? "from chat" : trigger === "schedule" ? "by the schedule" : "by you"}.`, now);
-  // Durable even for cancelled or crashed runs. Ordinary invocations retain
-  // the existing arguments log contract.
-  write(db, runId, 1, "debug", guidance || options.source
-    ? `Invocation: ${safeJson({ args, guidance, source: options.source })}`
-    : `Arguments: ${safeJson(args)}`, now);
-
+/** Hand an open, `running` row to the work. */
+function launch(db: Db, runId: string, ordinal: number, { workflow, runnable, args, guidance }: Admitted): StartedRun {
   const controller = new AbortController();
   inFlight.set(runId, controller);
 
@@ -266,6 +293,128 @@ export function startWorkflowRun(db: Db, slug: string, rawArgs: unknown, options
     settled: withoutTurn(() => withRunGuidance(guidance, () =>
       execute(db, runId, runnable, args, ordinal, controller.signal, workflow.id, guidance))),
   };
+}
+
+/** Validate, open a run, and start the work. */
+export function startWorkflowRun(db: Db, slug: string, rawArgs: unknown, options: StartOptions = {}): StartedRun {
+  const now = options.now ?? new Date();
+  const trigger = options.trigger ?? "manual";
+  const admitted = admit(db, slug, rawArgs, options);
+  const { args, guidance } = admitted;
+  const { runId, ordinal } = openRun(db, admitted, trigger, "running", now);
+
+  write(db, runId, 0, "info", `Run ${ordinal} started ${options.source?.kind === "chat" ? "from chat" : trigger === "schedule" ? "by the schedule" : "by you"}.`, now);
+  // Durable even for cancelled or crashed runs. Ordinary invocations retain
+  // the existing arguments log contract.
+  write(db, runId, 1, "debug", guidance || options.source
+    ? `Invocation: ${safeJson({ args, guidance, source: options.source })}`
+    : `Arguments: ${safeJson(args)}`, now);
+
+  return launch(db, runId, ordinal, admitted);
+}
+
+export interface QueuedRun {
+  runId: string;
+  ordinal: number;
+  /** True when an identical run was already waiting and this one was folded into it. */
+  coalesced: boolean;
+}
+
+/**
+ * Validate and open a run that waits for the inference hold to lift.
+ *
+ * Same checks as starting one, so a trigger that could never run is refused
+ * now rather than when the queue drains. A run already waiting for the same
+ * workflow with the same arguments absorbs the new one: an hourly rule over a
+ * six-hour eval should catch up once, not six times back to back.
+ */
+export function queueWorkflowRun(
+  db: Db,
+  slug: string,
+  rawArgs: unknown,
+  options: Pick<StartOptions, "now" | "trigger" | "lookup"> = {},
+): QueuedRun {
+  const now = options.now ?? new Date();
+  const trigger = options.trigger ?? "schedule";
+  const admitted = admit(db, slug, rawArgs, options);
+
+  const waiting = db
+    .select({ runId: s.runQueue.runId, args: s.runQueue.args, ordinal: s.workflowRuns.ordinal })
+    .from(s.runQueue)
+    .innerJoin(s.workflowRuns, eq(s.workflowRuns.id, s.runQueue.runId))
+    .where(and(eq(s.workflowRuns.workflowId, admitted.workflow.id), eq(s.workflowRuns.state, "queued")))
+    .all();
+  const same = waiting.find((row) => safeJson(row.args) === safeJson(admitted.args));
+  if (same) return { runId: same.runId, ordinal: same.ordinal, coalesced: true };
+
+  const { runId, ordinal } = openRun(db, admitted, trigger, "queued", now);
+  write(db, runId, 0, "info", `Run ${ordinal} queued ${trigger === "schedule" ? "by the schedule" : "by you"}: inference is on hold, so it waits for the hold to lift.`, now);
+  write(db, runId, 1, "debug", `Arguments: ${safeJson(admitted.args)}`, now);
+  return { runId, ordinal, coalesced: false };
+}
+
+/** The run that has waited longest, if any. */
+export function nextQueuedRun(db: Db): string | undefined {
+  const [next] = db
+    .select({ runId: s.runQueue.runId })
+    .from(s.runQueue)
+    .orderBy(asc(s.runQueue.queuedAt), asc(s.runQueue.runId))
+    .limit(1)
+    .all();
+  return next?.runId;
+}
+
+/**
+ * Take a run off the queue and start it.
+ *
+ * Re-admitted rather than trusted: the workflow may have been paused, or its
+ * code changed, while the run waited. A run that can no longer start is
+ * written down as cancelled, with the reason, rather than vanishing.
+ */
+export function startQueuedRun(
+  db: Db,
+  runId: string,
+  options: Pick<StartOptions, "now" | "lookup"> = {},
+): StartedRun | undefined {
+  const now = options.now ?? new Date();
+  const [row] = db
+    .select({
+      args: s.runQueue.args,
+      queuedAt: s.runQueue.queuedAt,
+      state: s.workflowRuns.state,
+      ordinal: s.workflowRuns.ordinal,
+      slug: s.workflows.slug,
+    })
+    .from(s.runQueue)
+    .innerJoin(s.workflowRuns, eq(s.workflowRuns.id, s.runQueue.runId))
+    .innerJoin(s.workflows, eq(s.workflows.id, s.workflowRuns.workflowId))
+    .where(eq(s.runQueue.runId, runId))
+    .limit(1)
+    .all();
+  if (!row) return undefined;
+  db.delete(s.runQueue).where(eq(s.runQueue.runId, runId)).run();
+  if (row.state !== "queued") return undefined;
+
+  let admitted: Admitted;
+  try {
+    admitted = admit(db, row.slug, row.args, options);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    db.update(s.workflowRuns)
+      .set({ state: "cancelled", endedAt: now, error: message })
+      .where(eq(s.workflowRuns.id, runId))
+      .run();
+    write(db, runId, nextSeq(db, runId), "warn", `Run ${row.ordinal} left the queue without starting: ${message}`, now);
+    return undefined;
+  }
+
+  db.update(s.workflowRuns)
+    .set({ state: "running", startedAt: now, versionId: admitted.workflow.currentVersionId })
+    .where(eq(s.workflowRuns.id, runId))
+    .run();
+  const waitedMin = Math.round((now.getTime() - row.queuedAt.getTime()) / 60_000);
+  write(db, runId, nextSeq(db, runId), "info", `Run ${row.ordinal} started from the queue after waiting ${waitedMin} min.`, now);
+  return launch(db, runId, row.ordinal, admitted);
 }
 
 /**
@@ -400,7 +549,7 @@ function record(
       .run();
   });
 
-  write(db, runId, 2, "ok", `Run ${ordinal} finished in ${Math.round(durationMs / 1000)}s.`, endedAt);
+  write(db, runId, nextSeq(db, runId), "ok", `Run ${ordinal} finished in ${Math.round(durationMs / 1000)}s.`, endedAt);
 }
 
 /** A run that threw. The error is on the row and in the log, both readable. */
@@ -424,7 +573,7 @@ function halt(
       .run();
   });
 
-  write(db, runId, 2, "error", `Run ${ordinal} halted: ${message}`, endedAt);
+  write(db, runId, nextSeq(db, runId), "error", `Run ${ordinal} halted: ${message}`, endedAt);
 }
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];

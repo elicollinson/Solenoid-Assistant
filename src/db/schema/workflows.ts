@@ -224,3 +224,37 @@ export const runEffects = sqliteTable("run_effects", {
   check("run_effects_kind_check", inList(t.effectKind, EFFECT_KIND)),
   uniqueIndex("run_effects_ordinal").on(t.runId, t.ordinal),
 ]);
+
+/**
+ * Runs the clock wanted to start while the inference host was lent out.
+ *
+ * A row exists only while its run is `queued`: the worker deletes it as it
+ * starts the run. Arguments live here rather than on the run because a running
+ * or finished run has already written them into its first log lines, and this
+ * is the only state in which they still have to be acted on.
+ */
+export const runQueue = sqliteTable("run_queue", {
+  runId: text().primaryKey().references(() => workflowRuns.id, { onDelete: "cascade" }),
+  args: json<Record<string, unknown>>().notNull().default(sql`'{}'`),
+  queuedAt: tsReq(),
+}, (t) => [index("run_queue_order").on(t.queuedAt, t.runId)]);
+
+/**
+ * "The Studio is busy with something else": while any of these is live, the
+ * worker queues scheduled work instead of sending it to the model.
+ *
+ * One row per holder rather than a flag, so two eval scripts that overlap do
+ * not release each other. Every hold expires, so a script that crashes before
+ * releasing pauses the assistant for hours, not forever.
+ */
+export const inferenceHolds = sqliteTable("inference_holds", {
+  id: text().primaryKey(),
+  /** Caller-chosen name, e.g. "evals:gemma-sweep". Release is by name. */
+  holder: text().notNull(),
+  reason: text(),
+  createdAt: tsReq(),
+  expiresAt: tsReq(),
+  releasedAt: ts(),
+}, (t) => [
+  uniqueIndex("inference_holds_live").on(t.holder).where(sql`${t.releasedAt} is null`),
+]);

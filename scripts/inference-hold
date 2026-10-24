@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Put the assistant's scheduled inference on hold while something else uses the
+# model host, e.g. an eval on the Studio. Copy this file into any project.
+#
+#   inference-hold run [--holder NAME] [--minutes N] [--reason TEXT] -- CMD...
+#       hold, run CMD, and release when it exits (even on failure or Ctrl-C)
+#   inference-hold hold [--holder NAME] [--minutes N] [--reason TEXT]
+#   inference-hold release [--holder NAME]
+#   inference-hold status
+#
+# Needs SOLENOID_INFERENCE_HOLD_TOKEN. SOLENOID_URL defaults to
+# https://solenoid.home.arpa; set CURL_CA_BUNDLE if this machine does not trust
+# the mini-cloud CA. Holds expire (default 360 min, max 1440), so a crashed
+# script only delays queued work. Docs: docs/inference-hold.md
+set -euo pipefail
+
+url="${SOLENOID_URL:-https://solenoid.home.arpa}"
+token="${SOLENOID_INFERENCE_HOLD_TOKEN:?set SOLENOID_INFERENCE_HOLD_TOKEN}"
+holder="${INFERENCE_HOLD_HOLDER:-$(hostname -s):$(basename "$PWD")}"
+minutes=360
+reason=""
+
+usage() { sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 64; }
+
+api() {
+  # The token goes through a config on stdin, never argv, so ps cannot show it.
+  printf 'header = "Authorization: Bearer %s"\n' "$token" |
+    curl -fsS --config - -H 'Content-Type: application/json' "$@"
+}
+body() {
+  python3 -c 'import json,sys; h,m,r=sys.argv[1:]; d={"holder":h}
+if m: d["minutes"]=int(m)
+if r: d["reason"]=r
+print(json.dumps(d))' "$@"
+}
+hold() { api -X POST "$url/api/inference/hold" --data "$(body "$holder" "$minutes" "$reason")"; echo; }
+release() { api -X POST "$url/api/inference/release" --data "$(body "$holder" "" "")"; echo; }
+
+command="${1:-}"; [[ -n "$command" ]] || usage; shift
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --holder) holder="$2"; shift 2 ;;
+    --minutes) minutes="$2"; shift 2 ;;
+    --reason) reason="$2"; shift 2 ;;
+    --) shift; break ;;
+    *) usage ;;
+  esac
+done
+
+case "$command" in
+  hold) hold ;;
+  release) release ;;
+  status) api "$url/api/inference/hold"; echo ;;
+  run)
+    [[ $# -gt 0 ]] || usage
+    hold >/dev/null
+    trap 'release >/dev/null || echo "inference-hold: release failed; the hold expires on its own" >&2' EXIT
+    "$@"
+    ;;
+  *) usage ;;
+esac

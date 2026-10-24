@@ -34,7 +34,8 @@ import { Cron } from "croner";
 import { getDb } from "./db";
 import { flushLogs, log, shutdownLogging, withLogContext } from "./core/logger";
 import { installShutdownHandler } from "./core/shutdown";
-import { hasRunInFlight, startWorkflowRun } from "./workflows/runner";
+import { hasRunInFlight, nextQueuedRun, queueWorkflowRun, startQueuedRun, startWorkflowRun } from "./workflows/runner";
+import { inferenceHeld, inferenceStatus } from "./workflows/inferenceHold";
 import {
   noteFiring,
   noteNextRuns,
@@ -47,6 +48,8 @@ const scheduler = log.child("scheduler");
 
 /** How often to notice that a schedule changed. */
 const RELOAD_MS = 30_000;
+/** How soon queued work starts once an inference hold lifts. */
+const DRAIN_MS = 5_000;
 
 const db = getDb();
 const okfCapture = installHistoryRuntime();
@@ -86,6 +89,19 @@ function schedule(entry: DueSchedule): Cron {
       // workflow from here, which is what makes `workflow:message-extraction` a
       // useful thing to type into the Logs tab.
       await withLogContext({ component: "task", workflow: entry.slug }, async () => {
+        // The inference host is lent out (see inferenceHold.ts). The firing is
+        // kept, not skipped: it waits in the queue and runs when the hold lifts.
+        if (inferenceHeld(db)) {
+          const queued = queueWorkflowRun(db, entry.slug, entry.args, { trigger: "schedule" });
+          noteFiring(db, entry.scheduleId, new Date(), self.nextRun());
+          scheduler.info(
+            queued.coalesced
+              ? `[${entry.slug}] inference on hold; run ${queued.ordinal} is already queued with these arguments`
+              : `[${entry.slug}] inference on hold; queued run ${queued.ordinal}`,
+            { workflow: entry.slug, run_id: queued.runId },
+          );
+          return;
+        }
         // The run row is the guard, not the handler. `startWorkflowRun` opens
         // a row and returns; the work continues under its own span, so croner
         // sees this firing finish in milliseconds and would happily start
@@ -170,6 +186,7 @@ const poll = setInterval(() => {
 installShutdownHandler(async () => {
   await stopEmbeddings();
   clearInterval(poll);
+  clearInterval(drainTimer);
   clearInterval(sourceTimer);
   clearInterval(reminderTimer);
   reminderAbort.abort();
@@ -180,10 +197,47 @@ installShutdownHandler(async () => {
   await shutdownLogging();
 });
 
+// Queued runs, oldest first and one at a time, once no hold is live. One at a
+// time because the queue is everything that piled up during an eval, and
+// releasing all of it at once onto a host that just came back is its own load
+// spike.
+let draining = false;
+let wasHeld = false;
+async function drainQueue(): Promise<void> {
+  if (draining) return;
+  const held = inferenceHeld(db);
+  if (held !== wasHeld) {
+    const status = inferenceStatus(db);
+    scheduler.info(
+      held
+        ? `Inference on hold (${status.holds.map((hold) => hold.holder).join(", ")}); scheduled runs will queue`
+        : `Inference hold lifted; ${status.queued} queued run(s) to go`,
+      { queued: status.queued },
+    );
+    wasHeld = held;
+  }
+  if (held) return;
+  draining = true;
+  try {
+    for (let runId = nextQueuedRun(db); runId && !inferenceHeld(db); runId = nextQueuedRun(db)) {
+      const started = startQueuedRun(db, runId);
+      if (started) await started.settled;
+    }
+  } finally {
+    draining = false;
+  }
+}
+const drainTimer = setInterval(() => {
+  void drainQueue().catch((error: unknown) =>
+    scheduler.error(`could not drain the run queue: ${error instanceof Error ? error.message : String(error)}`));
+}, DRAIN_MS);
+drainTimer.unref();
+
 // Source classification is independent of user workflow schedules.
 let sourceBusy = false;
 const sourceTimer = setInterval(async () => {
-  if (process.env.SOURCE_CONSUMER_ENABLED !== "true" || sourceBusy) return;
+  // A backlog consumer, so a hold needs no queue here: it picks up where it was.
+  if (process.env.SOURCE_CONSUMER_ENABLED !== "true" || sourceBusy || inferenceHeld(db)) return;
   sourceBusy = true;
   try { await consumeScreenshot(db); } catch { scheduler.warn("Source consumer unavailable; will retry"); } finally { sourceBusy = false; }
 }, 15_000);

@@ -5,30 +5,29 @@
 //
 // Usage:
 //   bun run catchup:screenshots --from 2026-08-22T09:12:07-04:00
-//   bun run catchup:screenshots --hours-back 48 --limit 100
-//   bun run catchup:screenshots --from 2026-08-22 --json
+//   bun run catchup:screenshots --from 2026-08-22 --to 2026-08-29 --json
+//   bun run catchup:screenshots --hours-back 48
+//
+// The window is walked oldest first, one screenshot at a time, and anything
+// already in Collections is passed over, so an interrupted catch-up can simply
+// be run again with the same window.
 
 import { initTracing, shutdownTracing } from "../src/core/tracing";
 import { installShutdownHandler } from "../src/core/shutdown";
-import { ingestRecentScreenshots } from "../src/workflows/screenshotIngestion";
+import { ingestScreenshotWindow } from "../src/workflows/screenshotIngestion";
 import { withWorkflowPermissions } from "../src/workflows/permissions";
 import { getDb } from "../src/db";
 
-const DEFAULT_LIMIT = 500;
-const MAX_LIMIT = 5_000;
-
 interface CatchupOptions {
-  fromTime?: string;
-  hoursBack?: number;
-  limit: number;
+  start: Date;
+  end: Date;
   json: boolean;
 }
 
 function usage(message?: string): never {
   if (message) console.error(`error: ${message}\n`);
   console.error(
-    "usage: bun run catchup:screenshots (--from <date> | --hours-back <hours>) " +
-      "[--limit <1-5000>] [--json]",
+    "usage: bun run catchup:screenshots (--from <date> | --hours-back <hours>) [--to <date>] [--json]",
   );
   process.exit(message ? 1 : 0);
 }
@@ -42,10 +41,16 @@ function optionValue(args: string[], index: number, name: string): [string, numb
   return [value, index + 1];
 }
 
+function parseDate(value: string, flag: string): Date {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) usage(`${flag} value is not a parseable date: ${value}`);
+  return date;
+}
+
 function parseArgs(args: string[]): CatchupOptions {
-  let fromTime: string | undefined;
+  let from: string | undefined;
+  let to: string | undefined;
   let hoursBack: number | undefined;
-  let limit = DEFAULT_LIMIT;
   let json = false;
 
   for (let index = 0; index < args.length; index++) {
@@ -55,41 +60,29 @@ function parseArgs(args: string[]): CatchupOptions {
       json = true;
       continue;
     }
-    if (arg === "--from" || arg.startsWith("--from=")) {
-      const [value, consumedIndex] = optionValue(args, index, "from");
-      fromTime = value;
-      index = consumedIndex;
-      continue;
+    for (const name of ["from", "to", "hours-back"] as const) {
+      if (arg === `--${name}` || arg.startsWith(`--${name}=`)) {
+        const [value, consumedIndex] = optionValue(args, index, name);
+        if (name === "from") from = value;
+        else if (name === "to") to = value;
+        else hoursBack = Number(value);
+        index = consumedIndex;
+        break;
+      }
+      if (name === "hours-back") usage(`unknown argument ${arg}`);
     }
-    if (arg === "--hours-back" || arg.startsWith("--hours-back=")) {
-      const [value, consumedIndex] = optionValue(args, index, "hours-back");
-      hoursBack = Number(value);
-      index = consumedIndex;
-      continue;
-    }
-    if (arg === "--limit" || arg.startsWith("--limit=")) {
-      const [value, consumedIndex] = optionValue(args, index, "limit");
-      limit = Number(value);
-      index = consumedIndex;
-      continue;
-    }
-    usage(`unknown argument ${arg}`);
   }
 
-  if ((fromTime ? 1 : 0) + (hoursBack === undefined ? 0 : 1) !== 1) {
+  if ((from ? 1 : 0) + (hoursBack === undefined ? 0 : 1) !== 1) {
     usage("choose exactly one of --from or --hours-back");
-  }
-  if (fromTime && Number.isNaN(new Date(fromTime).getTime())) {
-    usage(`--from value is not a parseable date: ${fromTime}`);
   }
   if (hoursBack !== undefined && (!Number.isFinite(hoursBack) || hoursBack <= 0)) {
     usage("--hours-back must be a positive number");
   }
-  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) {
-    usage(`--limit must be an integer from 1 to ${MAX_LIMIT}`);
-  }
-
-  return { fromTime, hoursBack, limit, json };
+  const end = to ? parseDate(to, "--to") : new Date();
+  const start = from ? parseDate(from, "--from") : new Date(end.getTime() - hoursBack! * 3600_000);
+  if (start > end) usage("--from must be before --to");
+  return { start, end, json };
 }
 
 const options = parseArgs(process.argv.slice(2));
@@ -104,20 +97,13 @@ initTracing();
 installShutdownHandler(cleanup);
 
 try {
-  const range = options.fromTime
-    ? `from ${new Date(options.fromTime).toISOString()}`
-    : `from the last ${options.hoursBack} hour(s)`;
-  console.log(`Catching up screenshots ${range}, limit ${options.limit}...`);
+  console.log(`Catching up screenshots from ${options.start.toISOString()} to ${options.end.toISOString()}...`);
 
   // The same rules the scheduled run is under. This is the most unattended
   // caller there is — a long sweep with nobody watching it — so it is the last
   // place a write should go through because nothing was looking.
   const result = await withWorkflowPermissions(getDb(), "screenshot-ingestion", () =>
-    ingestRecentScreenshots({
-      fromTime: options.fromTime,
-      hoursBack: options.hoursBack,
-      limit: options.limit,
-    }),
+    ingestScreenshotWindow({ start: options.start, end: options.end }),
   );
 
   if (options.json) {
@@ -137,18 +123,12 @@ try {
       return all;
     }, {});
     console.log(
-      `Done: ${result.returned}/${result.totalInWindow} selected; ` +
-        `ingested=${counts.ingested ?? 0}, rejected=${counts.rejected ?? 0}, ` +
+      `Done: ${result.totalInWindow} in the window, ${result.alreadyDone} already in Collections, ` +
+        `${result.processed} processed; ingested=${counts.ingested ?? 0}, rejected=${counts.rejected ?? 0}, ` +
         `skipped=${counts.skipped ?? 0}, failed=${counts.failed ?? 0}`,
     );
   }
 
-  if (result.totalInWindow > result.returned) {
-    console.warn(
-      `Warning: ${result.totalInWindow - result.returned} screenshot(s) were outside ` +
-        `the --limit cap. Run again with a higher --limit to cover them.`,
-    );
-  }
   if (result.screenshots.some((item) => item.status === "failed")) {
     process.exitCode = 1;
   }

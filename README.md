@@ -39,12 +39,15 @@ Catch up screenshot collection ingestion directly, without the HTTP server's
 255-second idle-timeout ceiling:
 
 ```bash
-bun run catchup:screenshots --from 2026-08-22T09:12:07-04:00
+bun run catchup:screenshots --from 2026-08-22T09:12:07-04:00 --to 2026-08-29
 # or
-bun run catchup:screenshots --hours-back 48 --limit 100
+bun run catchup:screenshots --hours-back 48
 ```
 
-The command can run for the duration of the complete batch. Each model route
+`--to` defaults to now. The window is walked oldest first, one screenshot at a
+time, and screenshots already in Collections are passed over, so an
+interrupted catch-up can be run again with the same window. The command can run
+for as long as the window takes. Each model route
 still has its configured five-minute timeout, and failed work advances to the
 next configured route. Add `--json` to print the complete structured result.
 

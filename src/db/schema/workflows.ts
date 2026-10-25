@@ -236,6 +236,8 @@ export const runEffects = sqliteTable("run_effects", {
 export const runQueue = sqliteTable("run_queue", {
   runId: text().primaryKey().references(() => workflowRuns.id, { onDelete: "cascade" }),
   args: json<Record<string, unknown>>().notNull().default(sql`'{}'`),
+  /** A person's guidance for this run (from chat), kept until it starts. */
+  guidance: text(),
   queuedAt: tsReq(),
 }, (t) => [index("run_queue_order").on(t.queuedAt, t.runId)]);
 

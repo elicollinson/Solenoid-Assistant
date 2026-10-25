@@ -6,7 +6,7 @@ import { getRecentScreenshots, describeScreenshots } from "../../tools/photos";
 import { OsxPhotosError } from "../../utils/osxPhotos";
 import {
   classifyRecentScreenshots,
-  ingestRecentScreenshots,
+  ingestScreenshotWindow,
 } from "../../workflows/screenshotIngestion";
 
 export const screenshotRoutes = new Elysia({ name: "routes.screenshots" })
@@ -297,28 +297,26 @@ export const screenshotRoutes = new Elysia({ name: "routes.screenshots" })
   .get(
     "/screenshots/ingest",
     async ({ query, set }) => {
-      const hoursBack = query.hoursBack;
-      const fromTime = query.fromTime;
-      const limit = query.limit;
-
-      if (fromTime) {
-        const parsed = new Date(fromTime);
-        if (Number.isNaN(parsed.getTime())) {
-          set.status = 400;
-          return { error: `Invalid fromTime: "${fromTime}" is not a parseable date/time` };
-        }
+      // fromTime and hoursBack are the older spelling of start, kept so
+      // existing callers keep working.
+      const end = query.end ? new Date(query.end) : new Date();
+      const start = (query.start ?? query.fromTime)
+        ? new Date((query.start ?? query.fromTime)!)
+        : new Date(end.getTime() - (query.hoursBack ?? 24) * 3600_000);
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        set.status = 400;
+        return { error: "start and end must be parseable ISO 8601 date/times" };
       }
 
       try {
         // Use the same workflow context as scheduled runs.
         return await withWorkflowPermissions(getDb(), "screenshot-ingestion", () =>
-          ingestRecentScreenshots({ hoursBack, fromTime, limit }),
+          ingestScreenshotWindow({ start, end }),
         );
       } catch (err) {
         log.error("GET /screenshots/ingest failed", {
-          hoursBack: hoursBack ?? "unset",
-          fromTime: fromTime ?? "unset",
-          limit: limit ?? "unset",
+          start: start.toISOString(),
+          end: end.toISOString(),
           error: err instanceof Error ? err.message : String(err),
           ...(err instanceof OsxPhotosError ? { stderr: err.stderr } : {}),
         });
@@ -334,26 +332,21 @@ export const screenshotRoutes = new Elysia({ name: "routes.screenshots" })
           "Classify recent screenshots, source a content card for each non-rejected item, and save it into app-owned collections. Returns the per-screenshot ingestion status.",
       },
       query: t.Object({
+        start: t.Optional(
+          t.String({
+            description:
+              "Window start (inclusive), any parseable ISO 8601 date/time. Defaults to 24 hours before end.",
+          }),
+        ),
+        end: t.Optional(
+          t.String({ description: "Window end (inclusive), ISO 8601. Defaults to now." }),
+        ),
+        fromTime: t.Optional(t.String({ description: "Deprecated: the same as start." })),
         hoursBack: t.Optional(
           t.Number({
             minimum: 1,
             maximum: 24 * 30,
-            description:
-              "How far back to look, in hours (default 24, max 720). Ignored when fromTime is set.",
-          }),
-        ),
-        fromTime: t.Optional(
-          t.String({
-            description:
-              "Window start (inclusive), any parseable ISO 8601 date/time, e.g. 2026-07-20T14:30:00Z. Overrides hoursBack.",
-          }),
-        ),
-        limit: t.Optional(
-          t.Number({
-            minimum: 1,
-            maximum: 500,
-            description:
-              "Maximum screenshots to process (default 50 — vision + web calls are expensive).",
+            description: "Deprecated: start this many hours before end, when start is not given.",
           }),
         ),
       }),
@@ -361,8 +354,9 @@ export const screenshotRoutes = new Elysia({ name: "routes.screenshots" })
         200: t.Object({
           windowStart: t.String(),
           windowEnd: t.String(),
-          returned: t.Number(),
           totalInWindow: t.Number(),
+          alreadyDone: t.Number(),
+          processed: t.Number(),
           failed: t.Number(),
           quarantined: t.Number(),
           screenshots: t.Array(

@@ -28,7 +28,7 @@ import {
   NotRunnableError,
   NotRunningError,
   UnknownWorkflowError,
-  startWorkflowRun,
+  requestWorkflowRun,
   stopCurrentRun,
 } from "../../workflows/runner";
 
@@ -110,9 +110,9 @@ export function createUiRoutes(
       "/api/workflows/:slug/run",
       ({ params, body, set }) => {
         try {
-          const started = startWorkflowRun(resolveDb(), params.slug, body?.args ?? {});
+          const started = requestWorkflowRun(resolveDb(), params.slug, body?.args ?? {});
           set.status = 202;
-          return { runId: started.runId, ordinal: started.ordinal, label: `Run ${started.ordinal}` };
+          return { runId: started.runId, ordinal: started.ordinal, label: `Run ${started.ordinal}`, queued: started.queued };
         } catch (error) {
           // Four refusals, and each one is a different thing to say on screen:
           // no such workflow, nothing behind it, you paused it, or the

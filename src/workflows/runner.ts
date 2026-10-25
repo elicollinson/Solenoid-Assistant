@@ -21,6 +21,7 @@ import { log as baseLog, withLogContext } from "../core/logger";
 const log = baseLog.child("workflow");
 import { SemanticConventions, safeJson, withSpanKind } from "../core/tracing";
 import { catalogEntry } from "./catalog";
+import { inferenceHeld } from "./inferenceHold";
 import { WorkflowArgsError, parseWorkflowArgs, runnableWorkflow, type RunnableWorkflow, type WorkflowOutcome } from "./registry";
 import { withRunPermissions } from "./permissions";
 import { withRunGuidance, workflowGuidanceSchema } from "../core/runGuidance";
@@ -237,7 +238,7 @@ function admit(
 /** Write the run row, and its queue entry when it is going to wait. */
 function openRun(
   db: Db,
-  { workflow, args }: Admitted,
+  { workflow, args, guidance }: Admitted,
   trigger: (typeof s.RUN_TRIGGER)[number],
   state: "running" | "queued",
   now: Date,
@@ -275,7 +276,7 @@ function openRun(
       })
       .run();
     if (state === "queued") {
-      t.insert(s.runQueue).values({ runId, args: args as Record<string, unknown>, queuedAt: now }).run();
+      t.insert(s.runQueue).values({ runId, args: args as Record<string, unknown>, guidance: guidance ?? null, queuedAt: now }).run();
     }
     t.update(s.workflows).set({ lastRunId: runId }).where(eq(s.workflows.id, workflow.id)).run();
   });
@@ -313,6 +314,24 @@ export function startWorkflowRun(db: Db, slug: string, rawArgs: unknown, options
   return launch(db, runId, ordinal, admitted);
 }
 
+/** What asking for a run produced: started now, or waiting out a hold. */
+export type RequestedRun =
+  | (StartedRun & { queued: false })
+  | (QueuedRun & { queued: true });
+
+/**
+ * Start a run, or queue it while inference is on hold.
+ *
+ * The one entry point for a run a person asks for, from the Run button or
+ * from chat: a hold means the Studio belongs to an eval, so new work waits
+ * whoever starts it. Runs already going are left to finish.
+ */
+export function requestWorkflowRun(db: Db, slug: string, rawArgs: unknown, options: StartOptions = {}): RequestedRun {
+  return inferenceHeld(db, options.now)
+    ? { ...queueWorkflowRun(db, slug, rawArgs, { ...options, trigger: options.trigger ?? "manual" }), queued: true }
+    : { ...startWorkflowRun(db, slug, rawArgs, options), queued: false };
+}
+
 export interface QueuedRun {
   runId: string;
   ordinal: number;
@@ -332,24 +351,28 @@ export function queueWorkflowRun(
   db: Db,
   slug: string,
   rawArgs: unknown,
-  options: Pick<StartOptions, "now" | "trigger" | "lookup"> = {},
+  options: Pick<StartOptions, "now" | "trigger" | "lookup" | "guidance" | "source"> = {},
 ): QueuedRun {
   const now = options.now ?? new Date();
   const trigger = options.trigger ?? "schedule";
   const admitted = admit(db, slug, rawArgs, options);
 
   const waiting = db
-    .select({ runId: s.runQueue.runId, args: s.runQueue.args, ordinal: s.workflowRuns.ordinal })
+    .select({ runId: s.runQueue.runId, args: s.runQueue.args, guidance: s.runQueue.guidance, ordinal: s.workflowRuns.ordinal })
     .from(s.runQueue)
     .innerJoin(s.workflowRuns, eq(s.workflowRuns.id, s.runQueue.runId))
     .where(and(eq(s.workflowRuns.workflowId, admitted.workflow.id), eq(s.workflowRuns.state, "queued")))
     .all();
-  const same = waiting.find((row) => safeJson(row.args) === safeJson(admitted.args));
+  const same = waiting.find((row) =>
+    safeJson(row.args) === safeJson(admitted.args) && (row.guidance ?? undefined) === admitted.guidance);
   if (same) return { runId: same.runId, ordinal: same.ordinal, coalesced: true };
 
   const { runId, ordinal } = openRun(db, admitted, trigger, "queued", now);
-  write(db, runId, 0, "info", `Run ${ordinal} queued ${trigger === "schedule" ? "by the schedule" : "by you"}: inference is on hold, so it waits for the hold to lift.`, now);
-  write(db, runId, 1, "debug", `Arguments: ${safeJson(admitted.args)}`, now);
+  const by = options.source?.kind === "chat" ? "from chat" : trigger === "schedule" ? "by the schedule" : "by you";
+  write(db, runId, 0, "info", `Run ${ordinal} queued ${by}: inference is on hold, so it waits for the hold to lift.`, now);
+  write(db, runId, 1, "debug", admitted.guidance || options.source
+    ? `Invocation: ${safeJson({ args: admitted.args, guidance: admitted.guidance, source: options.source })}`
+    : `Arguments: ${safeJson(admitted.args)}`, now);
   return { runId, ordinal, coalesced: false };
 }
 
@@ -380,6 +403,7 @@ export function startQueuedRun(
   const [row] = db
     .select({
       args: s.runQueue.args,
+      guidance: s.runQueue.guidance,
       queuedAt: s.runQueue.queuedAt,
       state: s.workflowRuns.state,
       ordinal: s.workflowRuns.ordinal,
@@ -397,7 +421,7 @@ export function startQueuedRun(
 
   let admitted: Admitted;
   try {
-    admitted = admit(db, row.slug, row.args, options);
+    admitted = admit(db, row.slug, row.args, { ...options, ...(row.guidance ? { guidance: row.guidance } : {}) });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     db.update(s.workflowRuns)

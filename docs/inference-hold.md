@@ -2,13 +2,13 @@
 
 The assistant's model runs on local hardware (LM Studio on the Mac Studio) that
 other projects also use. An inference hold lets those projects borrow the host:
-while a hold is live, the worker queues scheduled workflow runs instead of
-sending them to the model, and the screenshot source consumer pauses. When the
-last hold is released, the worker runs the queue oldest first, one run at a
-time.
+while a hold is live, every new workflow run waits in the queue, whether the
+schedule, the Run button, or chat started it, and the screenshot source
+consumer pauses. When the last hold is released, the worker runs the queue
+oldest first, one run at a time.
 
-Not held: chat, voice, and runs a person starts with Run or from chat. Asking
-the assistant something during an eval is a choice you made.
+A hold queues work; it does not stop it. A run already going when the hold is
+placed finishes. Chat and voice replies are not held.
 
 ## Behavior
 
@@ -18,10 +18,12 @@ the assistant something during an eval is a choice you made.
   before releasing delays queued work; it cannot pause the assistant forever.
   Holding again with the same name renews the hold, so a long job can re-hold
   every few hours.
-- **Firings are kept, and identical ones fold.** A scheduled firing during a
-  hold becomes a `queued` run on the Workflows screen. If the same workflow
-  already has a queued run with the same arguments, the new firing folds into
-  it: an hourly rule over a six-hour eval catches up once, not six times.
+- **Requests are kept, and identical ones fold.** A scheduled firing, a Run
+  press, or a run asked for in chat during a hold becomes a `queued` run on the
+  Workflows screen, with any guidance from chat kept for when it starts. If the
+  same workflow already has a queued run with the same arguments and guidance,
+  the new one folds into it: an hourly rule over a six-hour eval catches up
+  once, not six times.
 - **Queued runs are re-checked when they leave the queue.** A workflow paused
   in the meantime is written down as `cancelled`, with the reason. A queued run
   can be stopped like a running one.

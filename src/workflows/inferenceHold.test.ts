@@ -12,13 +12,15 @@ import { createDb, runMigrations, type Db } from "../db";
 import * as s from "../db/schema";
 import { createInferenceRoutes } from "../http/routes/inference";
 import { holdInference, inferenceHeld, inferenceStatus, releaseInference, type InferenceHoldStatus } from "./inferenceHold";
+import { applyRunGuidance } from "../core/runGuidance";
 import type { RunnableWorkflow } from "./registry";
-import { cancelWorkflowRun, nextQueuedRun, queueWorkflowRun, startQueuedRun } from "./runner";
+import { cancelWorkflowRun, nextQueuedRun, queueWorkflowRun, requestWorkflowRun, startQueuedRun } from "./runner";
 import { syncWorkflowCatalog } from "./sync";
 
 let dir: string;
 let db: Db;
 const ran: string[] = [];
+const guided: (string | undefined)[] = [];
 
 const lookup = (slug: string): RunnableWorkflow | undefined =>
   slug === "weather-briefing"
@@ -27,6 +29,7 @@ const lookup = (slug: string): RunnableWorkflow | undefined =>
         schema: z.object({ city: z.string().min(1) }),
         execute: (async ({ city }: { city: string }) => {
           ran.push(city);
+          guided.push(applyRunGuidance([]).at(-1)?.content);
           return { output: { city }, effects: [], prose: [] };
         }) as RunnableWorkflow["execute"],
       }
@@ -42,6 +45,7 @@ beforeEach(() => {
   runMigrations(db);
   syncWorkflowCatalog(db);
   ran.length = 0;
+  guided.length = 0;
 });
 
 afterEach(() => {
@@ -112,6 +116,34 @@ describe("the queue", () => {
     expect(runState(queued.runId)).toBe("cancelled");
     expect(nextQueuedRun(db)).toBeUndefined();
     expect(ran).toEqual([]);
+  });
+});
+
+describe("asking for a run", () => {
+  test("starts it when nothing holds inference", async () => {
+    const run = requestWorkflowRun(db, "weather-briefing", { city: "Lisbon" }, { now: at(0), lookup });
+    expect(run.queued).toBe(false);
+    if (!run.queued) await run.settled;
+    expect(ran).toEqual(["Lisbon"]);
+  });
+
+  test("queues it during a hold whoever asks, and keeps chat guidance until it starts", async () => {
+    holdInference(db, { holder: "evals" }, at(0));
+    const fromChat = requestWorkflowRun(db, "weather-briefing", { city: "Lisbon" }, {
+      now: at(1), lookup, guidance: "Mention the wind.", source: { kind: "chat" },
+    });
+    const byHand = requestWorkflowRun(db, "weather-briefing", { city: "Lisbon" }, { now: at(2), lookup });
+    expect(fromChat.queued).toBe(true);
+    // Same arguments, different guidance: two requests, not one.
+    expect(byHand).toMatchObject({ queued: true, coalesced: false });
+    expect(runState(fromChat.runId)).toBe("queued");
+    expect(ran).toEqual([]);
+
+    releaseInference(db, "evals", at(3));
+    for (let runId = nextQueuedRun(db); runId; runId = nextQueuedRun(db)) {
+      await startQueuedRun(db, runId, { now: at(4), lookup })?.settled;
+    }
+    expect(guided).toEqual(["Mention the wind.", undefined]);
   });
 });
 

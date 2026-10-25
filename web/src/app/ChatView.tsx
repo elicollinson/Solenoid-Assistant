@@ -8,7 +8,7 @@ import {
   RetroWigglyLine,
   StatusMark,
 } from "../kit";
-import { echoed, spoken, useFollowBottom, type ChatState } from "./chat";
+import { echoed, modelLabel, spoken, useFollowBottom, type ChatState } from "./chat";
 import type { VoiceModeState } from "./useVoiceMode";
 
 /**
@@ -94,7 +94,7 @@ export function ChatView({ chat, voice }: { chat: ChatState; voice: VoiceModeSta
                     backgroundColor: chat.voiceInvoked || voice.active ? "var(--signal-green)" : "var(--text-4)",
                   }}
                 />
-                {chat.voiceInvoked || voice.active ? "Gemini Live" : "Gemma 4 31B"}
+                {chat.voiceInvoked || voice.active ? "Gemini Live" : modelLabel(chat.model) ?? "Model"}
               </span>
             ) : null}
 

@@ -227,3 +227,14 @@ describe("the phone is not the desktop narrower", () => {
     expect(phone(both())).toContain("Conversations");
   });
 });
+
+describe("the model in the header", () => {
+  test("is the one the server names, on both screens, not a name baked in", () => {
+    const state = { ...both(), model: "google/gemma-4-26b-a4b-qat" };
+    for (const markup of [desktop(state), phone(state)]) {
+      expect(markup).toContain("gemma-4-26b-a4b-qat");
+      expect(markup).not.toContain("google/");
+      expect(markup).not.toContain("Gemma 4");
+    }
+  });
+});

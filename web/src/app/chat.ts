@@ -44,6 +44,15 @@ export interface LiveTurn {
 
 const EMPTY: LiveTurn = { asked: "", said: [], calls: [], opened: [], pending: null, error: null };
 
+/**
+ * How the header names the model answering typed chat: the id without its
+ * publisher, so "google/gemma-4-26b-a4b-qat" reads "gemma-4-26b-a4b-qat".
+ * Null while the conversation has not loaded.
+ */
+export function modelLabel(model: string | null): string | null {
+  return model ? model.slice(model.lastIndexOf("/") + 1) : null;
+}
+
 export interface ChatState {
   status: "loading" | "ready" | "error";
   message: string;

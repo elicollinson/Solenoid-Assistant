@@ -26,6 +26,7 @@ import * as schema from "../../db/schema";
 import { isSurface, type Surface } from "../../shared/surface";
 import { getDb, type Db } from "../../db";
 import { log } from "../../core/logger";
+import { loadRuntimeConfig } from "../../core/config";
 import { createChatAgent, type ChatAgent } from "../../agents/chat";
 import { loadChat, loadConversations } from "../../db/queries/chat";
 import {
@@ -49,6 +50,19 @@ function lazyAgent(resolveDb: () => Db): () => ChatAgent {
   return () => (agent ??= createChatAgent({ db: resolveDb() }));
 }
 
+/**
+ * The model that answers typed chat: the first route in the chain. Read per
+ * request, like the agent's own config, and null rather than a throw when the
+ * config does not parse, so the header goes blank instead of the transcript.
+ */
+function configuredChatModel(): string | null {
+  try {
+    return loadRuntimeConfig().model;
+  } catch {
+    return null;
+  }
+}
+
 /** Whether an id names a chat at all — a 404 rather than an empty transcript. */
 function exists(db: Db, id: string): boolean {
   return Boolean(
@@ -67,6 +81,7 @@ function frame(event: ChatEvent): string {
 export function createChatRoutes(
   resolveDb: () => Db = getDb,
   resolveAgent?: () => ChatAgent,
+  resolveModel: () => string | null = configuredChatModel,
 ) {
   const agentFor = resolveAgent ?? lazyAgent(resolveDb);
   const asked = (query: { surface?: string }): Surface =>
@@ -109,7 +124,9 @@ export function createChatRoutes(
           set.status = 404;
           return { error: `No conversation with id ${id}` };
         }
-        return chat;
+        // A conversation records its model only once voice has pinned one;
+        // until then it is whichever model typed chat is routed to now.
+        return { ...chat, model: chat.model ?? resolveModel() };
       },
       {
         params: t.Object({ id: t.String() }),

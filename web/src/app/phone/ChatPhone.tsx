@@ -10,7 +10,7 @@
 // width and its buttons stack, because at this width a row of two buttons is
 // two half-buttons.
 import { ApprovalBubble, Button, ChatTurn, ConversationRow, RetroWigglyLine } from "../../kit";
-import { echoed, spoken, useFollowBottom, type ChatState } from "../chat";
+import { echoed, modelLabel, spoken, useFollowBottom, type ChatState } from "../chat";
 import type { VoiceModeState } from "../useVoiceMode";
 import { PhoneScreen, type PhoneTab } from "./chrome";
 
@@ -167,7 +167,7 @@ function Thread({ chat, voice, chrome }: { chat: ChatState; voice: VoiceModeStat
                 backgroundColor: chat.voiceInvoked || voice.active ? "var(--signal-green)" : "var(--text-4)",
               }}
             />
-            {chat.voiceInvoked || voice.active ? "Gemini Live" : "Gemma 4"}
+            {chat.voiceInvoked || voice.active ? "Gemini Live" : modelLabel(chat.model) ?? "Model"}
           </span>
         </div>
         <h1

@@ -74,6 +74,9 @@ export function candidate(hash: string, db = getDb()): Candidate | null {
 export async function candidateStatus(hash: string, db = getDb()) {
   const row = candidate(hash, db);
   if (!row) return { status: "upload-needed" };
+  // An error is classification giving up, not a decision about the image. Its
+  // bytes are gone, so the next collection uploads it again and it starts over.
+  if (row.status === "error") return { status: "upload-needed" };
   if (
     row.status === "accepted" &&
     !(await stat(assetPath(hash, row.extension)).catch(() => null))
@@ -111,7 +114,7 @@ export async function stagePhoto(
       return latest.status;
     db.$client
       .query(
-        "INSERT INTO source_candidates(hash,extension,created_at) VALUES(?,?,?) ON CONFLICT(hash) DO UPDATE SET status=CASE WHEN source_candidates.status='accepted' THEN 'accepted' ELSE 'pending' END",
+        "INSERT INTO source_candidates(hash,extension,created_at) VALUES(?,?,?) ON CONFLICT(hash) DO UPDATE SET status=CASE WHEN source_candidates.status='accepted' THEN 'accepted' ELSE 'pending' END, attempts=CASE WHEN source_candidates.status='error' THEN 0 ELSE source_candidates.attempts END, retry_at=CASE WHEN source_candidates.status='error' THEN 0 ELSE source_candidates.retry_at END",
       )
       .run(photo.hash, extension, Date.now());
     db.$client
@@ -133,7 +136,7 @@ export async function stagePhoto(
         photo.date,
         db,
       );
-    return latest?.status ?? "pending";
+    return latest && latest.status !== "error" ? latest.status : "pending";
   })();
   if (status === "rejected" || status === "quarantined") {
     await unlink(
@@ -208,6 +211,8 @@ export async function finishCandidate(
     if (e.code !== "ENOENT") throw e;
   });
 }
+/** Statuses whose staged bytes are finished with. */
+const TERMINAL = ["accepted", "rejected", "quarantined", "error"];
 export async function purgeStaging(db = getDb()) {
   await mkdir(stageRoot(), { recursive: true, mode: 0o700 });
   for (const name of await readdir(stageRoot())) {
@@ -218,7 +223,7 @@ export async function purgeStaging(db = getDb()) {
     const row = candidate(name.slice(0, 64), db);
     if (row && row.lease_until > Date.now()) continue;
     if (
-      (row && ["accepted", "rejected", "quarantined"].includes(row.status)) ||
+      (row && TERMINAL.includes(row.status)) ||
       info.mtimeMs < Date.now() - 24 * 3600_000
     ) {
       await unlink(file).catch((e) => {
@@ -226,7 +231,7 @@ export async function purgeStaging(db = getDb()) {
       });
       if (
         row &&
-        !["accepted", "rejected", "quarantined"].includes(row.status)
+        !TERMINAL.includes(row.status)
       ) {
         db.$client
           .query("UPDATE source_candidates SET status='expired' WHERE hash=?")

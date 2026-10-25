@@ -3,7 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import { NO_TRIGGER, triggerFor, triggerReducer, type TriggerEvent } from "./trigger";
 
-const run = (label: string) => ({ runId: `run-${label}`, ordinal: 1, label });
+const run = (label: string) => ({ runId: `run-${label}`, ordinal: 1, label, queued: false });
 const play = (...events: TriggerEvent[]) => events.reduce(triggerReducer, NO_TRIGGER);
 
 describe("the run trigger", () => {

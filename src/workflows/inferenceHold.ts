@@ -5,11 +5,11 @@
 // assistant's 3am sweep lands in the middle of them. So another project can
 // put a hold on inference before it starts and release it when it is done.
 //
-// While any hold is live the worker queues what the clock starts instead of
-// sending it to the model (see worker.ts), and once the last one lifts it runs
-// the queue oldest first, one at a time. Chat and runs a person starts by hand
-// are not held: someone choosing to ask while an eval is going has made that
-// trade themselves.
+// While any hold is live every new run waits in the queue, whoever starts it:
+// the clock (worker.ts), the Run button or chat (requestWorkflowRun). Once the
+// last hold lifts the worker runs the queue oldest first, one at a time. A hold
+// queues work; it does not stop it, so a run already going finishes. Chat
+// replies themselves are not held.
 //
 // Holds are named and expire. Named, so two overlapping scripts each release
 // only their own. Expiring, so a script that dies before its release costs

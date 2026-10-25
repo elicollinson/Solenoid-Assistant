@@ -227,4 +227,6 @@ export interface WorkflowRunAccepted {
   ordinal: number;
   /** "Run 3" — the same label the executions list gives it. */
   label: string;
+  /** True when inference is on hold and the run waits in the queue instead. */
+  queued: boolean;
 }

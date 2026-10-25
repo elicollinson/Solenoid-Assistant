@@ -347,10 +347,10 @@ export function workflowsGroup(
     }),
     execute: async ({ slug, args, guidance }) => {
       const conversationId = currentTurn()?.conversationId;
-      const { startWorkflowRun } = await import("../workflows/runner");
+      const { requestWorkflowRun } = await import("../workflows/runner");
       // Let validation/start failures throw: Agent.invokeTool returns an actual
       // failed tool outcome, so the chat approval record cannot claim success.
-      const started = startWorkflowRun(db, slug, args, {
+      const started = requestWorkflowRun(db, slug, args, {
         guidance,
         trigger: "manual",
         source: { kind: "chat", ...(conversationId ? { conversationId } : {}) },
@@ -358,7 +358,10 @@ export function workflowsGroup(
       });
       const [run] = db.select({ state: s.workflowRuns.state, error: s.workflowRuns.error })
         .from(s.workflowRuns).where(eq(s.workflowRuns.id, started.runId)).limit(1).all();
-      return { slug, runId: started.runId, ordinal: started.ordinal, ...run };
+      return {
+        slug, runId: started.runId, ordinal: started.ordinal, ...run,
+        ...(started.queued ? { note: "Inference is on hold for other work; this run is queued and starts when the hold lifts." } : {}),
+      };
     },
   });
 

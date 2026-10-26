@@ -94,10 +94,11 @@ export async function consumeScreenshot(
   })();
   if (!row) return false;
   const discardExhausted = async () => {
-    // Reuse terminal rejection cleanup: delete bytes and metadata, retain the
-    // hash receipt so a later collection cannot restart the retry cycle.
-    await finishCandidate(row, null, "rejected", db);
-    log.warn("Screenshot classification attempt limit reached; discarded", {
+    // Reuse terminal cleanup: delete bytes and metadata, but mark it an error
+    // rather than a rejection. Nothing decided against this screenshot, so the
+    // next collection uploads it again and the attempts start over.
+    await finishCandidate(row, null, "error", db);
+    log.warn("Screenshot classification attempt limit reached; marked error, retried on the next collection", {
       component: "source-consumer",
     });
   };
@@ -116,7 +117,15 @@ export async function consumeScreenshot(
       component: "source-consumer",
       status: outcome.result?.classification ?? outcome.status,
     });
-  } catch {
+  } catch (error) {
+    // The reason goes to the log only, and only its first line, capped: enough
+    // to tell an outage from a schema failure, not a provider's echo of the prompt.
+    log.warn("Screenshot collection classification attempt failed", {
+      component: "source-consumer",
+      attempt: row.attempts + 1,
+      error_name: error instanceof Error ? error.name : typeof error,
+      error_message: (error instanceof Error ? error.message : String(error)).split("\n")[0]!.slice(0, 200),
+    });
     if (row.attempts + 1 >= MAX_CLASSIFICATION_ATTEMPTS) {
       await discardExhausted();
       return true;

@@ -126,12 +126,16 @@ try {
   console.log(JSON.stringify({
     event: "photos-export-complete", materialized: paths.size,
   }));
+  // One screenshot iCloud will not hand over must not hold back the rest. It
+  // stays in the inventory, so nothing is tombstoned, and the next run tries it
+  // again.
+  const undownloaded: string[] = [];
   for (const photo of photos) {
     const file = paths.get(photo.uuid);
-    if (!file)
-      throw new Error(
-        "Screenshot could not be downloaded from iCloud; collection will retry",
-      );
+    if (!file) {
+      undownloaded.push(photo.uuid);
+      continue;
+    }
     if ((await stat(file)).size > 20 * 1024 * 1024)
       throw new Error("Screenshot exceeds the 20 MiB upload limit");
     const bytes = await readFile(file);
@@ -156,6 +160,10 @@ try {
     // Never remove an original from the user's Photos library.
     if (path.dirname(path.resolve(file)) === path.resolve(work)) await rm(file);
   }
+  if (undownloaded.length)
+    console.log(JSON.stringify({
+      event: "photos-not-downloaded", count: undownloaded.length, uuids: undownloaded,
+    }));
   await post("/api/sources/inventory", {
     kind: "photos",
     ids: photos.map((p) => p.uuid),

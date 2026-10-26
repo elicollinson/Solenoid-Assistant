@@ -18,6 +18,26 @@ import {
 import { z } from "zod";
 
 const MAX_CLASSIFICATION_ATTEMPTS = 5;
+/** How long to wait on a model host that is not answering, attempts untouched. */
+const UNAVAILABLE_RETRY_MS = 5 * 60_000;
+
+/**
+ * Whether a failure says the model host is down rather than anything about the
+ * screenshot. LM Link drops make the Mini's LM Studio report no models at all,
+ * so "No models loaded" is an outage too. Checked down the cause chain because
+ * the route chain wraps what the provider threw.
+ */
+export function modelUnavailable(error: unknown): boolean {
+  for (let e: unknown = error, depth = 0; e && depth < 5; depth++) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (
+      /LM Link connection closed|No models loaded|ECONNREFUSED|ECONNRESET|fetch failed|socket hang up|^(429|5\d\d)\b/i.test(message)
+    )
+      return true;
+    e = e instanceof Error ? e.cause : undefined;
+  }
+  return false;
+}
 
 const descriptionSchema = z.object({
   app: z.string(),
@@ -126,6 +146,19 @@ export async function consumeScreenshot(
       error_name: error instanceof Error ? error.name : typeof error,
       error_message: (error instanceof Error ? error.message : String(error)).split("\n")[0]!.slice(0, 200),
     });
+    if (modelUnavailable(error)) {
+      // Not this screenshot's failure: hand back the attempt the claim took and
+      // wait for the host, so an outage cannot exhaust the queue.
+      db.$client
+        .query(
+          "UPDATE source_candidates SET status='failed',lease_until=0,retry_at=?,attempts=max(attempts-1,0) WHERE hash=?",
+        )
+        .run(Date.now() + UNAVAILABLE_RETRY_MS, row.hash);
+      log.warn("Screenshot classification waiting on the model host; attempt not counted", {
+        component: "source-consumer",
+      });
+      return true;
+    }
     if (row.attempts + 1 >= MAX_CLASSIFICATION_ATTEMPTS) {
       await discardExhausted();
       return true;

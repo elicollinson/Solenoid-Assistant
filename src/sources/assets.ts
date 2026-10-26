@@ -212,7 +212,7 @@ export async function finishCandidate(
   });
 }
 /** Statuses whose staged bytes are finished with. */
-const TERMINAL = ["accepted", "rejected", "quarantined", "error"];
+const TERMINAL = ["accepted", "rejected", "quarantined"];
 export async function purgeStaging(db = getDb()) {
   await mkdir(stageRoot(), { recursive: true, mode: 0o700 });
   for (const name of await readdir(stageRoot())) {
@@ -222,6 +222,16 @@ export async function purgeStaging(db = getDb()) {
     const info = await stat(file);
     const row = candidate(name.slice(0, 64), db);
     if (row && row.lease_until > Date.now()) continue;
+    // An error already dropped its bytes, so a staged file under one is the
+    // next collection's upload landing before stagePhoto marks it pending.
+    // Only a stale one is swept, and the row stays an error either way.
+    if (row?.status === "error") {
+      if (info.mtimeMs < Date.now() - 24 * 3600_000)
+        await unlink(file).catch((e) => {
+          if (e.code !== "ENOENT") throw e;
+        });
+      continue;
+    }
     if (
       (row && TERMINAL.includes(row.status)) ||
       info.mtimeMs < Date.now() - 24 * 3600_000

@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, test, expect } from "bun:test";
-import { mkdtemp, rm, stat, readFile, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initDb, type Db } from "../db";
@@ -21,7 +21,7 @@ import {
 } from "./assets";
 import { storedContacts, storedMessages } from "./readers";
 import { createSourceRoutes } from "../http/routes/sources";
-import { consumeScreenshot } from "./consumer";
+import { consumeScreenshot, modelUnavailable } from "./consumer";
 import { WORKFLOW_CATALOG } from "../workflows/catalog";
 import { syncWorkflowCatalog } from "../workflows/sync";
 
@@ -233,6 +233,32 @@ describe("screenshot retention", () => {
     expect(candidate(hash, db)!.attempts).toBe(11);
     expect(candidate(hash, db)!.status).toBe("error");
     expect(await stat(assetPath(hash, ".png", true)).catch(() => null)).toBeNull();
+  });
+  test("a model host outage is waited out without using up the screenshot's attempts", async () => {
+    await stagePhoto(photo, png, db);
+    for (const message of ["400 No models loaded. Please load a model.", "connect ECONNREFUSED 192.168.5.2:1234"]) {
+      db.$client.query("UPDATE source_candidates SET retry_at=0 WHERE hash=?").run(hash);
+      await consumeScreenshot(db, async () => { throw new Error(message); });
+      expect(candidate(hash, db)).toMatchObject({ status: "failed", attempts: 0 });
+      expect(candidate(hash, db)!.retry_at).toBeGreaterThan(Date.now());
+    }
+    expect(await stat(assetPath(hash, ".png", true))).toBeTruthy();
+    expect(modelUnavailable(new Error("chain failed", { cause: new Error("connect ECONNREFUSED 192.168.5.2:1234") }))).toBe(true);
+    expect(modelUnavailable(new Error("Screenshot classification failed"))).toBe(false);
+    // What an oversized request gets every time; it must be able to run out.
+    expect(modelUnavailable(new Error('400 "LM Link connection closed"'))).toBe(false);
+  });
+  test("an upload landing under an error is not swept before it is marked pending", async () => {
+    await stagePhoto(photo, png, db);
+    db.$client.query("UPDATE source_candidates SET attempts=4 WHERE hash=?").run(hash);
+    await consumeScreenshot(db, async () => { throw new Error("schema mismatch"); });
+    expect(candidate(hash, db)!.status).toBe("error");
+    // The next collection's bytes are on disk; the row has not caught up yet.
+    await mkdir(path.dirname(assetPath(hash, ".png", true)), { recursive: true });
+    await writeFile(assetPath(hash, ".png", true), png);
+    await purgeStaging(db);
+    expect(await stat(assetPath(hash, ".png", true))).toBeTruthy();
+    expect(candidate(hash, db)!.status).toBe("error");
   });
   test("consumer retries transient errors without falsely rejecting", async () => {
     await stagePhoto(photo, png, db);

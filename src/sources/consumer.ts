@@ -24,14 +24,16 @@ const UNAVAILABLE_RETRY_MS = 5 * 60_000;
 /**
  * Whether a failure says the model host is down rather than anything about the
  * screenshot. LM Link drops make the Mini's LM Studio report no models at all,
- * so "No models loaded" is an outage too. Checked down the cause chain because
+ * so "No models loaded" is an outage too. "LM Link connection closed" is not:
+ * it is also what an oversized request gets, every time, so it has to be able
+ * to run out of attempts. Checked down the cause chain because
  * the route chain wraps what the provider threw.
  */
 export function modelUnavailable(error: unknown): boolean {
   for (let e: unknown = error, depth = 0; e && depth < 5; depth++) {
     const message = e instanceof Error ? e.message : String(e);
     if (
-      /LM Link connection closed|No models loaded|ECONNREFUSED|ECONNRESET|fetch failed|socket hang up|^(429|5\d\d)\b/i.test(message)
+      /No models loaded|ECONNREFUSED|ECONNRESET|fetch failed|socket hang up|^(429|5\d\d)\b/i.test(message)
     )
       return true;
     e = e instanceof Error ? e.cause : undefined;

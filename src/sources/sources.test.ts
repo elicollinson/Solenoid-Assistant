@@ -236,7 +236,7 @@ describe("screenshot retention", () => {
   });
   test("a model host outage is waited out without using up the screenshot's attempts", async () => {
     await stagePhoto(photo, png, db);
-    for (const message of ['400 "LM Link connection closed"', "400 No models loaded. Please load a model."]) {
+    for (const message of ["400 No models loaded. Please load a model.", "connect ECONNREFUSED 192.168.5.2:1234"]) {
       db.$client.query("UPDATE source_candidates SET retry_at=0 WHERE hash=?").run(hash);
       await consumeScreenshot(db, async () => { throw new Error(message); });
       expect(candidate(hash, db)).toMatchObject({ status: "failed", attempts: 0 });
@@ -245,6 +245,8 @@ describe("screenshot retention", () => {
     expect(await stat(assetPath(hash, ".png", true))).toBeTruthy();
     expect(modelUnavailable(new Error("chain failed", { cause: new Error("connect ECONNREFUSED 192.168.5.2:1234") }))).toBe(true);
     expect(modelUnavailable(new Error("Screenshot classification failed"))).toBe(false);
+    // What an oversized request gets every time; it must be able to run out.
+    expect(modelUnavailable(new Error('400 "LM Link connection closed"'))).toBe(false);
   });
   test("an upload landing under an error is not swept before it is marked pending", async () => {
     await stagePhoto(photo, png, db);

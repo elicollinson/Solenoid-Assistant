@@ -14,8 +14,8 @@
 // Rendering is sharp's, which is in the tree already. If it ever leaves, this
 // script is what breaks — the icons it produced are committed and keep working.
 import { dirname, join } from "node:path";
-// Declared in ./sharp.d.ts — the package hides its own types behind its
-// exports map, so the three calls made here are named there instead.
+// Declared in ../src/types/sharp.d.ts — the package hides its own types behind its
+// exports map, so the calls made here are named there instead.
 import sharp from "sharp";
 
 const root = dirname(import.meta.dir);

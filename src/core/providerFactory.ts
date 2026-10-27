@@ -36,12 +36,36 @@ export function createOpenAIClient(
     );
   }
 
+  const ttl = config.openai.modelTtlSeconds;
   return new OpenAI({
     baseURL,
     // The SDK requires a value. LM Studio ignores this placeholder when API
     // authentication is disabled; when enabled, configure the real token.
     apiKey: options.apiKey ?? config.openai.apiKey ?? "lm-studio",
+    ...(ttl > 0 ? { fetch: withModelTtl(ttl) } : {}),
   });
+}
+
+/**
+ * Add LM Studio's `ttl` to every JSON request that names a model. A model
+ * loaded on demand by such a request unloads after `ttl` idle seconds; without
+ * it the model stays resident until someone unloads it by hand. A model that
+ * was already loaded keeps whatever TTL it was loaded with.
+ */
+export function withModelTtl(ttl: number, inner: typeof fetch = fetch): typeof fetch {
+  return ((input, init) => {
+    if (typeof init?.body === "string") {
+      try {
+        const body = JSON.parse(init.body) as unknown;
+        if (body && typeof body === "object" && !Array.isArray(body) && "model" in body && !("ttl" in body)) {
+          return inner(input, { ...init, body: JSON.stringify({ ...body, ttl }) });
+        }
+      } catch {
+        // Not JSON; send it as it is.
+      }
+    }
+    return inner(input, init);
+  }) as typeof fetch;
 }
 
 /** Build the OpenRouter OpenAI-compatible client without credential crossover. */

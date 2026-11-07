@@ -1,7 +1,7 @@
 import { CollectionsView } from "./CollectionsView";
 import { useEffect, useState, type CSSProperties } from "react";
 import { MonoLabel } from "../kit";
-import { useInstalled, usePhoneFrame } from "./frame";
+import { usePhoneFrame } from "./frame";
 import { PhoneHome } from "./phone/PhoneHome";
 import { ActivityView } from "./ActivityView";
 import { AgentAside } from "./AgentAside";
@@ -57,23 +57,23 @@ import {
  * the border, the corners and the shadow draw a window sitting on a desk, and
  * the OS is already drawing the real one around them.
  */
-const frame = (installed: boolean): CSSProperties => ({
+const frame = (): CSSProperties => ({
   // The border is inside the 1240, not added to it — otherwise the frame is
   // 1242px wide in any window narrower than that and the whole app scrolls
   // sideways by two pixels. The phone frame is built the same way, and the
   // same two pixels were the more obvious bug there.
   position: "relative",
   boxSizing: "border-box",
-  width: installed ? "100%" : "min(1240px, 100vw)",
-  height: installed ? "100dvh" : "min(840px, 100dvh)",
+  width: "100%",
+  height: "100dvh",
   overflow: "hidden",
   display: "grid",
   gridTemplateColumns: "var(--rail-w) 1fr var(--aside-w)",
   background: "var(--surface-app)",
   color: "var(--text-2)",
-  border: installed ? "none" : "var(--border-strong)",
-  borderRadius: installed ? 0 : "var(--radius-frame)",
-  boxShadow: installed ? "none" : "var(--shadow-frame)",
+  border: "none",
+  borderRadius: 0,
+  boxShadow: "none",
   font: "var(--text-body)",
 });
 
@@ -103,7 +103,6 @@ export function AgentHome() {
 
 function DesktopHome() {
   const { chat, voice } = useChatSession();
-  const installed = useInstalled();
   const [theme, setTheme] = useState<"paper" | "dusk">("paper");
   const [route, setRoute] = useState<Route>({ view: "Chat" });
   // Nothing writes to the database yet, so an action that resolves a decision
@@ -212,7 +211,7 @@ function DesktopHome() {
   const toggleTheme = () => setTheme((t) => (t === "paper" ? "dusk" : "paper"));
 
   return (
-    <div data-theme={theme === "dusk" ? "dusk" : undefined} style={frame(installed)}>
+    <div data-theme={theme === "dusk" ? "dusk" : undefined} style={frame()}>
       <AgentRail
         rail={
           home.status === "ready"

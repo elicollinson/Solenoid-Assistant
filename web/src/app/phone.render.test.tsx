@@ -113,30 +113,15 @@ describe("the frame", () => {
   });
 });
 
-describe("installed", () => {
-  // The frame draws a device sitting on a canvas: a border, rounded corners and
-  // a shadow. Installed, the OS is already drawing the real window around it,
-  // and all three become a picture of a phone inside a phone.
-  test("in a tab it is the design's 390×844 device on a canvas", () => {
-    const style = phoneFrame(false);
-    expect(style.width).toBe("min(390px, 100vw)");
-    expect(style.border).toBe("var(--border-strong)");
-    expect(style.boxShadow).toBe("var(--shadow-frame)");
-  });
-
-  test("installed it is the window: no border, no corners, no shadow", () => {
-    const style = phoneFrame(true);
+describe("frame", () => {
+  // The frame is the window everywhere: no device-on-a-canvas border, corners or shadow.
+  test("it fills the window, measured in dvh because iOS moves vh", () => {
+    const style = phoneFrame();
     expect(style.width).toBe("100%");
     expect(style.height).toBe("100dvh");
     expect(style.border).toBe("none");
     expect(style.borderRadius).toBe(0);
     expect(style.boxShadow).toBe("none");
-  });
-
-  test("either way it is measured in dvh, because iOS moves the other one", () => {
-    // 100vh on iOS is the height with the URL bar collapsed, which is taller
-    // than what you can see — a frame sized to it hides its own tab bar.
-    for (const installed of [true, false]) expect(String(phoneFrame(installed).height)).toContain("dvh");
   });
 
   test("the header owns the inset the status bar sits in", () => {

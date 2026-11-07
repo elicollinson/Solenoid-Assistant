@@ -44,15 +44,7 @@
          bar collapses, and a frame sized to the larger one hides its own tab
          bar under the browser chrome until you scroll. */
       html, body { height: 100dvh; }
-      body { display: grid; place-items: center; }
-
-      /* Installed, the frame is the window. There is nothing to centre it on and
-         nothing outside it to see, so it fills instead — the border, the corners
-         and the shadow that read as a device on a desktop canvas read as a
-         mistake when the OS is already drawing the window's own. */
-      @media (display-mode: standalone), (display-mode: fullscreen) {
-        body { place-items: stretch; }
-      }
+      body { margin: 0; }
     </style>
   </head>
   <body>

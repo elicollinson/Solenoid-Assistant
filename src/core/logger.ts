@@ -163,10 +163,10 @@ function clean(attrs?: LogAttributes): Record<string, LogValue> {
 }
 
 /** Which console method, given that `ok` is not one of them. */
-function console_(level: LogLevel): "log" | "warn" | "error" {
-  if (level === "error") return "error";
-  if (level === "warn") return "warn";
-  return "log";
+function console_(level: LogLevel): (line: string) => void {
+  if (level === "error") return (line) => console.error(line);
+  if (level === "warn") return (line) => console.warn(line);
+  return (line) => console.log(line);
 }
 
 const STANDARD = new Set([
@@ -183,9 +183,9 @@ const STANDARD = new Set([
  * paste into Phoenix.
  */
 function writeConsole(current: LoggingState, record: LogRecord): void {
-  const method = console_(record.level);
+  const print = console_(record.level);
   if (current.json) {
-    console[method](JSON.stringify(record));
+    print(JSON.stringify(record));
     return;
   }
   const extras = Object.entries(record)
@@ -200,7 +200,7 @@ function writeConsole(current: LoggingState, record: LogRecord): void {
   // printing it tells you nothing — the terminal keeps the shape it had before
   // this file grew, and only a line that named itself gets a prefix.
   const from = record.component === "app" ? "" : `[${record.component}] `;
-  console[method](`${from}${record.message}${tail}`);
+  print(`${from}${record.message}${tail}`);
 }
 
 function make(component?: string, bound?: LogAttributes): Logger {

@@ -1,6 +1,6 @@
 import { Elysia } from "elysia";
-import { timingSafeEqual } from "node:crypto";
 import { getDb, type Db } from "../../db";
+import { bearerAuthorized } from "../bearer";
 import {
   batchSchema,
   inventorySchema,
@@ -22,12 +22,7 @@ import {
 } from "../../sources/assets";
 
 function authorized(request: Request, kind: "INGEST" | "READ") {
-  const token = process.env[`SOURCE_${kind}_TOKEN`];
-  const supplied = request.headers.get("authorization") ?? "";
-  if (!token || token.length < 32) return false;
-  const expected = Buffer.from(`Bearer ${token}`),
-    actual = Buffer.from(supplied);
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
+  return bearerAuthorized(request, process.env[`SOURCE_${kind}_TOKEN`]);
 }
 export function createSourceRoutes(resolveDb: () => Db = getDb) {
   const run =

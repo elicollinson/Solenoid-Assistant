@@ -20,10 +20,14 @@ import { weatherPrompt } from "../prompts";
 import { extractMessages } from "./messageExtraction";
 import { classifySafety } from "./safetyClassification";
 import {
-  classifyRecentScreenshots,
-  ingestRecentScreenshots,
+  classifyScreenshotWindow,
+  ingestScreenshotWindow,
 } from "./screenshotIngestion";
 import { WORKFLOW_CATALOG } from "./catalog";
+import { DreamWorkflow } from "./dream";
+import { resolvePermission } from "./permissions";
+import { createHistoryRuntime, historyRuntime } from "../writeHistory/runtime";
+import { DEFAULT_OKF_ROOT } from "../okf/bundle";
 
 export interface WorkflowOutcome {
   /** What the workflow returned, kept verbatim. */
@@ -79,6 +83,16 @@ const count = (fallback: number, max: number) =>
     z.coerce.number().int().min(1).max(max),
   );
 
+/** A From/To pair as the form sends it: blank To is now, blank From a day before To. */
+const windowFields = {
+  start: blankIsAbsent(z.coerce.date()),
+  end: blankIsAbsent(z.coerce.date()),
+};
+function resolveWindow({ start, end }: { start?: Date; end?: Date }): { start: Date; end: Date } {
+  const resolvedEnd = end ?? new Date();
+  return { start: start ?? new Date(resolvedEnd.getTime() - 24 * 3600_000), end: resolvedEnd };
+}
+
 /** "3 invoices" / "1 invoice", because a run's own account of itself should read. */
 function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
@@ -90,6 +104,14 @@ function when(at: Date): string {
 }
 
 const WORKFLOWS: readonly RunnableWorkflow[] = [
+  define({ slug: "okf-reflection", schema: z.object({}), execute: async (_args, context) => {
+    context.signal.throwIfAborted();
+    const runtime = context.db ? createHistoryRuntime(context.db, DEFAULT_OKF_ROOT) : historyRuntime();
+    const row = runtime.history.db.$client.query("SELECT id FROM workflows WHERE slug='okf-reflection'").get() as { id: string } | null;
+    if (resolvePermission(runtime.history.db, row?.id, "okf.write").mode === "deny") throw new Error("Current permission denies memory reflection");
+    const output = await new DreamWorkflow(runtime).run(context.signal);
+    return { output, effects: output.updates.map(update => `Updated ${update.title}; source accounts retained.`), prose: [`Connected ${output.updates.length} memory groups; ${output.uncertain} uncertain groups were kept separate, ${output.unavailable} seeds lacked ready embeddings, and ${output.deferred} writes were held by workflow permissions.`] };
+  } }),
   define({
     slug: "log-monitoring",
     schema: z.object({ dryRun: z.preprocess(value => value === "true" ? true : value === "false" || value === "" ? false : value, z.boolean().default(false)) }),
@@ -162,25 +184,24 @@ const WORKFLOWS: readonly RunnableWorkflow[] = [
 
   define({
     slug: "screenshot-classification",
-    schema: z.object({
-      hoursBack: count(24, 24 * 30),
-      limit: count(10, 500),
-    }),
-    execute: async ({ hoursBack, limit }) => {
-      const result = await classifyRecentScreenshots({ hoursBack, limit });
+    schema: z.object(windowFields),
+    execute: async (args, { signal }) => {
+      const window = resolveWindow(args);
+      const said = `${when(window.start)} to ${when(window.end)}`;
+      const result = await classifyScreenshotWindow(window, { signal });
       const named = result.screenshots.filter(
         (shot) => shot.classification && shot.classification.classification !== "Rejected",
       );
       return {
         output: result,
         effects: [
-          `Looked at ${plural(result.returned, "screenshot")} out of ${result.totalInWindow} in the window.`,
+          `Looked at ${plural(result.returned, "screenshot")} from ${said}.`,
           `Recognised ${plural(named.length, "thing")}; the rest were rejected as nothing in particular.`,
           ...(result.quarantined ? [`Quarantined ${plural(result.quarantined, "screenshot")}.`] : []),
           ...(result.failed ? [`${plural(result.failed, "screenshot")} failed to classify.`] : []),
         ],
         prose: [
-          `I described ${plural(result.returned, "screenshot")} taken since ${result.windowStart} and classified each description.`,
+          `I described ${plural(result.returned, "screenshot")} taken from ${said}, one at a time, and classified each description.`,
           named.length
             ? `The ones I recognised: ${named
                 .map((shot) => `${shot.classification?.name} (${shot.classification?.classification})`)
@@ -194,25 +215,24 @@ const WORKFLOWS: readonly RunnableWorkflow[] = [
 
   define({
     slug: "screenshot-ingestion",
-    schema: z.object({
-      hoursBack: count(24, 24 * 30),
-      limit: count(5, 500),
-    }),
-    execute: async ({ hoursBack, limit }) => {
-      const result = await ingestRecentScreenshots({ hoursBack, limit });
+    schema: z.object(windowFields),
+    execute: async (args, { signal }) => {
+      const window = resolveWindow(args);
+      const said = `${when(window.start)} to ${when(window.end)}`;
+      const result = await ingestScreenshotWindow(window, { signal });
       const ingested = result.screenshots.filter((shot) => shot.status === "ingested");
       const created = ingested.filter((shot) => shot.ingestion?.status === "created");
       const updated = ingested.filter((shot) => shot.ingestion?.status === "updated");
       return {
         output: result,
         effects: [
-          `Looked at ${plural(result.returned, "screenshot")} out of ${result.totalInWindow} in the window.`,
+          `Found ${plural(result.totalInWindow, "screenshot")} from ${said}; ${result.alreadyDone} were already in Collections, and I worked through the other ${result.processed}.`,
           `Created ${plural(created.length, "collection item", "collection items")} and updated ${updated.length}.`,
           ...(result.quarantined ? [`Quarantined ${plural(result.quarantined, "screenshot")}.`] : []),
           ...(result.failed ? [`${plural(result.failed, "screenshot")} failed on the way through.`] : []),
         ],
         prose: [
-          `I classified ${plural(result.returned, "screenshot")} from since ${result.windowStart}, sourced a content card for everything I recognised, and saved each one to Collections.`,
+          `I went through the screenshots from ${said} oldest first, one at a time: classified each, sourced a content card for everything I recognised, and saved it to Collections before moving on.`,
           ingested.length
             ? `Saved to Collections: ${ingested.map((shot) => shot.contentCard?.name ?? shot.classification?.name).join(", ")}.`
             : "Nothing new was saved — either nothing was recognisable, or everything I recognised was already there.",

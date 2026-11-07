@@ -8,7 +8,7 @@ export function VoiceIndicator({ voice, onReturn, phone = false }: {
   phone?: boolean;
 }) {
   if (!voice.active && voice.status !== "connecting") return null;
-  const label = voice.status === "connecting" ? "Voice connecting" : voice.isMuted ? "Voice muted" : "Voice active";
+  const label = voice.status === "connecting" ? "Voice connecting" : voice.isMuted ? "Voice muted" : voice.isWorking ? "Voice working" : "Voice active";
   return (
     <button
       type="button"
@@ -33,7 +33,7 @@ export function VoiceIndicator({ voice, onReturn, phone = false }: {
     >
       <span aria-hidden="true" style={{ display: "block" }}>
         <RetroWigglyLine compact active={voice.active} analyserNode={voice.analyserNode}
-          isSpeaking={voice.isSpeaking} isMuted={voice.isMuted} />
+          isWorking={voice.isWorking} isSpeaking={voice.isSpeaking} isMuted={voice.isMuted} />
         {label}
       </span>
     </button>

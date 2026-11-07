@@ -134,7 +134,7 @@ export function loadKnowledge(db: Db, now: Date = new Date(), surface: Surface =
     .select()
     .from(s.okfObjects)
     .orderBy(desc(s.okfObjects.updatedAt), s.okfObjects.title)
-    .all();
+    .all().filter(o => o.status !== "missing");
 
   const facts = factCounts(db);
   const conflicted = conflictedIds(db);
@@ -228,7 +228,7 @@ function accountFor(o: OkfObject, sources: readonly KnowledgeSource[], trail: re
 
 export function loadKnowledgeObject(db: Db, id: string, now: Date = new Date()): KnowledgeDetailPayload | null {
   const object = db.select().from(s.okfObjects).where(eq(s.okfObjects.id, id)).get();
-  if (!object) return null;
+  if (!object || object.status === "missing") return null;
 
   const fields = db
     .select()

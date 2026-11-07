@@ -33,6 +33,7 @@ export function verificationEvents(frontmatter: Record<string, unknown>): Verifi
 }
 
 export function trustTier(frontmatter: Record<string, unknown>): TrustTier {
+  if (frontmatter.verification_stale === true) return "unverified";
   const events = verificationEvents(frontmatter);
   if (events.length === 0) return "unverified";
   return events.some((e) => e.by.startsWith("human:")) ? "human-reviewed" : "machine-confirmed";

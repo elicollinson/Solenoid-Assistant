@@ -10,6 +10,7 @@ A local Bun service for experimenting with tool-using agents and personal-assist
 - `osxphotos` for screenshot workflows
 - Optional Tavily credentials for live web search
 - Optional [Pushover reminder notifications](docs/pushover-reminders.md), delivered at the reminder's due time
+- Optional [Gemini-backed OKF search and memory reflection](docs/okf-semantic-search-setup.md), using the existing Google identity and Workflows screen
 
 ## Setup
 
@@ -38,12 +39,15 @@ Catch up screenshot collection ingestion directly, without the HTTP server's
 255-second idle-timeout ceiling:
 
 ```bash
-bun run catchup:screenshots --from 2026-08-22T09:12:07-04:00
+bun run catchup:screenshots --from 2026-08-22T09:12:07-04:00 --to 2026-08-29
 # or
-bun run catchup:screenshots --hours-back 48 --limit 100
+bun run catchup:screenshots --hours-back 48
 ```
 
-The command can run for the duration of the complete batch. Each model route
+`--to` defaults to now. The window is walked oldest first, one screenshot at a
+time, and screenshots already in Collections are passed over, so an
+interrupted catch-up can be run again with the same window. The command can run
+for as long as the window takes. Each model route
 still has its configured five-minute timeout, and failed work advances to the
 next configured route. Add `--json` to print the complete structured result.
 
@@ -671,6 +675,33 @@ phone and desktop. While voice is connecting or active on another page, the
 bottom-right waveform returns to the ongoing conversation. On phones it takes
 the ask button's place above the tab bar. Ending voice or selecting a different
 conversation closes the microphone and connection.
+
+Voice uses Gemini 3.8 Live Extended Thinking directly for speech and tool use.
+Set `GEMINI_API_KEY` and optionally `GEMINI_VOICE` (default `Sulafat`).
+`GEMINI_LIVE_MODEL` defaults to `models/gemini-3.8-live-extended-thinking` and
+`GEMINI_LIVE_THINKING_LEVEL` defaults to `high` (also accepts `medium` or `low`).
+Remove an older model override or set the new value explicitly, then restart the
+server (or recreate its container) after deploying this version.
+
+The open voice controls include an **Extended thinking** switch on desktop and
+phone. It switches between Extended Thinking and standard 3.8 for the current
+voice session, preserving the microphone, mute state, and chat. It is available
+between responses; changing it briefly reconnects Gemini and restores the last
+24 saved turns (up to 4,000 characters each). Spoken user input is transcribed
+and saved too, so the replacement model receives both sides of the conversation.
+New voice sessions use the server's configured default.
+
+Tools run without blocking audio. Ending a spoken turn does not end the
+interaction: the UI continues showing work in progress until Gemini reports
+`interactionStatus: IDLE` and no local tools remain pending. The assistant's
+spoken transcript and tool summary are then saved together. Cancelled tool
+results and results arriving after disconnection are discarded; cancelling a
+request cannot undo an external action that already started.
+
+For comparison, `GEMINI_LIVE_MODEL=models/gemini-3.8-live` selects standard 3.8.
+That mode omits thinking configuration and uses blocking function calls. The
+thinking-level setting has no effect on standard 3.8. See Google's
+[Extended Thinking migration guide](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live-extended-thinking).
 
 A chat with the agent is a conversation, `channel = 'agent_chat'`, and its turns
 are `messages`. It is not a third stack beside texts and email, because the

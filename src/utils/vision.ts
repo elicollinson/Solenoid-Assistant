@@ -18,6 +18,7 @@ import {
   type ModelRouteInputChain,
 } from "../core/rawAgent";
 import { log } from "../core/logger";
+import { visionImage } from "./visionImage";
 import { createOllamaClient } from "../core/ollama";
 import { loadRuntimeConfig } from "../core/config";
 import {
@@ -72,7 +73,7 @@ function imageMimeType(imagePath: string): string {
  * Send an image file to a vision model with a text prompt, returning a
  * structured response validated against `schema`.
  *
- * The image is base64-encoded and passed in the selected provider's native
+ * The image is shrunk (./visionImage.ts), base64-encoded and passed in the selected provider's native
  * image shape. The shared runner selects either native structured submission
  * (LM Studio/local backends) or a reasoning pass followed by a non-reasoning
  * serialization pass (Ollama Cloud by default).
@@ -93,7 +94,7 @@ export async function describeImage<S extends z.ZodType>(
   const model = opts.routes?.[0].model ?? opts.model ?? config.imageModel;
 
   const imageBuffer = await readFile(imagePath);
-  const base64 = imageBuffer.toString("base64");
+  const image = await visionImage(imageBuffer, imageMimeType(imagePath));
   const imageSize = imageBuffer.length;
 
   log.debug(`vision: sending image to model`, {
@@ -101,7 +102,7 @@ export async function describeImage<S extends z.ZodType>(
     model,
     imagePath,
     imageSizeBytes: imageSize,
-    base64Length: base64.length,
+    sentBytes: image.data.length,
   });
 
   try {
@@ -154,7 +155,7 @@ export async function describeImage<S extends z.ZodType>(
         {
           role: "user",
           content: prompt,
-          images: [{ data: base64, mimeType: imageMimeType(imagePath) }],
+          images: [image],
         },
       ],
       schema,

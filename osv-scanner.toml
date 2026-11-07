@@ -1,0 +1,4 @@
+[[IgnoredVulns]]
+id = "GHSA-67mh-4wv8-2f99"
+ignoreUntil = 2027-02-07
+reason = "esbuild 0.18.20 comes in via drizzle-kit (dev only). The advisory is about esbuild's dev server, which nothing here runs."

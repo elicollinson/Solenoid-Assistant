@@ -30,11 +30,6 @@ services:
     build:
       context: .
       dockerfile: deploy/victorialogs.Dockerfile
-      args:
-        # Pinned for the same reason Phoenix should be: this is an always-on
-        # box, and a reboot that silently pulls a new log store is not a thing
-        # to find out about later. Bump it deliberately.
-        VICTORIALOGS_VERSION: v1.52.0
     image: solenoid-victorialogs:local
     container_name: victorialogs
     command:

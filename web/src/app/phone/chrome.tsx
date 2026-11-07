@@ -76,25 +76,25 @@ const TAB_LABEL: Record<PhoneBarTab, string> = {
  * once the OS is drawing the real window around it, they read as a picture of
  * a phone inside a phone. So they go, and it fills.
  */
-export const phoneFrame = (installed: boolean): CSSProperties => ({
+export const phoneFrame = (): CSSProperties => ({
   position: "relative",
   // The border is part of the 390, not added to it. Without this the frame is
   // 392px wide inside a 390px viewport and the whole app scrolls sideways by
   // the width of its own border — which on a phone is a page that slides under
   // your thumb while you are trying to scroll it down.
   boxSizing: "border-box",
-  width: installed ? "100%" : "min(390px, 100vw)",
+  width: "100%",
   // dvh rather than vh: on iOS the visible height changes as the URL bar
   // collapses, and vh is the taller of the two, which hides the tab bar.
-  height: installed ? "100dvh" : "min(844px, 100dvh)",
+  height: "100dvh",
   overflow: "hidden",
   display: "flex",
   flexDirection: "column",
   background: "var(--surface-app)",
   color: "var(--text-2)",
-  border: installed ? "none" : "var(--border-strong)",
-  borderRadius: installed ? 0 : "var(--radius-frame)",
-  boxShadow: installed ? "none" : "var(--shadow-frame)",
+  border: "none",
+  borderRadius: 0,
+  boxShadow: "none",
   font: "var(--text-body)",
 });
 
@@ -127,7 +127,7 @@ export function PhoneScreen({
   const session = useContext(ChatSessionContext);
   const voiceBusy = session && (session.voice.active || session.voice.status === "connecting");
   return (
-    <div data-frame="phone" data-installed={installed ? "" : undefined} style={phoneFrame(installed)}>
+    <div data-frame="phone" data-installed={installed ? "" : undefined} style={phoneFrame()}>
       <header
         style={{
           display: "flex",

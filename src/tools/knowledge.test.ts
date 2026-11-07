@@ -37,7 +37,7 @@ beforeAll(async () => {
   db = createDb(join(dir, "test.db"));
   runMigrations(db);
   await reindexOkf(db, { root: writeOkfFixture(join(dir, "okf")), now: MORNING });
-  group = knowledgeGroup({ db });
+  group = knowledgeGroup({ db, okf: { root: join(dir, "okf"), actor: "test" } });
 });
 
 afterAll(() => {
@@ -81,7 +81,7 @@ describe("the group", () => {
     // when its filter removed nothing, so a NEW object here would mean a write
     // tool had got in and been dropped.
     expect(readOnly(group)).toBe(group);
-    const fresh = knowledgeGroup({ db });
+    const fresh = knowledgeGroup({ db, okf: { root: join(dir, "okf"), actor: "test" } });
     expect(readOnly(fresh)).toBe(fresh);
     expect(readOnly(group).tools).toBe(group.tools);
   });

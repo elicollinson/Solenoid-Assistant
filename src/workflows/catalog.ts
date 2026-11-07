@@ -37,7 +37,7 @@ export const KNOWN_WRITE_CAPABILITIES: readonly WriteCapabilityInfo[] = [
     capability: "okf.write",
     label: "OKF Memory",
     description: "Write facts, summaries, and memories to the local OKF store",
-    tools: ["okf_create", "okf_patch", "okf_move", "okf_deprecate"],
+    tools: ["okf_create", "okf_patch", "okf_move", "okf_deprecate", "okf_apply_reflection"],
   },
   {
     capability: "calendar.write",
@@ -161,6 +161,7 @@ function field(
 }
 
 export const WORKFLOW_CATALOG: readonly WorkflowCatalogEntry[] = [
+  { slug: "okf-reflection", name: "Memory reflection", description: "Connect related memories and update OKF with cited syntheses, preserving original accounts.", trigger: "on_demand", cadence: "On demand", rrule: null, permissions: [{ capability: "okf.write", mode: "allow" }], inputs: [] },
   {
     slug: "log-monitoring",
     name: "Service log monitoring",
@@ -195,7 +196,7 @@ export const WORKFLOW_CATALOG: readonly WorkflowCatalogEntry[] = [
     slug: "screenshot-classification",
     name: "Screenshot classification",
     description:
-      "Describe recent screenshots with the vision model and classify each as a book, film, show, game, music — or reject it. Reads the Photos library; writes nothing.",
+      "Describe the screenshots taken in a window with the vision model, one at a time, and classify each as a book, film, show, game, music — or reject it. Reads the Photos library; writes nothing.",
     trigger: "on_demand",
     cadence: "On demand",
     rrule: null,
@@ -203,19 +204,18 @@ export const WORKFLOW_CATALOG: readonly WorkflowCatalogEntry[] = [
     // at all. "Writes nothing" is a claim this makes enforceable rather than
     // merely true today.
     inputs: [
-      field("hoursBack", "Hours back", { kind: "number", default: 24 }),
-      field("limit", "Most screenshots", {
-        kind: "number",
-        default: 10,
-        help: "Vision calls are slow. Start small.",
+      field("start", "From", {
+        kind: "datetime",
+        help: "Leave both blank and I go through the last 24 hours.",
       }),
+      field("end", "To", { kind: "datetime", help: "Defaults to now." }),
     ],
   },
   {
     slug: "screenshot-ingestion",
     name: "Screenshot ingestion",
     description:
-      "Classify recent screenshots, source a content card for everything that isn't rejected, and save it into your app-owned Collections.",
+      "Go through the screenshots taken in a window, oldest first, one at a time: classify each, source a content card for everything that isn't rejected, and save it into your app-owned Collections. Screenshots already in Collections are passed over.",
     trigger: "on_demand",
     cadence: "On demand",
     rrule: null,
@@ -225,12 +225,11 @@ export const WORKFLOW_CATALOG: readonly WorkflowCatalogEntry[] = [
       { capability: "collections.write", mode: "allow" },
     ],
     inputs: [
-      field("hoursBack", "Hours back", { kind: "number", default: 24 }),
-      field("limit", "Most screenshots", {
-        kind: "number",
-        default: 5,
-        help: "Each one costs a vision call, a web search and a local save.",
+      field("start", "From", {
+        kind: "datetime",
+        help: "Leave both blank and I go through the last 24 hours.",
       }),
+      field("end", "To", { kind: "datetime", help: "Defaults to now." }),
     ],
   },
   {

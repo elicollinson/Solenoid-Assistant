@@ -115,7 +115,7 @@ export function Composer({
               color: voiceActive ? "var(--text-1)" : "var(--text-3)",
               background: voiceActive ? "var(--surface-hover)" : undefined,
             }}
-            title={voiceActive ? "End voice session" : "Start voice mode with Gemini 3.1 Live Flash Preview"}
+            title={voiceActive ? "End voice session" : "Start voice mode with Gemini Live"}
           >
             <span
               style={{

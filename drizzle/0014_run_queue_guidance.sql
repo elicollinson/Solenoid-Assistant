@@ -1,0 +1,1 @@
+ALTER TABLE `run_queue` ADD `guidance` text;

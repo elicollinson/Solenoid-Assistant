@@ -17,8 +17,8 @@ export const embeddings = sqliteTable("embeddings", {
   textSha256: text().notNull(),
   model: text().notNull(),
   dim: integer().notNull(),
-  /** float32 little-endian. Swap for a sqlite-vec vec0 table when you want ANN
-   *  rather than a scan. */
+  /** float32 little-endian. sqlite-vec v0.1.9 is also an exact scan;
+   *  evaluate released ANN support separately before changing backends. */
   vector: blob().notNull(),
   createdAt: tsReq(),
 }, (t) => [

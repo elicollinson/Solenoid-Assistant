@@ -1,4 +1,6 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { Behavior, InteractionStatus, ThinkingLevel, Live, LiveServerMessage, type LiveServerContent, type LiveConnectParameters, type Session } from "@google/genai";
+import { loadRuntimeConfig } from "../core/config";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +10,7 @@ import {
   createWavHeader,
   parseMimeType,
   sanitizeGeminiSchema,
+  type GeminiLiveEvent,
 } from "./geminiLive";
 import { createDb, runMigrations, type Db } from "../db";
 import { loadChat } from "../db/queries/chat";
@@ -24,9 +27,283 @@ beforeEach(() => {
   conversationId = startConversation(db);
 });
 
+describe("Gemini 3.8 Live protocol", () => {
+  test("connects with high thinking and persists spoken transcripts without model thoughts", async () => {
+    let connection!: LiveConnectParameters;
+    const events: GeminiLiveEvent[] = [];
+    const connect = spyOn(Live.prototype, "connect").mockImplementation(async (params) => {
+      connection = params;
+      return { close() {} } as Session;
+    });
+    const session = new GeminiLiveSession({
+      db,
+      conversationId,
+      config: loadRuntimeConfig({ GEMINI_API_KEY: "test-only" }),
+      onEvent: (event) => events.push(event),
+    });
+    try {
+      await session.start();
+      const receive = (serverContent: LiveServerContent) =>
+        connection.callbacks.onmessage(Object.assign(new LiveServerMessage(), { serverContent }));
+      expect(connection.model).toBe("models/gemini-3.8-live-extended-thinking");
+      expect(connection.config?.thinkingConfig).toEqual({ thinkingLevel: ThinkingLevel.HIGH });
+      expect(connection.config?.outputAudioTranscription).toEqual({});
+      const tools = connection.config?.tools as Array<{ functionDeclarations?: Array<{ behavior?: Behavior }> }>;
+      const declarations = tools.flatMap((tool) => tool.functionDeclarations ?? []);
+      expect(declarations.length).toBeGreaterThan(50);
+      expect(declarations.every((tool) => tool.behavior === Behavior.NON_BLOCKING)).toBe(true);
+      expect(loadChat(db, conversationId).model).toBe(connection.model);
+
+      await receive({
+        modelTurn: { parts: [
+          { text: "Internal reasoning", thought: true },
+          { text: "Duplicate model text" },
+          { inlineData: { data: "AAAA", mimeType: "audio/pcm;rate=24000" } },
+        ] },
+        outputTranscription: { text: "Your next " },
+      });
+      await receive({
+        outputTranscription: { text: "meeting is at noon.", finished: true },
+        turnComplete: true,
+        interactionStatus: InteractionStatus.IDLE,
+      });
+      expect(loadChat(db, conversationId).turns.map((turn) => turn.body)).toEqual([
+        "Your next meeting is at noon.",
+      ]);
+      expect(events).toContainEqual({ type: "audio", data: "AAAA", mimeType: "audio/pcm;rate=24000" });
+
+      // An interrupted turn is saved once and cannot bleed into the next answer.
+      await receive({
+        outputTranscription: { text: "I can also" },
+        interrupted: true,
+        turnComplete: true,
+        interactionStatus: InteractionStatus.IDLE,
+      });
+      await receive({
+        outputTranscription: { text: "Okay, stopping." },
+        turnComplete: true,
+        interactionStatus: InteractionStatus.IDLE,
+      });
+      expect(events).toContainEqual({ type: "interrupted" });
+      expect(loadChat(db, conversationId).turns.map((turn) => turn.body)).toEqual([
+        "Your next meeting is at noon.", "I can also", "Okay, stopping.",
+      ]);
+    } finally {
+      session.close();
+      connect.mockRestore();
+    }
+  });
+});
+
 afterEach(() => {
   db.$client.close();
   rmSync(dir, { recursive: true, force: true });
+});
+
+async function withLiveHarness(
+  run: (h: {
+    session: GeminiLiveSession;
+    connection: LiveConnectParameters;
+    events: GeminiLiveEvent[];
+    responses: unknown[];
+    connections: LiveConnectParameters[];
+    clientContents: unknown[];
+    receive: (message: Partial<LiveServerMessage>) => Promise<void>;
+    addTool: (execute: () => Promise<unknown>) => void;
+  }) => Promise<void>,
+  env: Record<string, string> = {},
+) {
+  let connection!: LiveConnectParameters;
+  const events: GeminiLiveEvent[] = [];
+  const responses: unknown[] = [];
+  const connections: LiveConnectParameters[] = [];
+  const clientContents: unknown[] = [];
+  const connect = spyOn(Live.prototype, "connect").mockImplementation(async (params) => {
+    connection = params;
+    connections.push(params);
+    return { close() {}, sendToolResponse: (response: unknown) => responses.push(response),
+      sendClientContent: (content: unknown) => clientContents.push(content) } as unknown as Session;
+  });
+  const session = new GeminiLiveSession({ db, conversationId,
+    config: loadRuntimeConfig({ GEMINI_API_KEY: "test-only", ...env }), onEvent: (event) => events.push(event) });
+  try {
+    await session.start();
+    await connection.callbacks.onmessage(Object.assign(new LiveServerMessage(), { setupComplete: {} }));
+    await run({ session, connection, events, responses, connections, clientContents,
+      receive: async (message) => { await connection.callbacks.onmessage(Object.assign(new LiveServerMessage(), message)); },
+      addTool: (execute) => {
+        const tools = (session as unknown as { toolsByName: Map<string, unknown> }).toolsByName;
+        tools.set("test_lookup", { name: "test_lookup", kind: "read", execute });
+      },
+    });
+  } finally {
+    session.close();
+    connect.mockRestore();
+  }
+}
+
+test("switches models in the same chat, restoring both sides of the transcript", async () => {
+  await withLiveHarness(async ({ session, receive, connections, clientContents, events }) => {
+    await receive({ serverContent: { inputTranscription: { text: "My code is violet-731.", finished: true } } });
+    await receive({ serverContent: { outputTranscription: { text: "Got it." }, interactionStatus: InteractionStatus.IDLE } });
+    const oldConnection = connections[0]!;
+    await session.setExtendedThinking(false);
+    expect(events).toContainEqual({ type: "reconnecting" });
+    expect(connections[1]!.model).toBe("models/gemini-3.8-live");
+    expect(connections[1]!.config).not.toHaveProperty("thinkingConfig");
+    await receive({ setupComplete: {} });
+    expect(clientContents).toEqual([{ turns: [
+      { role: "user", parts: [{ text: "My code is violet-731." }] },
+      { role: "model", parts: [{ text: "Got it." }] },
+    ], turnComplete: false }]);
+    // A late close from the replaced model must not close its replacement.
+    oldConnection.callbacks.onclose?.({ reason: "old connection closed" } as CloseEvent);
+    expect(session.isClosed).toBe(false);
+    await session.setExtendedThinking(true);
+    expect(connections[2]!.model).toBe("models/gemini-3.8-live-extended-thinking");
+    expect(connections[2]!.config?.thinkingConfig?.thinkingLevel).toBe(ThinkingLevel.HIGH);
+    await receive({ setupComplete: {} });
+    expect(loadChat(db, conversationId).turns).toHaveLength(2);
+  });
+});
+
+test("does not replace a model during background work", async () => {
+  await withLiveHarness(async ({ session, receive, connections, events }) => {
+    await receive({ serverContent: { interactionStatus: InteractionStatus.IN_PROGRESS } });
+    await session.setExtendedThinking(false);
+    expect(connections).toHaveLength(1);
+    expect(events.at(-1)?.type).toBe("mode_change_rejected");
+    expect(session.isClosed).toBe(false);
+  });
+});
+
+test("ending voice while a replacement connects closes the late session", async () => {
+  const connections: LiveConnectParameters[] = [];
+  const events: GeminiLiveEvent[] = [];
+  let resolveReplacement!: (session: Session) => void;
+  let closed = 0;
+  const fake = () => ({ close() { closed++; } }) as Session;
+  const connect = spyOn(Live.prototype, "connect").mockImplementation(async (params) => {
+    connections.push(params);
+    if (connections.length === 1) return fake();
+    return new Promise<Session>((resolve) => { resolveReplacement = resolve; });
+  });
+  const session = new GeminiLiveSession({ db, conversationId,
+    config: loadRuntimeConfig({ GEMINI_API_KEY: "test-only" }), onEvent: (event) => events.push(event) });
+  try {
+    await session.start();
+    await connections[0]!.callbacks.onmessage(Object.assign(new LiveServerMessage(), { setupComplete: {} }));
+    const replacement = session.setExtendedThinking(false);
+    session.close();
+    resolveReplacement(fake());
+    await replacement;
+    await connections[1]!.callbacks.onmessage(Object.assign(new LiveServerMessage(), { setupComplete: {} }));
+    expect(closed).toBe(2);
+    expect(session.isClosed).toBe(true);
+    expect(events.filter((event) => event.type === "ready")).toHaveLength(1);
+  } finally {
+    session.close();
+    connect.mockRestore();
+  }
+});
+
+test("keeps audio responsive while tools run and completes only at server IDLE", async () => {
+  await withLiveHarness(async ({ session, receive, addTool, responses, events }) => {
+    let resolveTool!: (value: unknown) => void;
+    addTool(() => new Promise((resolve) => { resolveTool = resolve; }));
+    await receive({ toolCall: { functionCalls: [{ id: "lookup-1", name: "test_lookup", args: {} }] },
+      serverContent: { modelTurn: { parts: [{ inlineData: { data: "AAAA" } }] },
+        outputTranscription: { text: "Checking that." }, turnComplete: true,
+        interactionStatus: InteractionStatus.IN_PROGRESS } });
+    expect(events.some((event) => event.type === "audio")).toBe(true);
+    expect(events).toContainEqual({ type: "audio_turn_complete" });
+    expect(events).toContainEqual({ type: "interaction_status", working: true });
+    expect(loadChat(db, conversationId).turns).toHaveLength(0);
+    expect(responses).toHaveLength(0);
+    // Even an early IDLE must not finalize while a local tool is unfinished.
+    await receive({ serverContent: { interactionStatus: InteractionStatus.IDLE } });
+    expect(loadChat(db, conversationId).turns).toHaveLength(0);
+    resolveTool({ answer: "noon" });
+    await Promise.resolve();
+    expect(responses).toEqual([{ functionResponses: [{ id: "lookup-1", name: "test_lookup", response: { answer: "noon" } }] }]);
+    await receive({ serverContent: { outputTranscription: { text: "It is at noon." }, turnComplete: true,
+      interactionStatus: InteractionStatus.IN_PROGRESS } });
+    expect(loadChat(db, conversationId).turns).toHaveLength(0);
+    await receive({ serverContent: { interactionStatus: InteractionStatus.IDLE } });
+    await receive({ serverContent: { interactionStatus: InteractionStatus.IDLE } });
+    session.close(); // Closing an already-persisted interaction must not duplicate it.
+    const turns = loadChat(db, conversationId).turns;
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.body).toBe("Checking that.\nIt is at noon.");
+    expect(turns[0]!.toolSummary).toContain("lookup");
+    expect(events.filter((event) => event.type === "turn_complete")).toHaveLength(1);
+  });
+});
+
+for (const closeVia of ["stop", "disconnect"] as const) {
+  test(`preserves partial speech and completed tool summaries on ${closeVia}`, async () => {
+    await withLiveHarness(async ({ session, connection, receive, addTool, responses, events }) => {
+      addTool(async () => ({ answer: "noon" }));
+      await receive({ toolCall: { functionCalls: [{ id: "completed", name: "test_lookup" }] } });
+      await Promise.resolve();
+      expect(responses).toHaveLength(1);
+
+      let resolvePending!: (value: unknown) => void;
+      addTool(() => new Promise((resolve) => { resolvePending = resolve; }));
+      await receive({ toolCall: { functionCalls: [{ id: "pending", name: "test_lookup" }] },
+        serverContent: { outputTranscription: { text: "Your meeting is at noon. Checking the location." },
+          turnComplete: true, interactionStatus: InteractionStatus.IN_PROGRESS } });
+      expect(loadChat(db, conversationId).turns).toHaveLength(0);
+
+      if (closeVia === "stop") session.close();
+      else connection.callbacks.onclose?.({ reason: "Connection lost" } as CloseEvent);
+      session.close(); // A later socket callback/cleanup must be harmless.
+      resolvePending({ answer: "late result" });
+      await Promise.resolve();
+      await receive({ serverContent: { outputTranscription: { text: "Late speech" }, interactionStatus: InteractionStatus.IDLE } });
+
+      const turns = loadChat(db, conversationId).turns;
+      expect(turns).toHaveLength(1);
+      expect(turns[0]!.body).toBe("Your meeting is at noon. Checking the location.");
+      expect(turns[0]!.toolSummary).toBe("1 tool call · test.lookup");
+      expect(responses).toHaveLength(1);
+      expect(events.filter((event) => event.type === "turn_complete")).toHaveLength(1);
+    });
+  });
+}
+
+test("closing an empty voice session does not create a transcript", async () => {
+  await withLiveHarness(async ({ session, events }) => {
+    session.close();
+    expect(loadChat(db, conversationId).turns).toHaveLength(0);
+    expect(events.filter((event) => event.type === "turn_complete")).toHaveLength(0);
+  });
+});
+
+for (const stop of ["cancel", "close"] as const) {
+  test(`does not deliver stale tool results after ${stop}`, async () => {
+    await withLiveHarness(async ({ session, receive, addTool, responses, events }) => {
+      let resolveTool!: (value: unknown) => void;
+      addTool(() => new Promise((resolve) => { resolveTool = resolve; }));
+      await receive({ toolCall: { functionCalls: [{ id: "lookup-1", name: "test_lookup" }] } });
+      if (stop === "close") session.close();
+      else await receive({ toolCallCancellation: { ids: ["lookup-1"] } });
+      resolveTool({ answer: "obsolete" });
+      await Promise.resolve();
+      expect(responses).toHaveLength(0);
+      expect(events.filter((event) => event.type === "tool")).toHaveLength(0);
+    });
+  });
+}
+
+test("standard 3.8 override omits thinking and retains blocking tool behavior", async () => {
+  await withLiveHarness(async ({ connection, receive }) => {
+    expect(connection.config).not.toHaveProperty("thinkingConfig");
+    const tools = connection.config?.tools as Array<{ functionDeclarations?: Array<{ behavior?: Behavior }> }>;
+    expect(tools.flatMap((tool) => tool.functionDeclarations ?? []).every((tool) => tool.behavior === Behavior.BLOCKING)).toBe(true);
+    await receive({ serverContent: { outputTranscription: { text: "Hello." }, turnComplete: true } });
+    expect(loadChat(db, conversationId).turns[0]!.body).toBe("Hello.");
+  }, { GEMINI_LIVE_MODEL: "models/gemini-3.8-live" });
 });
 
 describe("WAV & MIME helpers", () => {
@@ -210,10 +487,10 @@ describe("GeminiLiveSession tool initialization", () => {
   });
 
   test("tracks conversation voice invocation in database", () => {
-    markConversationVoiceInvoked(db, conversationId, "models/gemini-3.1-flash-live-preview");
+    markConversationVoiceInvoked(db, conversationId, "models/gemini-3.8-live-extended-thinking");
 
     const chat = loadChat(db, conversationId);
     expect(chat.voiceInvoked).toBe(true);
-    expect(chat.model).toBe("models/gemini-3.1-flash-live-preview");
+    expect(chat.model).toBe("models/gemini-3.8-live-extended-thinking");
   });
 });

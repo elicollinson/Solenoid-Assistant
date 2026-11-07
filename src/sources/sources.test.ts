@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, test, expect } from "bun:test";
-import { mkdtemp, rm, stat, readFile, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initDb, type Db } from "../db";
@@ -21,7 +21,7 @@ import {
 } from "./assets";
 import { storedContacts, storedMessages } from "./readers";
 import { createSourceRoutes } from "../http/routes/sources";
-import { consumeScreenshot } from "./consumer";
+import { consumeScreenshot, modelUnavailable } from "./consumer";
 import { WORKFLOW_CATALOG } from "../workflows/catalog";
 import { syncWorkflowCatalog } from "../workflows/sync";
 
@@ -174,7 +174,7 @@ describe("screenshot retention", () => {
     ).rejects.toThrow("hash mismatch");
     expect(candidate(hash, db)).toBeNull();
   });
-  test("consumer discards after exactly five failures and collection cannot restart retries", async () => {
+  test("consumer gives up after exactly five failures, as an error rather than a rejection", async () => {
     await stagePhoto(photo, png, db);
     let calls = 0;
     const fail = async () => { calls++; throw new Error("outage"); };
@@ -182,15 +182,35 @@ describe("screenshot retention", () => {
       db.$client.query("UPDATE source_candidates SET retry_at=0 WHERE hash=?").run(hash);
       expect(await consumeScreenshot(db, fail)).toBe(true);
       expect(candidate(hash, db)!.attempts).toBe(attempt);
-      expect(candidate(hash, db)!.status).toBe(attempt < 5 ? "failed" : "rejected");
+      expect(candidate(hash, db)!.status).toBe(attempt < 5 ? "failed" : "error");
     }
     expect(calls).toBe(5);
     expect(await stat(assetPath(hash, ".png", true)).catch(() => null)).toBeNull();
     expect(await stat(assetPath(hash, ".png")).catch(() => null)).toBeNull();
     expect(db.$client.query("SELECT * FROM source_photo_candidates").all()).toHaveLength(0);
-    expect(await stagePhoto(photo, png, db)).toEqual({ status: "rejected" });
+    // Nothing more happens until the next collection brings it back.
     expect(await consumeScreenshot(db, fail)).toBe(false);
     expect(calls).toBe(5);
+  });
+  test("the next collection retries an error from the start, and it can still be accepted", async () => {
+    await stagePhoto(photo, png, db);
+    db.$client.query("UPDATE source_candidates SET attempts=4 WHERE hash=?").run(hash);
+    await consumeScreenshot(db, async () => { throw new Error("outage"); });
+    expect(candidate(hash, db)!.status).toBe("error");
+
+    expect(await candidateStatus(hash, db)).toEqual({ status: "upload-needed" });
+    expect(await stagePhoto(photo, png, db)).toEqual({ status: "pending" });
+    expect(candidate(hash, db)).toMatchObject({ status: "pending", attempts: 0, retry_at: 0 });
+    await consumeScreenshot(db, async () => ({ result: { classification: "Movie", name: "Arrival" }, status: "rejected" }));
+    expect(candidate(hash, db)).toMatchObject({ status: "accepted", attempts: 1 });
+    expect(records("photos", db).map((r) => r.id)).toEqual([photo.uuid]);
+  });
+  test("a real rejection stays rejected when collection brings it back", async () => {
+    await stagePhoto(photo, png, db);
+    await consumeScreenshot(db, async () => ({ result: { classification: "Rejected", name: "" }, status: "rejected" }));
+    expect(candidate(hash, db)!.status).toBe("rejected");
+    expect(await candidateStatus(hash, db)).toEqual({ status: "rejected" });
+    expect(await stagePhoto(photo, png, db)).toEqual({ status: "rejected" });
   });
   test("a fifth attempt can still succeed", async () => {
     await stagePhoto(photo, png, db);
@@ -211,8 +231,34 @@ describe("screenshot retention", () => {
     expect(await consumeScreenshot(db, classify)).toBe(true);
     expect(calls).toBe(0);
     expect(candidate(hash, db)!.attempts).toBe(11);
-    expect(candidate(hash, db)!.status).toBe("rejected");
+    expect(candidate(hash, db)!.status).toBe("error");
     expect(await stat(assetPath(hash, ".png", true)).catch(() => null)).toBeNull();
+  });
+  test("a model host outage is waited out without using up the screenshot's attempts", async () => {
+    await stagePhoto(photo, png, db);
+    for (const message of ["400 No models loaded. Please load a model.", "connect ECONNREFUSED 192.168.5.2:1234"]) {
+      db.$client.query("UPDATE source_candidates SET retry_at=0 WHERE hash=?").run(hash);
+      await consumeScreenshot(db, async () => { throw new Error(message); });
+      expect(candidate(hash, db)).toMatchObject({ status: "failed", attempts: 0 });
+      expect(candidate(hash, db)!.retry_at).toBeGreaterThan(Date.now());
+    }
+    expect(await stat(assetPath(hash, ".png", true))).toBeTruthy();
+    expect(modelUnavailable(new Error("chain failed", { cause: new Error("connect ECONNREFUSED 192.168.5.2:1234") }))).toBe(true);
+    expect(modelUnavailable(new Error("Screenshot classification failed"))).toBe(false);
+    // What an oversized request gets every time; it must be able to run out.
+    expect(modelUnavailable(new Error('400 "LM Link connection closed"'))).toBe(false);
+  });
+  test("an upload landing under an error is not swept before it is marked pending", async () => {
+    await stagePhoto(photo, png, db);
+    db.$client.query("UPDATE source_candidates SET attempts=4 WHERE hash=?").run(hash);
+    await consumeScreenshot(db, async () => { throw new Error("schema mismatch"); });
+    expect(candidate(hash, db)!.status).toBe("error");
+    // The next collection's bytes are on disk; the row has not caught up yet.
+    await mkdir(path.dirname(assetPath(hash, ".png", true)), { recursive: true });
+    await writeFile(assetPath(hash, ".png", true), png);
+    await purgeStaging(db);
+    expect(await stat(assetPath(hash, ".png", true))).toBeTruthy();
+    expect(candidate(hash, db)!.status).toBe("error");
   });
   test("consumer retries transient errors without falsely rejecting", async () => {
     await stagePhoto(photo, png, db);

@@ -31,6 +31,7 @@
     "make:icons": "bun run scripts/make-icons.ts",
     "serve:tailscale": "bun run scripts/serve-tailscale.ts",
     "db:index-okf": "bun run scripts/db-index-okf.ts",
+    "okf:embeddings": "bun run scripts/okf-embeddings.ts",
     "source:collect": "bun run scripts/collect-host-data.ts",
     "source:catch-up": "bun run scripts/source-catch-up.ts",
     "import:collections": "bun run scripts/import-collections.ts"
@@ -46,9 +47,9 @@
     "@vitejs/plugin-react": "^6.1.0",
     "babel-plugin-react-compiler": "^1.0.0",
     "drizzle-kit": "^0.31.10",
-    "happy-dom": "^20.14.5",
+    "happy-dom": "^21.0.4",
     "typescript": "6.0.3",
-    "vite": "^8.2.2"
+    "vite": "^8.3.6"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.111.0",
@@ -58,25 +59,35 @@
     "@elicollinson/solenoid-security": "github:elicollinson/solenoid-security#b796793ff7697550c469d87a46a423a7d6be1c15",
     "@elysiajs/openapi": "^1.4.15",
     "@google/genai": "^2.21.0",
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "@opentelemetry/api": "^1.9.1",
     "croner": "^10.0.1",
     "dedent": "^1.7.2",
     "drizzle-orm": "^0.45.2",
     "elysia": "^1.4.29",
+    "google-auth-library": "^9.15.1",
     "ollama": "^0.6.3",
     "openai": "^6.47.0",
     "p-limit": "^7.3.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "zod": "^4.4.3"
+    "sharp": "0.35.5",
+    "zod": "^4.6.6"
   },
   "trustedDependencies": [
     "protobufjs"
   ],
   "overrides": {
+    "@hono/node-server": "2.1.6",
+    "@opentelemetry/core": "2.12.0",
     "adm-zip": "0.6.0",
-    "fast-uri": "3.1.6",
-    "sharp": "0.35.0"
+    "fast-uri": "3.1.9",
+    "hono": "4.13.17",
+    "ip-address": "10.7.6",
+    "qs": "6.17.1",
+    "sharp": "0.35.5",
+    "source-map-js": "1.2.2",
+    "undici": "7.30.2",
+    "uuid": "11.1.1"
   }
 }

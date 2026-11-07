@@ -72,7 +72,7 @@ const EMPTY_LIVE: LiveTurn = {
 };
 
 const voice: VoiceModeState = {
-  active: false, status: "idle", isSpeaking: false, isMuted: false,
+  active: false, status: "idle", isSpeaking: false, isWorking: false, extendedThinking: true, toggleExtendedThinking: noop, isMuted: false,
   error: null, analyserNode: null, startVoice: async () => {}, stopVoice: noop, toggleMute: noop,
 };
 
@@ -225,5 +225,16 @@ describe("the phone is not the desktop narrower", () => {
 
   test("the thread has a way back to the list", () => {
     expect(phone(both())).toContain("Conversations");
+  });
+});
+
+describe("the model in the header", () => {
+  test("is the one the server names, on both screens, not a name baked in", () => {
+    const state = { ...both(), model: "google/gemma-4-26b-a4b-qat" };
+    for (const markup of [desktop(state), phone(state)]) {
+      expect(markup).toContain("gemma-4-26b-a4b-qat");
+      expect(markup).not.toContain("google/");
+      expect(markup).not.toContain("Gemma 4");
+    }
   });
 });

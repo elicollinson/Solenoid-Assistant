@@ -2,13 +2,30 @@ import { initDb } from "../db";
 import { describe, expect, test } from "bun:test";
 import type { Agent } from "../core/rawAgent";
 import type { AgentResource } from "../agents/resource";
-import { ingestRecentScreenshots } from "./screenshotIngestion";
+import type { ClassifiedScreenshot } from "../tools/photos";
+import type { PhotoRecord } from "../utils/osxPhotos";
+import { classifyScreenshotWindow, ingestScreenshotWindow, type ScreenshotIngestionDependencies } from "./screenshotIngestion";
 import { syncWorkflowCatalog } from "./sync";
 import { withWorkflowPermissions, withRunPermissions } from "./permissions";
 import { grantWorkflowPermission, readDeferredWrite } from "../db/mutations/workflows";
 import { runDeferredWrite } from "./deferred";
 import * as s from "../db/schema";
 import { eq } from "drizzle-orm";
+
+const WINDOW = { start: new Date("2026-09-12T00:00:00Z"), end: new Date("2026-09-13T00:00:00Z") };
+
+/** The window's listing and the classifier, played back from fixed results. */
+function playback(shots: ClassifiedScreenshot[]): Required<Pick<ScreenshotIngestionDependencies, "list" | "classifyOne">> & { classified: string[] } {
+  const classified: string[] = [];
+  return {
+    classified,
+    list: async () => shots.map((shot) => ({ uuid: shot.uuid, date: shot.date }) as PhotoRecord),
+    classifyOne: async (photo) => {
+      classified.push(photo.uuid);
+      return shots.find((shot) => shot.uuid === photo.uuid)!;
+    },
+  };
+}
 
 function unusedResource(): AgentResource {
   return {
@@ -17,17 +34,10 @@ function unusedResource(): AgentResource {
   };
 }
 
-describe("ingestRecentScreenshots", () => {
+describe("ingestScreenshotWindow", () => {
   test("propagates classification quarantine into item status and summary", async () => {
-    const result = await ingestRecentScreenshots({}, {
-      classify: async () => ({
-        windowStart: "2026-01-01T00:00:00.000Z",
-        windowEnd: "2026-01-02T00:00:00.000Z",
-        returned: 2,
-        totalInWindow: 2,
-        failed: 1,
-        quarantined: 1,
-        screenshots: [
+    const result = await ingestScreenshotWindow(WINDOW, {
+      ...playback([
           {
             uuid: "unsafe-id",
             filename: "unsafe.png",
@@ -46,8 +56,7 @@ describe("ingestRecentScreenshots", () => {
             classification: null,
             error: "Classification failed: provider unavailable",
           },
-        ],
-      }),
+      ]),
       createContentResource: async () => unusedResource(),
       db: initDb(":memory:"),
       loadProcessed: async () => ({}),
@@ -73,7 +82,7 @@ test("saves successful screenshots locally, skips receipts, and isolates sourcin
   }));
   const dependencies = {
     db,
-    classify: async () => ({ windowStart: "2026-09-12", windowEnd: "2026-09-13", returned: shots.length, totalInWindow: shots.length, failed: 0, quarantined: 0, screenshots: shots }),
+    ...playback(shots),
     loadProcessed: async () => ({ old: { classification: "Music", name: "old", ingestedAt: "2026-09-01" } }),
     createContentResource: async () => ({
       agent: { run: async (name: string) => {
@@ -85,12 +94,18 @@ test("saves successful screenshots locally, skips receipts, and isolates sourcin
     }),
   };
   try {
-    const result = await withWorkflowPermissions(db, "screenshot-ingestion", () => ingestRecentScreenshots({}, dependencies));
-    expect(result.screenshots.map((s) => s.status)).toEqual(["ingested", "failed", "skipped", "rejected"]);
+    const result = await withWorkflowPermissions(db, "screenshot-ingestion", () => ingestScreenshotWindow(WINDOW, dependencies));
+    expect(result.screenshots.map((s) => s.status)).toEqual(["ingested", "failed", "rejected"]);
     expect(result.screenshots[0]!.ingestion?.itemId).toBeTruthy();
-    expect(result.failed).toBe(1); expect(calls).toBe(2); expect(closes).toBe(1);
-    const retry = await withWorkflowPermissions(db, "screenshot-ingestion", () => ingestRecentScreenshots({}, dependencies));
-    expect(retry.screenshots[0]!.status).toBe("skipped"); expect(calls).toBe(3);
+    // "old" has a receipt, so it is passed over before the classifier sees it.
+    expect(result).toMatchObject({ totalInWindow: 4, alreadyDone: 1, processed: 3, failed: 1 });
+    expect(dependencies.classified).toEqual(["ok", "bad", "reject"]);
+    expect(calls).toBe(2); expect(closes).toBe(1);
+    // A rerun of the same window costs only what is still not in Collections.
+    const retry = await withWorkflowPermissions(db, "screenshot-ingestion", () => ingestScreenshotWindow(WINDOW, dependencies));
+    expect(retry).toMatchObject({ alreadyDone: 2, processed: 2 });
+    expect(dependencies.classified).toEqual(["ok", "bad", "reject", "bad", "reject"]);
+    expect(calls).toBe(3);
     expect(db.$client.query("SELECT count(*) AS n FROM collection_items").get()).toEqual({ n: 1 });
   } finally { db.$client.close(); }
 });
@@ -100,7 +115,7 @@ for (const mode of ["allow", "deny", "ask", "missing-context"] as const) {
     const db = initDb(":memory:");
     syncWorkflowCatalog(db);
     if (mode !== "missing-context") grantWorkflowPermission(db, "screenshot-ingestion", { capability: "collections.write", mode });
-    const run = () => ingestRecentScreenshots({}, collectionDependencies(db));
+    const run = () => ingestScreenshotWindow(WINDOW, collectionDependencies(db));
     try {
       const result = await (mode === "missing-context" ? run() : withWorkflowPermissions(db, "screenshot-ingestion", run));
       expect(result.screenshots[0]!.status).toBe(mode === "allow" ? "ingested" : mode === "missing-context" ? "failed" : "skipped");
@@ -122,7 +137,7 @@ test("ask defers the full extraction, approval saves once, and a later deny bloc
   db.insert(s.entities).values({ id: runId, kind: "workflow_run", createdAt: now, updatedAt: now }).run();
   db.insert(s.workflowRuns).values({ id: runId, workflowId: workflow.id, ordinal: 1, trigger: "manual", triggeredBy: "user", state: "running", startedAt: now }).run();
   try {
-    const result = await withRunPermissions({ db, workflowId: workflow.id, runId, slug: workflow.slug }, () => ingestRecentScreenshots({}, collectionDependencies(db)));
+    const result = await withRunPermissions({ db, workflowId: workflow.id, runId, slug: workflow.slug }, () => ingestScreenshotWindow(WINDOW, collectionDependencies(db)));
     expect(result.screenshots[0]!.status).toBe("skipped");
     expect(db.select().from(s.collectionSources).all()).toHaveLength(0);
     const action = db.select().from(s.actions).where(eq(s.actions.effectKind, "tool_call")).get()!;
@@ -143,9 +158,46 @@ test("ask defers the full extraction, approval saves once, and a later deny bloc
 function collectionDependencies(db: ReturnType<typeof initDb>) {
   return {
     db, loadProcessed: async () => ({}),
-    classify: async () => ({ windowStart: "2026-09-12", windowEnd: "2026-09-13", returned: 1, totalInWindow: 1, failed: 0, quarantined: 0,
-      screenshots: [{ uuid: "book", filename: "book.png", path: "/tmp/book.png", date: "2026-09-12T10:00:00Z", status: "classified" as const,
-        classification: { classification: "Book" as const, name: "Dune" } }] }),
+    ...playback([{ uuid: "book", filename: "book.png", path: "/tmp/book.png", date: "2026-09-12T10:00:00Z", status: "classified" as const,
+      classification: { classification: "Book" as const, name: "Dune" } }]),
     createContentResource: async () => ({ agent: { run: async () => ({ name: "Dune", type: "Book", description: "A novel", url: "https://example.com/dune", coverImageUrl: "" }) } as unknown as Agent, close: async () => {} }),
   };
 }
+
+test("a window is walked oldest first and a stop between screenshots keeps what was saved", async () => {
+  const db = initDb(":memory:");
+  syncWorkflowCatalog(db);
+  const shot = (uuid: string, date: string) => ({
+    uuid, filename: `${uuid}.png`, path: `/tmp/${uuid}.png`, date, status: "classified" as const,
+    classification: { classification: "Book" as const, name: uuid },
+  });
+  const stop = new AbortController();
+  const replay = playback([shot("first", "2026-09-12T08:00:00Z"), shot("second", "2026-09-12T09:00:00Z")]);
+  const dependencies = {
+    ...collectionDependencies(db),
+    ...replay,
+    signal: stop.signal,
+    createContentResource: async () => ({
+      agent: { run: async (name: string) => {
+        stop.abort(new Error("stopped"));
+        return { name, type: "Book", description: "A novel", url: `https://example.com/${name}`, coverImageUrl: "" };
+      } } as unknown as Agent,
+      close: async () => {},
+    }),
+  };
+  try {
+    await expect(withWorkflowPermissions(db, "screenshot-ingestion", () => ingestScreenshotWindow(WINDOW, dependencies))).rejects.toThrow("stopped");
+    expect(replay.classified).toEqual(["first"]);
+    expect(db.select().from(s.collectionSources).all()).toHaveLength(1);
+  } finally { db.$client.close(); }
+});
+
+test("classifying a window looks at every screenshot in it, in order", async () => {
+  const replay = playback(["a", "b", "c"].map((uuid, i) => ({
+    uuid, filename: `${uuid}.png`, path: `/tmp/${uuid}.png`, date: `2026-09-12T0${i}:00:00Z`,
+    status: "classified" as const, classification: { classification: "Rejected" as const, name: "Unknown" },
+  })));
+  const result = await classifyScreenshotWindow(WINDOW, replay);
+  expect(replay.classified).toEqual(["a", "b", "c"]);
+  expect(result).toMatchObject({ windowStart: WINDOW.start.toISOString(), returned: 3, totalInWindow: 3 });
+});

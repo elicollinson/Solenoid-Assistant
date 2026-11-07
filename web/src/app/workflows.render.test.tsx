@@ -356,6 +356,7 @@ describe("a workflow with code behind it", () => {
     expect(after.rows.filter((row) => row.runnable).map((row) => row.slug).sort()).toEqual([
       "log-monitoring",
       "message-extraction",
+      "okf-reflection",
       "safety-classification",
       "screenshot-classification",
       "screenshot-ingestion",

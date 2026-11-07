@@ -11,7 +11,7 @@ import { createDb, okfObjectId, runMigrations, type Db } from "../index";
 import * as s from "../schema";
 import { and, eq } from "drizzle-orm";
 import { writeOkfFixture } from "../seed/okfBundle";
-import { reindexOkf, uriFor, provenanceOf, relatedConcepts, sourceEntries } from "./reindex";
+import { reindexOkf, uriFor, provenanceOf, sourceEntries } from "./reindex";
 import { conflictGroups, extractFields, plain, readableSections } from "./fields";
 import { chronologyByConcept, dayInstant, parseLog } from "./chronology";
 import { shelfFor } from "./classify";
@@ -243,14 +243,6 @@ describe("whose claim a fact is", () => {
 });
 
 describe("links", () => {
-  test("any cross-reference counts, not only the ones under Related", () => {
-    expect(relatedConcepts("walked with [Wren](/memories/wren.md) in May")).toEqual(["memories/wren"]);
-  });
-
-  test("an off-bundle url is not a link between memories", () => {
-    expect(relatedConcepts("[the council](https://example.org/permits)")).toEqual([]);
-  });
-
   test("an edge is written for a Related block and for an inline mention alike", () => {
     const wren = idOf("wren-and-how-you-know-her");
     const inbound = db.select().from(s.links).where(eq(s.links.toId, wren)).all();

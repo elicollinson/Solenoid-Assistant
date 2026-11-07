@@ -258,7 +258,40 @@ export async function describeScreenshots(
     };
   }
 
-  // 2. Materialize: ensure every screenshot has a readable file on disk.
+  const { screenshots: results, failed } = await describePhotos(photos, {
+    prompt, schema, workDir, concurrency, vision, onProgress,
+  });
+
+  return {
+    windowStart: start.toISOString(),
+    windowEnd: now.toISOString(),
+    returned: results.length,
+    totalInWindow: records.length,
+    failed,
+    screenshots: results,
+  };
+}
+
+/**
+ * Materialize the given screenshots and describe each with the vision model.
+ *
+ * Split out of {@link describeScreenshots} so a caller can walk a window one
+ * screenshot at a time instead of describing the whole window up front.
+ */
+export async function describePhotos(
+  photos: PhotoRecord[],
+  options: Pick<DescribeScreenshotsParams, "prompt" | "schema" | "workDir" | "concurrency" | "vision" | "onProgress"> = {},
+): Promise<{ screenshots: DescribedScreenshot[]; failed: number }> {
+  const {
+    prompt = DEFAULT_VISION_PROMPT,
+    schema = ScreenshotDescriptionSchema,
+    workDir = path.join(process.cwd(), ".screenshots"),
+    concurrency = 1,
+    vision = {},
+    onProgress,
+  } = options;
+
+  // Materialize: ensure every screenshot has a readable file on disk.
   // Local files are used in place; iCloud-only assets are downloaded.
   await mkdir(workDir, { recursive: true });
   // This step shells out to `osxphotos export`, which downloads iCloud-only
@@ -273,7 +306,7 @@ export async function describeScreenshots(
     of: photos.length,
   });
 
-  // 3. Send each image to the vision model with concurrency control.
+  // Then send each image to the vision model with concurrency control.
   log.info("describeScreenshots: starting vision pass", {
     count: photos.length,
     concurrency,
@@ -353,14 +386,7 @@ export async function describeScreenshots(
     },
   );
 
-  return {
-    windowStart: start.toISOString(),
-    windowEnd: now.toISOString(),
-    returned: results.length,
-    totalInWindow: records.length,
-    failed,
-    screenshots: results,
-  };
+  return { screenshots: results, failed };
 }
 
 // ---------------------------------------------------------------------------
@@ -622,6 +648,47 @@ export async function classifyScreenshots(
     quarantined: batch.quarantined,
     screenshots: classified,
   };
+}
+
+/** A capture-time window, both ends inclusive. */
+export interface ScreenshotWindow {
+  start: Date;
+  end: Date;
+}
+
+/** Every collected screenshot captured in the window, oldest first. */
+export async function screenshotsInWindow({ start, end }: ScreenshotWindow): Promise<PhotoRecord[]> {
+  const records = await queryScreenshots({ fromDate: localIso(start), toDate: localIso(end) });
+  return [...records].sort((a, b) => a.date.localeCompare(b.date) || a.uuid.localeCompare(b.uuid));
+}
+
+/**
+ * Describe and classify one screenshot: the step a window is walked in.
+ *
+ * Goes through {@link classifyScreenshots} with the description supplied, as
+ * the source consumer does, so the prompt-injection boundary and the failure
+ * shapes are the batch path's own.
+ */
+export async function classifyPhoto(
+  classifierAgent: Agent,
+  photo: PhotoRecord,
+  options: Pick<DescribeScreenshotsParams, "workDir" | "vision"> = {},
+): Promise<ClassifiedScreenshot> {
+  const { screenshots: [described], failed } = await describePhotos([photo], {
+    ...options,
+    prompt: CLASSIFICATION_VISION_PROMPT,
+  });
+  const result = await classifyScreenshots(classifierAgent, {}, {
+    describe: async () => ({
+      windowStart: photo.date,
+      windowEnd: photo.date,
+      returned: 1,
+      totalInWindow: 1,
+      failed,
+      screenshots: [described!],
+    }),
+  });
+  return result.screenshots[0]!;
 }
 
 // ---------------------------------------------------------------------------

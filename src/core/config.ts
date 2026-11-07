@@ -31,6 +31,14 @@ const runtimeConfigSchema = z.object({
   OLLAMA_API_KEY: optionalEnvString,
   OPENAI_BASE_URL: optionalEnvString,
   OPENAI_API_KEY: optionalEnvString,
+  /**
+   * How long LM Studio keeps a model it loaded on demand once requests stop.
+   * Sent as `ttl` on every request; 0 sends none and the model stays loaded.
+   */
+  OPENAI_MODEL_TTL_SECONDS: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().int().min(0).max(86_400).default(900),
+  ),
   OPENROUTER_BASE_URL: optionalEnvString.default("https://openrouter.ai/api/v1"),
   OPENROUTER_API_KEY: optionalEnvString,
   OPENROUTER_MODEL: optionalEnvString.default("google/gemma-4-31b-it"),
@@ -80,7 +88,11 @@ const runtimeConfigSchema = z.object({
   ),
   TAVILY_API_KEY: optionalEnvString,
   GEMINI_API_KEY: optionalEnvString,
-  GEMINI_LIVE_MODEL: optionalEnvString.default("models/gemini-3.1-flash-live-preview"),
+  GEMINI_LIVE_MODEL: optionalEnvString.default("models/gemini-3.8-live-extended-thinking"),
+  GEMINI_LIVE_THINKING_LEVEL: z.preprocess(
+    (value) => value === "" ? undefined : value,
+    z.enum(["low", "medium", "high"]).default("high"),
+  ),
   GEMINI_VOICE: optionalEnvString.default("Sulafat"),
 });
 
@@ -101,6 +113,8 @@ export interface RuntimeConfig {
   openai: {
     baseUrl?: string;
     apiKey?: string;
+    /** Seconds; 0 means the server's own default (no unload). */
+    modelTtlSeconds: number;
   };
   openrouter: {
     baseUrl: string;
@@ -143,6 +157,7 @@ export interface RuntimeConfig {
   gemini: {
     apiKey?: string;
     liveModel: string;
+    thinkingLevel: "low" | "medium" | "high";
     voice: string;
   };
 }
@@ -243,6 +258,7 @@ export function loadRuntimeConfig(
     openai: {
       ...(parsed.OPENAI_BASE_URL ? { baseUrl: parsed.OPENAI_BASE_URL } : {}),
       ...(parsed.OPENAI_API_KEY ? { apiKey: parsed.OPENAI_API_KEY } : {}),
+      modelTtlSeconds: parsed.OPENAI_MODEL_TTL_SECONDS,
     },
     openrouter: {
       baseUrl: parsed.OPENROUTER_BASE_URL,
@@ -288,6 +304,7 @@ export function loadRuntimeConfig(
         ? { apiKey: parsed.GEMINI_API_KEY ?? process.env.GEMINI_API_KEY }
         : {}),
       liveModel: parsed.GEMINI_LIVE_MODEL,
+      thinkingLevel: parsed.GEMINI_LIVE_THINKING_LEVEL,
       voice: parsed.GEMINI_VOICE,
     },
   };

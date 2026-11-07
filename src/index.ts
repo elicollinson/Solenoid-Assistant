@@ -8,6 +8,7 @@ import { messageRoutes } from "./http/routes/messages";
 import { safetyRoutes } from "./http/routes/safety";
 import { screenshotRoutes } from "./http/routes/screenshots";
 import { createLogRoutes } from "./http/routes/logs";
+import { createInferenceRoutes } from "./http/routes/inference";
 import { createUiRoutes } from "./http/routes/ui";
 import { createWebRoutes, findWebBuild } from "./http/routes/web";
 import { requestContext } from "./http/requestContext";
@@ -46,6 +47,7 @@ export const app = new Elysia({
   .use(createUiRoutes(undefined, createKnowledgeRefresh()))
   .use(createChatRoutes())
   .use(createLogRoutes())
+  .use(createInferenceRoutes())
   // Last, and only if built: its wildcard would otherwise answer for routes
   // that belong to the API above it.
   .use(webBuild ? createWebRoutes(webBuild) : new Elysia({ name: "routes.web.absent" }));

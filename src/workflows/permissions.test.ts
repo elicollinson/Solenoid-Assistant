@@ -258,6 +258,7 @@ describe("what the catalog ships with", () => {
     expect(seeded.map((r) => `${r.slug}:${r.capability}=${r.mode}`).sort()).toEqual([
       "log-monitoring:github.write=allow",
       "message-extraction:okf.write=allow",
+      "okf-reflection:okf.write=allow",
       "screenshot-ingestion:collections.write=allow",
       "screenshot-ingestion:tavily.write=allow",
     ]);
@@ -272,10 +273,10 @@ describe("what the catalog ships with", () => {
     syncWorkflowCatalog(db);
 
     const okf = db.select().from(s.workflowPermissions).where(eq(s.workflowPermissions.capability, "okf.write")).all();
-    // Still exactly the one, still retired. A sync is not the moment to hand
+    // Both workflows retain their retired rule. A sync is not the moment to hand
     // back a permission somebody took away.
-    expect(okf.length).toBe(1);
-    expect(okf[0]?.retiredAt).not.toBeNull();
+    expect(okf.length).toBe(2);
+    expect(okf.every(rule => rule.retiredAt !== null)).toBe(true);
   });
 });
 

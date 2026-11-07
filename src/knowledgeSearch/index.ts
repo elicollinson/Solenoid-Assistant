@@ -26,11 +26,31 @@ export type SearchOptions = SearchInput & { group?: string; includeBody?: boolea
 export type IndexStatus = { enabled: boolean; configId: string; eligible: number; ready: number; pending: number;
   failed: number; unindexed: number; problems: number; reservedTokens: number; dailyTokens: number };
 
+/** A file's parse, kept until its bytes change. `document: null` is a parse problem. */
+type ParsedFile = { sourceHash: string; document: Document | null };
+
+function parseFile(root: string, id: string, raw: string, sourceHash: string): Document | null {
+  try {
+    const { frontmatter: fm, body } = parseDocument(raw);
+    if (!fm) return null;
+    const title = typeof fm.title === "string" ? fm.title : id;
+    const header = [title, String(fm.description ?? ""), tagsOf(fm).join(" "),
+      ...extractFields(body).map(f => `${f.label}: ${f.value}`)].join("\n");
+    return { scope: root, concept_id: id, source_hash: sourceHash, approved_config: null,
+      title, header, body, frontmatter: JSON.stringify(fm) };
+  } catch { return null; }
+}
+
 // Fail the entire scan on directory/read errors. A missing mount is not an empty
 // corpus. Symlinks are never followed. Parse errors retire only that search row.
-function scan(root: string): Scan {
+//
+// The worker scans every five seconds, and Bun.YAML.parse leaks about 1 KB of
+// native memory per call on Bun 1.3.6: with 235 memories that was 165 MB an hour
+// and an OOM kill every 40. So a file is parsed only when its bytes change, and
+// `parsed` is pruned to what the walk saw, which keeps it the size of the corpus.
+function scan(root: string, parsed: Map<string, ParsedFile>): Scan {
   if (!statSync(root).isDirectory()) throw new Error("Knowledge store unavailable");
-  const documents: Document[] = [], problems: string[] = [];
+  const documents: Document[] = [], problems: string[] = [], seen = new Set<string>();
   function walk(dir: string) {
     for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
       if (entry.name.startsWith(".")) continue;
@@ -39,19 +59,20 @@ function scan(root: string): Scan {
       if (entry.isDirectory()) { walk(rel); continue; }
       if (!entry.isFile() || !entry.name.endsWith(".md") || [INDEX_FILENAME, LOG_FILENAME].includes(entry.name)) continue;
       const raw = readFileSync(join(root, rel), "utf8");
-      const id = rel.slice(0, -3);
-      try {
-        const { frontmatter: fm, body } = parseDocument(raw);
-        if (!fm) { problems.push(id); continue; }
-        const title = typeof fm.title === "string" ? fm.title : id;
-        const header = [title, String(fm.description ?? ""), tagsOf(fm).join(" "),
-          ...extractFields(body).map(f => `${f.label}: ${f.value}`)].join("\n");
-        documents.push({ scope: root, concept_id: id, source_hash: hash(raw), approved_config: null,
-          title, header, body, frontmatter: JSON.stringify(fm) });
-      } catch { problems.push(id); }
+      const id = rel.slice(0, -3), sourceHash = hash(raw);
+      seen.add(id);
+      let file = parsed.get(id);
+      if (file?.sourceHash !== sourceHash) {
+        file = { sourceHash, document: parseFile(root, id, raw, sourceHash) };
+        parsed.set(id, file);
+      }
+      // A copy, because reconcile() writes approved_config onto what it gets.
+      if (file.document) documents.push({ ...file.document });
+      else problems.push(id);
     }
   }
   walk("");
+  for (const id of parsed.keys()) if (!seen.has(id)) parsed.delete(id);
   return { documents, problems };
 }
 
@@ -88,6 +109,7 @@ export class KnowledgeIndex {
   readonly root: string;
   readonly configId: string;
   private readonly provider: EmbeddingProvider;
+  private readonly parsed = new Map<string, ParsedFile>();
   constructor(private readonly dbFactory: () => Db, root: string, readonly config: EmbeddingConfig,
     provider?: EmbeddingProvider, private readonly now: () => number = Date.now) {
     this.root = canonicalBundleRoot(root);
@@ -118,7 +140,7 @@ export class KnowledgeIndex {
     if (this.writeInProgress()) return this.status();
     let problems = 0;
     this.sql.transaction(() => {
-      const scanned = scan(this.root); // throwing rolls back, including absence handling
+      const scanned = scan(this.root, this.parsed); // throwing rolls back, including absence handling
       problems = scanned.problems.length;
       const initialized = this.all("SELECT 1 FROM okf_search_scopes WHERE scope=?", this.root).length > 0;
       const previous = new Map(this.documents().map(d => [d.concept_id, d]));

@@ -1,0 +1,39 @@
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    permissions:
+      contents: read
+      security-events: write
+    uses: elicollinson/security-workflows/.github/workflows/scan.yml@d8a9379a5c350ae0883358fc4eb9ceee3a39cc19 # v1.1.0
+    with:
+      # Skill docs and tests: fixture credentials and AI-API mentions, not shipped code.
+      exclude-paths: ".agents/** **/*.test.ts **/*.test.tsx docs/**"
+
+  # Single required check for the ruleset: passes only if every scan job passed.
+  security:
+    if: ${{ always() }}
+    needs: scan
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - env:
+          RESULT: ${{ needs.scan.result }}
+        run: test "$RESULT" = success

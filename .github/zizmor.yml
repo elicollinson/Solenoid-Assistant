@@ -1,0 +1,6 @@
+rules:
+  dangerous-triggers:
+    ignore:
+      # issue_comment is how anthropics/claude-code-action is invoked; the job
+      # only runs on an @claude mention and the action checks the commenter's access.
+      - claude.yml

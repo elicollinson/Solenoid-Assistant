@@ -19,7 +19,8 @@ if /usr/bin/curl -fsS --max-time 10 "http://127.0.0.1:${PORT}/health" >/dev/null
   exit 0
 fi
 
-fails=$(( $(cat "$STATE" 2>/dev/null || echo 0) + 1 ))
+prev="$(cat "$STATE" 2>/dev/null || echo 0)"
+fails=$((prev + 1))
 echo "$fails" > "$STATE"
 echo "$(date -Iseconds) health check failed (${fails}/${LIMIT})"
 

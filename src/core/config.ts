@@ -87,7 +87,11 @@ const runtimeConfigSchema = z.object({
     z.coerce.number().int().min(100).max(60_000).default(5_000),
   ),
   TAVILY_API_KEY: optionalEnvString,
+  /** Tavily's MCP server; a credential proxy can stand in for it. */
+  TAVILY_MCP_URL: optionalEnvString.default("https://mcp.tavily.com/mcp"),
   GEMINI_API_KEY: optionalEnvString,
+  /** Gemini API base URL, for a credential proxy; unset uses Google's. */
+  GEMINI_BASE_URL: optionalEnvString,
   GEMINI_LIVE_MODEL: optionalEnvString.default("models/gemini-3.8-live-extended-thinking"),
   GEMINI_LIVE_THINKING_LEVEL: z.preprocess(
     (value) => value === "" ? undefined : value,
@@ -153,9 +157,11 @@ export interface RuntimeConfig {
   };
   tavily: {
     apiKey?: string;
+    mcpUrl: string;
   };
   gemini: {
     apiKey?: string;
+    baseUrl?: string;
     liveModel: string;
     thinkingLevel: "low" | "medium" | "high";
     voice: string;
@@ -298,11 +304,13 @@ export function loadRuntimeConfig(
     },
     tavily: {
       ...(parsed.TAVILY_API_KEY ? { apiKey: parsed.TAVILY_API_KEY } : {}),
+      mcpUrl: parsed.TAVILY_MCP_URL,
     },
     gemini: {
       ...(parsed.GEMINI_API_KEY || process.env.GEMINI_API_KEY
         ? { apiKey: parsed.GEMINI_API_KEY ?? process.env.GEMINI_API_KEY }
         : {}),
+      ...(parsed.GEMINI_BASE_URL ? { baseUrl: parsed.GEMINI_BASE_URL } : {}),
       liveModel: parsed.GEMINI_LIVE_MODEL,
       thinkingLevel: parsed.GEMINI_LIVE_THINKING_LEVEL,
       voice: parsed.GEMINI_VOICE,

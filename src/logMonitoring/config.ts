@@ -5,6 +5,7 @@ const schema = z.object({
   enabled: z.boolean(),
   repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
   token: z.string(),
+  apiUrl: z.string().url().regex(/^https?:\/\//).transform(url => url.replace(/\/+$/, "")),
   lookbackMinutes: integer(60, 10080),
   overlapMinutes: integer(5, 1440),
   lagSeconds: integer(60, 3600),
@@ -15,9 +16,11 @@ const schema = z.object({
 export type MonitorConfig = z.infer<typeof schema>;
 /** Shared repository/credential binding, independent of scheduled scan settings. */
 export function loadMonitorGitHubConfig(env = process.env) {
-  return schema.pick({ repository: true, token: true }).parse({
+  return schema.pick({ repository: true, token: true, apiUrl: true }).parse({
     repository: env.LOG_MONITOR_GITHUB_REPOSITORY || "elicollinson/Solenoid-Assistant",
     token: env.LOG_MONITOR_GITHUB_TOKEN || "",
+    // A credential proxy can stand in for the API host.
+    apiUrl: env.LOG_MONITOR_GITHUB_API_URL || "https://api.github.com",
   });
 }
 export function loadMonitorConfig(env = process.env): MonitorConfig {

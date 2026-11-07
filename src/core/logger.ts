@@ -185,7 +185,8 @@ const STANDARD = new Set([
 function writeConsole(current: LoggingState, record: LogRecord): void {
   const method = console_(record.level);
   if (current.json) {
-    console[method](JSON.stringify(record)); // nosemgrep: method is a fixed console level union
+    // Scanner false positive: method is a fixed console level union.
+    console[method](JSON.stringify(record)); // nosemgrep
     return;
   }
   const extras = Object.entries(record)
@@ -200,7 +201,8 @@ function writeConsole(current: LoggingState, record: LogRecord): void {
   // printing it tells you nothing — the terminal keeps the shape it had before
   // this file grew, and only a line that named itself gets a prefix.
   const from = record.component === "app" ? "" : `[${record.component}] `;
-  console[method](`${from}${record.message}${tail}`); // nosemgrep: method is a fixed console level union
+  // Scanner false positive: method is a fixed console level union.
+  console[method](`${from}${record.message}${tail}`); // nosemgrep
 }
 
 function make(component?: string, bound?: LogAttributes): Logger {

@@ -17,7 +17,8 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
 # ── the web bundle ──────────────────────────────────────────────────────────
-# nosemgrep: `deps` is a build stage, not an image tag
+# Scanner false positive: `deps` is a build stage, not an image tag.
+# nosemgrep
 FROM deps AS web
 WORKDIR /app
 COPY tsconfig.json ./

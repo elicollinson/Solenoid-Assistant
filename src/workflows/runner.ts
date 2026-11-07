@@ -669,7 +669,8 @@ function summarise(args: unknown): string | null {
  */
 function write(db: Db, runId: string, seq: number, level: (typeof s.LOG_LEVEL)[number], text: string, at: Date): void {
   db.insert(s.runLogs).values({ runId, at, seq, level, text }).run();
-  log[level](text, { run_id: runId, seq }); // nosemgrep: level is the LOG_LEVEL union
+  // Scanner false positive: level is the LOG_LEVEL union.
+  log[level](text, { run_id: runId, seq }); // nosemgrep
 }
 
 /**

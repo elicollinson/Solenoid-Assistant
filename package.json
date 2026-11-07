@@ -47,9 +47,9 @@
     "@vitejs/plugin-react": "^6.1.0",
     "babel-plugin-react-compiler": "^1.0.0",
     "drizzle-kit": "^0.31.10",
-    "happy-dom": "^20.14.5",
+    "happy-dom": "^21.0.4",
     "typescript": "6.0.3",
-    "vite": "^8.2.2"
+    "vite": "^8.3.6"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.111.0",
@@ -77,9 +77,12 @@
     "protobufjs"
   ],
   "overrides": {
+    "@hono/node-server": "2.1.6",
     "@opentelemetry/core": "2.12.0",
     "adm-zip": "0.6.0",
-    "fast-uri": "3.1.7",
+    "fast-uri": "3.1.9",
+    "hono": "4.13.17",
+    "ip-address": "10.7.6",
     "qs": "6.17.1",
     "sharp": "0.35.5",
     "source-map-js": "1.2.2",

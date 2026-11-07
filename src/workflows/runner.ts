@@ -669,7 +669,14 @@ function summarise(args: unknown): string | null {
  */
 function write(db: Db, runId: string, seq: number, level: (typeof s.LOG_LEVEL)[number], text: string, at: Date): void {
   db.insert(s.runLogs).values({ runId, at, seq, level, text }).run();
-  log[level](text, { run_id: runId, seq });
+  const attrs = { run_id: runId, seq };
+  switch (level) {
+    case "debug": return log.debug(text, attrs);
+    case "info": return log.info(text, attrs);
+    case "ok": return log.ok(text, attrs);
+    case "warn": return log.warn(text, attrs);
+    case "error": return log.error(text, attrs);
+  }
 }
 
 /**

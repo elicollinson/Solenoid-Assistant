@@ -5,11 +5,11 @@
 # Build context is the repo root:
 #   docker build -f deploy/Dockerfile -t solenoid-assistant:local .
 
-ARG BUN_VERSION=1.3.6
+# Base images are pinned by digest; Dependabot bumps them (see .github/dependabot.yml).
 ARG VERSION=dev
 
 # ── dependencies (dev included — vite and the React compiler live there) ─────
-FROM oven/bun:${BUN_VERSION}-slim AS deps
+FROM oven/bun:1.3.6-slim@sha256:9d20d1b535596c4a021ba2087d2d303c4098e96be15f47775729cf7a259bb41e AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 # Native postinstalls (protobufjs) run here, against Linux,
@@ -25,19 +25,22 @@ COPY src/shared ./src/shared
 RUN bun run build:web
 
 # ── runtime dependencies only ───────────────────────────────────────────────
-FROM oven/bun:${BUN_VERSION}-slim AS prod-deps
+FROM oven/bun:1.3.6-slim@sha256:9d20d1b535596c4a021ba2087d2d303c4098e96be15f47775729cf7a259bb41e AS prod-deps
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 
 # ── the image that ships ────────────────────────────────────────────────────
-FROM oven/bun:${BUN_VERSION}-slim AS runtime
+FROM oven/bun:1.3.6-slim@sha256:9d20d1b535596c4a021ba2087d2d303c4098e96be15f47775729cf7a259bb41e AS runtime
 ARG VERSION
 WORKDIR /app
 ENV NODE_ENV=production
 
+# The upgrade is deliberate: it picks up Debian security fixes newer than the
+# base image, which Trivy otherwise fails the release on.
 RUN apt-get update \
  && apt-get upgrade -y \
+ && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
 LABEL org.opencontainers.image.source="https://github.com/elicollinson/Solenoid-Assistant" \

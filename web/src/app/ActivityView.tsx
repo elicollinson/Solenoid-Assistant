@@ -67,7 +67,7 @@ export function ActivityView({
   onInvoke: (action: HomeAction) => void;
 }) {
   const [filter, setFilter] = useState<Filter>("All");
-  const matches = MATCHES[filter];
+  const matches = MATCHES[filter]; // nosemgrep: filter is the Filter union
 
   const visible = sections
     .map((section) => ({

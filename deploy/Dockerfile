@@ -9,7 +9,7 @@
 ARG VERSION=dev
 
 # ── dependencies (dev included — vite and the React compiler live there) ─────
-FROM oven/bun:1.3.6-slim@sha256:9d20d1b535596c4a021ba2087d2d303c4098e96be15f47775729cf7a259bb41e AS deps
+FROM oven/bun:1.4.4-slim@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 # Native postinstalls (protobufjs) run here, against Linux,
@@ -25,13 +25,13 @@ COPY src/shared ./src/shared
 RUN bun run build:web
 
 # ── runtime dependencies only ───────────────────────────────────────────────
-FROM oven/bun:1.3.6-slim@sha256:9d20d1b535596c4a021ba2087d2d303c4098e96be15f47775729cf7a259bb41e AS prod-deps
+FROM oven/bun:1.4.4-slim@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 AS prod-deps
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 
 # ── the image that ships ────────────────────────────────────────────────────
-FROM oven/bun:1.3.6-slim@sha256:9d20d1b535596c4a021ba2087d2d303c4098e96be15f47775729cf7a259bb41e AS runtime
+FROM oven/bun:1.4.4-slim@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 AS runtime
 ARG VERSION
 WORKDIR /app
 ENV NODE_ENV=production

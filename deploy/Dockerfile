@@ -17,8 +17,6 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
 # ── the web bundle ──────────────────────────────────────────────────────────
-# Scanner false positive: `deps` is a build stage, not an image tag.
-# nosemgrep
 FROM deps AS web
 WORKDIR /app
 COPY tsconfig.json ./
@@ -40,7 +38,6 @@ ENV NODE_ENV=production
 
 # The upgrade is deliberate: it picks up Debian security fixes newer than the
 # base image, which Trivy otherwise fails the release on.
-# nosemgrep
 RUN apt-get update \
  && apt-get upgrade -y \
  && apt-get clean \

@@ -47,8 +47,7 @@ export function Composer({
   useEffect(() => {
     const node = field.current;
     if (!node) return;
-    // Scanner false positive: the reset forces a reflow so scrollHeight can shrink.
-    node.style.height = "auto"; // nosemgrep
+    node.style.height = "auto";
     node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
   }, [text]);
 

@@ -5,11 +5,13 @@ import type { HomeAction, HomeFeedItem, HomePayload, HomeState } from "./api";
 const FILTERS = ["All", "Needs you", "Running"] as const;
 type Filter = (typeof FILTERS)[number];
 
-const MATCHES: Record<Filter, (state: HomeState) => boolean> = {
-  All: () => true,
-  "Needs you": (state) => state === "attention",
-  Running: (state) => state === "running",
-};
+function matchesFilter(filter: Filter, state: HomeState): boolean {
+  switch (filter) {
+    case "All": return true;
+    case "Needs you": return state === "attention";
+    case "Running": return state === "running";
+  }
+}
 
 const STANCE_TO_VARIANT: Record<HomeAction["stance"], "affirm" | "quiet" | "bare" | "danger"> = {
   affirm: "affirm",
@@ -67,13 +69,11 @@ export function ActivityView({
   onInvoke: (action: HomeAction) => void;
 }) {
   const [filter, setFilter] = useState<Filter>("All");
-  // Scanner false positive: filter is the Filter union.
-  const matches = MATCHES[filter]; // nosemgrep
 
   const visible = sections
     .map((section) => ({
       label: section.label,
-      items: section.items.filter((item) => matches(effectiveState(item, resolved))),
+      items: section.items.filter((item) => matchesFilter(filter, effectiveState(item, resolved))),
     }))
     .filter((section) => section.items.length > 0);
 

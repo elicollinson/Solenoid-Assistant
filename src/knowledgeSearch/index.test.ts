@@ -1,5 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, renameSync } from "node:fs";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, unlinkSync, writeFileSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initDb, type Db } from "../db";
@@ -216,4 +216,35 @@ test("neighbor seam is local, excludes self and requires current source revision
   expect(neighbors.candidates.map(c => c.id)).toEqual(["Films"]);
   expect(calls.length).toBe(before);
   expect(index.neighbors("Dad", "old").status).toBe("unavailable");
+});
+
+test("reconcile parses a file only when its bytes change, and still reports every outcome", () => {
+  const index = setup(); index.reconcile();
+  write("Dad", "Enjoys movies."); write("Mum", "Enjoys tennis.");
+  writeFileSync(join(root, "Broken.md"), "---\ntitle: [unclosed\n---\nBody");
+  const parse = spyOn(Bun.YAML, "parse");
+  try {
+    const first = index.reconcile();
+    expect(parse).toHaveBeenCalledTimes(3);
+    expect(first).toMatchObject({ problems: 1, eligible: 2, pending: 2 });
+
+    parse.mockClear();
+    expect(index.reconcile()).toEqual(first);
+    expect(parse).not.toHaveBeenCalled();
+
+    write("Dad", "Enjoys cinema.");
+    index.reconcile();
+    expect(parse).toHaveBeenCalledTimes(1);
+    expect(db.$client.query("SELECT body FROM okf_search_documents WHERE concept_id='Dad'").get())
+      .toEqual({ body: "Enjoys cinema.\n" });
+
+    // A deleted file leaves the cache as well: the same bytes back are parsed anew.
+    parse.mockClear();
+    unlinkSync(join(root, "Mum.md"));
+    expect(index.reconcile()).toMatchObject({ eligible: 1 });
+    expect(parse).not.toHaveBeenCalled();
+    write("Mum", "Enjoys tennis.");
+    expect(index.reconcile()).toMatchObject({ eligible: 2 });
+    expect(parse).toHaveBeenCalledTimes(1);
+  } finally { parse.mockRestore(); }
 });

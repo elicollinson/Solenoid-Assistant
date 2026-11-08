@@ -10,7 +10,7 @@ function view(issue: Issue, bodyOffset = 0, bodyLimit = 8000) {
     note: "Current GitHub issue response; original external text. Follow nextBodyOffset to read the rest of the body." };
 }
 export function githubGroup() {
-  const client = () => { const config = loadMonitorGitHubConfig(); return { repository: config.repository, github: new GitHubClient(config.repository, config.token) }; };
+  const client = () => { const config = loadMonitorGitHubConfig(); return { repository: config.repository, github: new GitHubClient(config.repository, config.token, fetch, config.apiUrl) }; };
   const signalFor = (signal?: AbortSignal) => signal ?? new AbortController().signal;
   return defineToolGroup({
     name: "github", summary: "List, search, read and create GitHub issues in the monitoring workflow's configured repository.",

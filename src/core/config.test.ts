@@ -160,3 +160,13 @@ describe("loadRuntimeConfig", () => {
 
 
 });
+
+describe("credential proxy base URLs", () => {
+  test("Tavily and Gemini keep their defaults unless overridden", () => {
+    expect(loadRuntimeConfig({}).tavily.mcpUrl).toBe("https://mcp.tavily.com/mcp");
+    expect(loadRuntimeConfig({}).gemini.baseUrl).toBeUndefined();
+    const config = loadRuntimeConfig({ TAVILY_MCP_URL: "http://proxy.test:8787/tavily", GEMINI_BASE_URL: "http://proxy.test:8787/gemini" });
+    expect(config.tavily.mcpUrl).toBe("http://proxy.test:8787/tavily");
+    expect(config.gemini.baseUrl).toBe("http://proxy.test:8787/gemini");
+  });
+});

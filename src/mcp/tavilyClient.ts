@@ -3,7 +3,8 @@
 // API key in the URL query string — no OAuth flow needed.
 //
 // The server endpoint is:
-//   https://mcp.tavily.com/mcp/?tavilyApiKey=<API_KEY>
+//   https://mcp.tavily.com/mcp?tavilyApiKey=<API_KEY>
+// TAVILY_MCP_URL replaces the base, e.g. with a credential proxy.
 //
 // Tools exposed (prefixed `tavily_`):
 //   tavily_search   — web search with AI-optimized results
@@ -33,13 +34,15 @@ export const TAVILY_MCP_SERVER_BASE = "https://mcp.tavily.com/mcp";
  * The key comes from TAVILY_API_KEY in .env (Bun auto-loads it).
  */
 export function buildTavilyMcpUrl(apiKey?: string): string {
-  const key = apiKey ?? loadRuntimeConfig().tavily.apiKey;
+  const config = loadRuntimeConfig().tavily;
+  const key = apiKey ?? config.apiKey;
   if (!key) {
     throw new Error(
       "TAVILY_API_KEY is not set. Add it to .env (get one at https://app.tavily.com).",
     );
   }
-  return `${TAVILY_MCP_SERVER_BASE}/?tavilyApiKey=${key}`;
+  const base = (config.mcpUrl || TAVILY_MCP_SERVER_BASE).replace(/\/+$/, "");
+  return `${base}?tavilyApiKey=${encodeURIComponent(key)}`;
 }
 
 // ---------------------------------------------------------------------------

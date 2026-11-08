@@ -32,7 +32,7 @@ export async function scanLogs(args: { dryRun?: boolean }, options: {
     if (window.toTime <= window.fromTime) throw new Error("Invalid log scan window; check system clock");
     const collection = await collect(window.fromTime, window.toTime, { signal, ...config, query: options.query });
     const session = createMonitorTools({ collection, state, owner, dryRun, signal, query: options.query,
-      github: options.github ?? new GitHubClient(config.repository, config.token) });
+      github: options.github ?? new GitHubClient(config.repository, config.token, fetch, config.apiUrl) });
     const gate = currentConsent();
     let permissionBlocked = false;
     const reviewed = await withConsent(async request => {

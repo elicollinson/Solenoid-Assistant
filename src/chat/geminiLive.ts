@@ -354,7 +354,8 @@ export class GeminiLiveSession {
       throw new Error("GEMINI_API_KEY is not set in environment or config");
     }
 
-    const ai = new GoogleGenAI({ apiKey });
+    const baseUrl = this.config.gemini.baseUrl;
+    const ai = new GoogleGenAI({ apiKey, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
     const model = this.config.gemini.liveModel || "models/gemini-3.8-live-extended-thinking";
 
     const datedPrompt = `${chatSystemPrompt()}\n\n${today()}`;

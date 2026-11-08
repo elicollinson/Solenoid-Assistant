@@ -7,14 +7,15 @@ export interface GitHubIssues {
 }
 export const marker = (scope: string, id: string) => `<!-- solenoid-log:${scope}:${id} -->`;
 export class GitHubClient implements GitHubIssues {
-  constructor(private repository: string, private token: string, private fetchFn: typeof fetch = fetch) {
+  constructor(private repository: string, private token: string, private fetchFn: typeof fetch = fetch,
+    private apiUrl = "https://api.github.com") {
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error("Invalid configured GitHub repository");
   }
   private async request(path: string, signal: AbortSignal, body?: { title: string; body: string }) {
     signal.throwIfAborted();
     if (!this.token) throw new Error("LOG_MONITOR_GITHUB_TOKEN is required");
-    // Fixed API host and operator-configured repo; logs/model cannot redirect credentials.
-    const response = await this.fetchFn(`https://api.github.com/repos/${this.repository}/${path}`, {
+    // Operator-configured API host and repo; logs/model cannot redirect credentials.
+    const response = await this.fetchFn(`${this.apiUrl}/repos/${this.repository}/${path}`, {
       method: body ? "POST" : "GET", redirect: "error",
       headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${this.token}`, "X-GitHub-Api-Version": "2022-11-28", ...(body ? { "Content-Type": "application/json" } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),

@@ -226,3 +226,19 @@ test("normal Agent consent denial prevents writes and scan completion", async ()
   expect(fake.count()).toBe(0);
   expect(new MonitorState(db, scope).acquire(now + 1000).completedTo).toBeNull();
 });
+
+test("GitHub client sends requests to the configured API host", async () => {
+  const urls: string[] = [];
+  const github = new GitHubClient("test/repo", "token", (async (url: string) => {
+    urls.push(url);
+    return Response.json({ number: 1, html_url: "https://github.com/test/repo/issues/1", state: "open" });
+  }) as typeof fetch, "http://proxy.test:8787/github");
+  await github.create("t", "b", new AbortController().signal);
+  expect(urls).toEqual(["http://proxy.test:8787/github/repos/test/repo/issues"]);
+});
+
+test("GitHub API URL defaults to api.github.com and must be http(s)", () => {
+  expect(loadMonitorConfig({}).apiUrl).toBe("https://api.github.com");
+  expect(loadMonitorConfig({ LOG_MONITOR_GITHUB_API_URL: "http://proxy.test:8787/github/" }).apiUrl).toBe("http://proxy.test:8787/github");
+  expect(() => loadMonitorConfig({ LOG_MONITOR_GITHUB_API_URL: "file:///etc/passwd" })).toThrow();
+});

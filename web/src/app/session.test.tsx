@@ -225,12 +225,14 @@ for (const width of [1240, 390]) {
     await click("Activity");
     expect(indicator()).toBeNull();
 
-    // A fresh app mount models reload: no route or conversation is restored.
+    // A fresh app mount models reload: the conversation is never restored. The
+    // desktop brings its route back from the URL; the phone starts on Chat.
     await act(async () => root.unmount());
     root = createRoot(container);
     transcript = "";
     await mount(width);
     expect(created).toBe(2);
+    if (width > 699) await click("Chat");
     expect(container.querySelector("h1")?.textContent).toBe("New conversation");
   });
 }

@@ -22,7 +22,7 @@ The same origin presents two different shells at the `699px` breakpoint.
 | Calendar | Week/day time grid and detail aside | Seven-day strip, agenda, and detail sheet | Read-only apart from navigation or session-local decision effects |
 | Things I know | Group filters, client-side search, memory detail | Group filters and memory detail sheet | Read-only; all memory write/conflict controls are disabled |
 | Recommendations | List, filters, detail, evidence, adopt/decline | Same list, filters, sheet and evidence, reached from the Memory tab's segment row | Adopt/decline is written to the API, with optimistic UI rollback on refusal |
-| Theme | Paper/Dusk button | Follows the device color-scheme preference | Session-local |
+| Theme | Paper/Dusk button, defaulting to the device preference | Follows the device color-scheme preference | Desktop choice is remembered in localStorage |
 | PWA | Installable production build | Installable portrait home-screen app with safe-area layout | Only the app shell is cached; `/api` is always live-network-only |
 
 There is no login screen, cookie/session check, or API authorization in this

@@ -23,7 +23,7 @@
 // rearranged for readability: foreign keys are not deferrable in SQLite, so the
 // `entities` row exists before the row that reuses its id, and the decision
 // exists before the actions that name it.
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
 import type { ApprovalOutcome } from "../../shared/chat";
 import { ulid, type Db } from "../index";
 import * as s from "../schema";
@@ -89,6 +89,38 @@ export function startConversation(db: Db, now = new Date()): string {
       .run();
     return id;
   });
+}
+
+/**
+ * A blank conversation to type into: an untouched one if there is one, else a
+ * new one.
+ *
+ * What the UI's "start" asks for. It asks on every page load and on New, and
+ * starting fresh each time left a "Nothing said yet" row behind per refresh.
+ * Reusing the untouched one moves it to the top, as a new one would sit.
+ * ponytail: two tabs opened at once share the blank one; fine for one user.
+ */
+export function blankConversation(db: Db, now = new Date()): string {
+  const untouched = db
+    .select({ id: s.conversations.id })
+    .from(s.conversations)
+    .where(
+      and(
+        yoursOnly(db),
+        eq(s.conversations.messageCount, 0),
+        eq(s.conversations.voiceInvoked, false),
+        isNull(s.conversations.archivedAt),
+      ),
+    )
+    .orderBy(desc(s.conversations.lastMessageAt))
+    .limit(1)
+    .get();
+  if (!untouched) return startConversation(db, now);
+  db.update(s.conversations)
+    .set({ startedAt: now, lastMessageAt: now })
+    .where(eq(s.conversations.id, untouched.id))
+    .run();
+  return untouched.id;
 }
 
 /**

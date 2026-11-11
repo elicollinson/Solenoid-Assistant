@@ -30,3 +30,9 @@ button { font: inherit; }
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Controls drawn with `all: unset` lose the browser's focus ring along with its
+   styling, which left keyboard users with no idea where they were. Inline
+   styles win over this sheet, hence !important; :focus-visible keeps it off
+   mouse clicks. */
+:focus-visible { outline: 2px solid var(--accent) !important; outline-offset: 2px; }

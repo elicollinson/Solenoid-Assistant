@@ -101,10 +101,75 @@ export function AgentHome() {
   );
 }
 
+const VIEWS = ["Chat", "Activity", "Calendar", "Reminders", "Things I know", "Recommendations", "Collections", "Workflows"];
+
+/** `#/Workflows/weekly-digest/Runs` ⇄ a Route. `ask` is a one-shot and stays out. */
+export function routeFromHash(hash: string): Route {
+  const [view, slug, tab] = hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
+  if (!view || !VIEWS.includes(view)) return { view: "Chat" };
+  return { view, slug: slug || undefined, tab: slug && tab ? tab : undefined };
+}
+
+export function hashFromRoute(route: Route): string {
+  return "#/" + [route.view, route.slug, route.slug && route.tab].filter(Boolean).map((part) => encodeURIComponent(part as string)).join("/");
+}
+
+/**
+ * Where you are, kept in the URL: a reload lands back on the same screen, and
+ * the browser's Back steps out of a detail instead of out of the app.
+ */
+function useHashRoute(): [Route, (route: Route) => void] {
+  const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash));
+  useEffect(() => {
+    const onPop = () => setRoute(routeFromHash(window.location.hash));
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  const go = (next: Route) => {
+    const hash = hashFromRoute(next);
+    if (hash !== window.location.hash) window.history.pushState(null, "", hash);
+    setRoute(next);
+  };
+  return [route, go];
+}
+
+const THEME_KEY = "solenoid.theme";
+
+function initialTheme(): "paper" | "dusk" {
+  try {
+    const saved = window.localStorage.getItem(THEME_KEY);
+    if (saved === "paper" || saved === "dusk") return saved;
+  } catch {
+    // Storage blocked: fall through to the OS preference.
+  }
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dusk" : "paper";
+}
+
 function DesktopHome() {
   const { chat, voice } = useChatSession();
-  const [theme, setTheme] = useState<"paper" | "dusk">("paper");
-  const [route, setRoute] = useState<Route>({ view: "Chat" });
+  const [theme, setTheme] = useState<"paper" | "dusk">(initialTheme);
+  const [route, setRoute] = useHashRoute();
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      // Not remembered across reloads; nothing else depends on it.
+    }
+  }, [theme]);
+
+  // Escape closes whatever detail is open, as its back link would — unless
+  // you are typing, where Escape belongs to the field.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || !route.slug) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      setRoute({ view: route.view });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
   // Nothing writes to the database yet, so an action that resolves a decision
   // resolves it here: the entry turns done, the aside clears, and the header
   // recounts — the click-through the design specifies, with no side effect.

@@ -32,7 +32,7 @@ import { loadChat, loadConversations } from "../../db/queries/chat";
 import {
   NoSuchDecisionError,
   latestConversation,
-  startConversation,
+  blankConversation,
 } from "../../db/mutations/chat";
 import { NotWaitingError, answerApproval, runChatTurn } from "../../chat/session";
 import type { ChatEvent } from "../../chat/turn";
@@ -103,7 +103,7 @@ export function createChatRoutes(
       "/api/chat",
       ({ set }) => {
         set.status = 201;
-        return { conversationId: startConversation(resolveDb()) };
+        return { conversationId: blankConversation(resolveDb()) };
       },
       {
         detail: { summary: "Start a conversation. It names itself from the first thing you say." },

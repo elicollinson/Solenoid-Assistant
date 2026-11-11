@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDb, runMigrations, type Db } from "../../db";
-import { markConversationVoiceInvoked, startConversation } from "../../db/mutations/chat";
+import { appendUserMessage, markConversationVoiceInvoked, startConversation } from "../../db/mutations/chat";
 import type { ChatAgent } from "../../agents/chat";
 import { createChatRoutes } from "./chat";
 
@@ -44,5 +44,23 @@ describe("the chat header's model", () => {
     const id = startConversation(db);
     markConversationVoiceInvoked(db, id, "models/gemini-live");
     expect(await modelOf(id, "google/gemma-4-26b-a4b-qat")).toBe("models/gemini-live");
+  });
+});
+
+describe("starting a conversation", () => {
+  const start = async () => {
+    const routes = createChatRoutes(() => db, noAgent, () => null);
+    const response = await routes.handle(new Request("http://localhost/api/chat", { method: "POST" }));
+    return ((await response.json()) as { conversationId: string }).conversationId;
+  };
+
+  test("reuses the untouched one rather than leaving a blank row per page load", async () => {
+    const first = await start();
+    expect(await start()).toBe(first);
+    appendUserMessage(db, first, "hello");
+    const second = await start();
+    expect(second).not.toBe(first);
+    markConversationVoiceInvoked(db, second, "models/gemini-live");
+    expect(await start()).not.toBe(second);
   });
 });

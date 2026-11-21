@@ -18,5 +18,5 @@
 # bumps (see .github/dependabot.yml); merge them deliberately.
 FROM busybox:1.37-uclibc@sha256:7aa3d3c53cc1ed823c6a5967ebaac87700a5b0766af45ff599dbca3506c8b072 AS probe
 
-FROM victoriametrics/victoria-logs:v1.52.0@sha256:47b820890d64c4575a2a0a46415dcd8a4fd59a0f1fcd6a377693d7aea639442e
+FROM victoriametrics/victoria-logs:v1.54.0@sha256:ee4e820cac3721f5f5d91641b950c22439593adc4224f9655e5333d5a84c1dfe
 COPY --from=probe /bin/busybox /bin/busybox

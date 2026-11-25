@@ -21,6 +21,7 @@ import { today } from "../agents/chat";
 import { appendAgentMessage, appendUserMessage, markConversationVoiceInvoked } from "../db/mutations/chat";
 import { displayArg, displayDuration, displayName, summarize } from "./turn";
 import { log } from "../core/logger";
+import type { SessionCoordinator } from "./coordinator";
 
 export interface WavConversionOptions {
   numChannels: number;
@@ -116,6 +117,7 @@ export interface GeminiLiveSessionOptions {
   db: Db;
   conversationId: string;
   config?: RuntimeConfig;
+  coordinator?: SessionCoordinator;
   onEvent: (event: GeminiLiveEvent) => void;
 }
 

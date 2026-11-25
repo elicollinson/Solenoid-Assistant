@@ -52,10 +52,13 @@
     "vite": "^8.3.6"
   },
   "dependencies": {
+    "@ag-ui/core": "1.0.3",
     "@anthropic-ai/sdk": "^0.111.0",
     "@arizeai/openinference-core": "^2.4.0",
     "@arizeai/openinference-semantic-conventions": "^2.5.0",
     "@arizeai/phoenix-otel": "^1.2.0",
+    "@elicollinson/solenoid-engine": "file:../solenoid-engine",
+    "@elicollinson/solenoid-security": "file:../solenoid-security",
     "@elysiajs/openapi": "^1.4.15",
     "@google/genai": "^2.21.0",
     "@modelcontextprotocol/sdk": "^1.31.0",

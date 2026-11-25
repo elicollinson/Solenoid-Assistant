@@ -19,6 +19,7 @@ import type {
   ChatPayload,
   ChatToolCall,
   ChatTurnRow,
+  SubagentStatusItem,
 } from "../../../src/shared/chat";
 import type { Surface } from "../../../src/shared/surface";
 
@@ -31,18 +32,42 @@ export type * from "../../../src/shared/chat";
  * not thinking about what you type next, it is waiting on the button above it.
  */
 export interface LiveTurn {
+  /** Optional server-assigned turn id for persistent SSE correlation. */
+  turnId?: string;
+  /** Whether this turn started from typed user text or an async subagent auto-turn. */
+  source?: "text" | "subagent";
   /** What you just said, drawn immediately rather than after the round trip. */
   asked: string;
   /** The agent's sentences so far — the ones before each act. */
   said: string[];
+  /** Live streaming prose accumulated from `delta` frames before `message` commits. */
+  streamingText?: string;
+  /** Live streaming reasoning accumulated from `reasoning_delta` frames. */
+  streamingReasoning?: string;
   calls: ChatToolCall[];
   opened: string[];
   pending: Extract<ChatEvent, { type: "approval" }> | null;
+  /** Non-blocking deferred approvals opened by background subagents (composer stays unlocked!). */
+  deferredApprovals?: Array<Extract<ChatEvent, { type: "deferred_approval" }>>;
+  /** Live background subagents attached to this conversation. */
+  activeSubagents?: SubagentStatusItem[];
   /** Set once, at the end. The turn is over when this is non-null. */
   error: string | null;
 }
 
-const EMPTY: LiveTurn = { asked: "", said: [], calls: [], opened: [], pending: null, error: null };
+export const EMPTY_LIVE_TURN: LiveTurn = {
+  asked: "",
+  said: [],
+  streamingText: "",
+  streamingReasoning: "",
+  calls: [],
+  opened: [],
+  pending: null,
+  deferredApprovals: [],
+  activeSubagents: [],
+  error: null,
+};
+const EMPTY: LiveTurn = EMPTY_LIVE_TURN;
 
 /**
  * How the header names the model answering typed chat: the id without its
@@ -421,7 +446,7 @@ export function spoken(live: LiveTurn): string {
  * flight, taking it off the screen with nothing logged. An event this build
  * does not know is one to ignore.
  */
-function apply(turn: LiveTurn, event: ChatEvent): LiveTurn {
+export function apply(turn: LiveTurn, event: ChatEvent): LiveTurn {
   switch (event.type) {
     case "opened":
       return { ...turn, opened: [...turn.opened, event.group] };

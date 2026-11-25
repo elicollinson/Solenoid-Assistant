@@ -35,6 +35,7 @@ import {
   startConversation,
 } from "../../db/mutations/chat";
 import { NotWaitingError, answerApproval, runChatTurn } from "../../chat/session";
+import type { SessionCoordinator } from "../../chat/coordinator";
 import type { ChatEvent } from "../../chat/turn";
 import { GeminiLiveSession } from "../../chat/geminiLive";
 
@@ -82,6 +83,7 @@ export function createChatRoutes(
   resolveDb: () => Db = getDb,
   resolveAgent?: () => ChatAgent,
   resolveModel: () => string | null = configuredChatModel,
+  _resolveCoordinator?: () => SessionCoordinator,
 ) {
   const agentFor = resolveAgent ?? lazyAgent(resolveDb);
   const asked = (query: { surface?: string }): Surface =>

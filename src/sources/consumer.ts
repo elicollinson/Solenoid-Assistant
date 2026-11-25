@@ -1,3 +1,7 @@
+import {
+  ProviderStalledError,
+  isTransientProviderError,
+} from "@elicollinson/solenoid-engine";
 import { privateSourceContext } from "../core/privateSourceContext";
 import { readFile } from "node:fs/promises";
 import { getDb, type Db } from "../db";
@@ -31,6 +35,9 @@ const UNAVAILABLE_RETRY_MS = 5 * 60_000;
  */
 export function modelUnavailable(error: unknown): boolean {
   for (let e: unknown = error, depth = 0; e && depth < 5; depth++) {
+    if (e instanceof ProviderStalledError || isTransientProviderError(e)) {
+      return true;
+    }
     const message = e instanceof Error ? e.message : String(e);
     if (
       /No models loaded|ECONNREFUSED|ECONNRESET|fetch failed|socket hang up|^(429|5\d\d)\b/i.test(message)

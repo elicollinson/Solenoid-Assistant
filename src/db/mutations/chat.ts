@@ -276,7 +276,7 @@ export interface OpenedApproval {
  * never collide in conversation. Counted within the day rather than globally,
  * which is what makes the second half a small number instead of a serial.
  */
-function nextRef(tx: Tx, now: Date): string {
+export function nextApprovalRef(tx: Tx, now: Date): string {
   const day = new Intl.DateTimeFormat("en-CA", {
     timeZone: s.APP_TZ,
     month: "2-digit",
@@ -292,6 +292,10 @@ function nextRef(tx: Tx, now: Date): string {
     new Intl.DateTimeFormat("en-CA", { timeZone: s.APP_TZ, month: "2-digit", day: "2-digit" })
       .format(row.openedAt).replace("-", "")).length;
   return `ap/${day}-${sameDay + 1}`;
+}
+
+function nextRef(tx: Tx, now: Date): string {
+  return nextApprovalRef(tx, now);
 }
 
 export function openApproval(db: Db, draft: ApprovalDraft, now = new Date()): OpenedApproval {

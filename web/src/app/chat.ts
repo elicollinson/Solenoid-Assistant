@@ -19,6 +19,7 @@ import type {
   ChatPayload,
   ChatToolCall,
   ChatTurnRow,
+  LiveTurnSnapshot,
   SubagentStatusItem,
 } from "../../../src/shared/chat";
 import type { Surface } from "../../../src/shared/surface";
@@ -436,6 +437,40 @@ export function spoken(live: LiveTurn): string {
   return said.join("\n\n");
 }
 
+function emptyLiveTurn(): LiveTurn {
+  return {
+    ...EMPTY,
+    said: [],
+    calls: [],
+    opened: [],
+    deferredApprovals: [],
+    activeSubagents: [],
+  };
+}
+
+function fromSnapshot(snap: LiveTurnSnapshot): LiveTurn {
+  return {
+    turnId: snap.turnId,
+    asked: snap.asked,
+    source: snap.source,
+    said: [...snap.said],
+    streamingText: snap.streamingText,
+    streamingReasoning: snap.streamingReasoning,
+    calls: snap.calls.map((c) => ({ ...c })),
+    opened: [...snap.opened],
+    pending: snap.pending,
+    deferredApprovals: [...snap.deferredApprovals],
+    activeSubagents: snap.activeSubagents.map((s) => ({ ...s })),
+    error: snap.error,
+  };
+}
+
+function failRunningCalls(calls: readonly ChatToolCall[]): ChatToolCall[] {
+  return calls.map((c) =>
+    c.status === "running" ? { ...c, ok: false, status: "failed" as const } : c,
+  );
+}
+
 /**
  * One event, folded into the turn on screen.
  *
@@ -448,10 +483,73 @@ export function spoken(live: LiveTurn): string {
  */
 export function apply(turn: LiveTurn, event: ChatEvent): LiveTurn {
   switch (event.type) {
+    case "turn_start":
+      return {
+        ...emptyLiveTurn(),
+        turnId: event.turnId,
+        asked: event.asked,
+        source: event.source,
+        deferredApprovals: [...(turn.deferredApprovals ?? [])],
+        activeSubagents: (turn.activeSubagents ?? []).map((s) => ({ ...s })),
+      };
+    case "snapshot":
+      return event.live ? fromSnapshot(event.live) : emptyLiveTurn();
+    case "delta":
+      return {
+        ...turn,
+        streamingText: (turn.streamingText ?? "") + event.text,
+      };
+    case "reasoning_delta":
+      return {
+        ...turn,
+        streamingReasoning: (turn.streamingReasoning ?? "") + event.text,
+      };
     case "opened":
-      return { ...turn, opened: [...turn.opened, event.group] };
+      return turn.opened.includes(event.group)
+        ? turn
+        : { ...turn, opened: [...turn.opened, event.group] };
     case "say":
-      return { ...turn, said: [...turn.said, event.body] };
+      return {
+        ...turn,
+        said: [...turn.said, event.body],
+        streamingText: "",
+      };
+    case "tool_start": {
+      const nextCall: ChatToolCall = {
+        id: event.id,
+        name: event.name,
+        arg: event.arg,
+        duration: "",
+        kind: event.kind,
+        ok: true,
+        status: "running",
+      };
+      const existingIdx = turn.calls.findIndex((c) => c.id === event.id);
+      if (existingIdx !== -1) {
+        const calls = [...turn.calls];
+        calls[existingIdx] = nextCall;
+        return { ...turn, calls };
+      }
+      return { ...turn, calls: [...turn.calls, nextCall] };
+    }
+    case "tool_end": {
+      const updatedCall: ChatToolCall = {
+        id: event.id,
+        name: event.name,
+        arg: event.arg,
+        duration: event.duration,
+        kind: event.kind,
+        ok: event.ok,
+        status: event.ok ? "completed" : "failed",
+      };
+      const existingIdx = turn.calls.findIndex((c) => c.id === event.id);
+      if (existingIdx !== -1) {
+        const calls = [...turn.calls];
+        calls[existingIdx] = updatedCall;
+        return { ...turn, calls };
+      }
+      return { ...turn, calls: [...turn.calls, updatedCall] };
+    }
     case "tool":
       return {
         ...turn,
@@ -461,16 +559,52 @@ export function apply(turn: LiveTurn, event: ChatEvent): LiveTurn {
           duration: event.duration,
           kind: event.kind,
           ok: event.ok,
+          status: event.ok ? "completed" : "failed",
         }],
       };
+    case "reset":
+      return fromSnapshot(event.live);
     case "approval":
       return { ...turn, pending: event };
-    case "settled":
-      return { ...turn, pending: null };
-    case "error":
-      return { ...turn, error: event.message };
+    case "deferred_approval": {
+      const existing = turn.deferredApprovals ?? [];
+      if (existing.some((d) => d.decisionId === event.decisionId)) return turn;
+      return { ...turn, deferredApprovals: [...existing, event] };
+    }
+    case "settled": {
+      const pending =
+        turn.pending && turn.pending.decisionId === event.decisionId ? null : turn.pending;
+      const prevDeferred = turn.deferredApprovals ?? [];
+      const nextDeferred = prevDeferred.filter((d) => d.decisionId !== event.decisionId);
+      if (pending === turn.pending && nextDeferred.length === prevDeferred.length) {
+        return turn;
+      }
+      return {
+        ...turn,
+        pending,
+        deferredApprovals: nextDeferred,
+      };
+    }
+    case "subagent_status":
+      return {
+        ...turn,
+        activeSubagents: event.subagents.map((s) => ({ ...s })),
+      };
     case "message":
       return turn;
+    case "cancelled":
+      return {
+        ...turn,
+        pending: null,
+        calls: failRunningCalls(turn.calls),
+      };
+    case "error":
+      return {
+        ...turn,
+        pending: null,
+        calls: failRunningCalls(turn.calls),
+        error: event.message,
+      };
     default:
       return turn;
   }

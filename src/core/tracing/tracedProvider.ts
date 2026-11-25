@@ -1,8 +1,4 @@
-// LLM span logic for chat providers. `tracedChat` is the shared
-// implementation used by BaseChatProvider (providers.ts), keeping all
-// OTel/OpenInference specifics inside the tracing module. TracedChatProvider
-// is a safety-net decorator for custom ChatProvider implementations that
-// don't extend BaseChatProvider.
+// LLM span logic for chat providers.
 import type { ChatMessage, ChatOptions, ChatProvider } from "../providers";
 import {
   SemanticConventions,
@@ -30,9 +26,6 @@ export function tracedChat(
     },
     async (span) => {
       const msg = await inner();
-      // outputMessageAttributes records `msg.thinking` as message.reasoning, so
-      // a turn that spends all its completion tokens on reasoning is readable
-      // from the trace instead of appearing as unexplained empty output.
       span.setAttributes({
         ...outputMessageAttributes(msg),
         [SemanticConventions.OUTPUT_VALUE]: msg.content,
@@ -55,11 +48,9 @@ export function tracedChat(
 export class TracedChatProvider implements ChatProvider {
   readonly traced = true;
   readonly providerName: string;
-  readonly structuredOutputStrategy;
 
   constructor(private readonly inner: ChatProvider) {
     this.providerName = inner.providerName ?? inner.constructor.name;
-    this.structuredOutputStrategy = inner.structuredOutputStrategy;
   }
 
   chat(messages: ChatMessage[], opts: ChatOptions): Promise<ChatMessage> {
@@ -67,9 +58,6 @@ export class TracedChatProvider implements ChatProvider {
   }
 }
 
-// Idempotent: providers that already trace their own chat calls (anything
-// extending BaseChatProvider, or an existing TracedChatProvider) pass through
-// unchanged, so double-wrapping is impossible.
 export function traceProvider(p: ChatProvider): ChatProvider {
-  return p.traced ? p : new TracedChatProvider(p);
+  return "traced" in p && (p as { traced?: boolean }).traced ? p : new TracedChatProvider(p);
 }

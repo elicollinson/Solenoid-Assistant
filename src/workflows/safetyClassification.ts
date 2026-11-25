@@ -1,6 +1,6 @@
-import type { Agent } from "../core/rawAgent";
-import { log } from "../core/logger";
+import type { Agent } from "@elicollinson/solenoid-engine";
 import { injectionRiskClassifier } from "../agents/safetyClassifier";
+import { log } from "../core/logger";
 import { injectionRiskPrompt, injectionRiskSchema } from "../prompts";
 import { chunkWords } from "../utils/chunkWords";
 import { fanout, fulfilled, rejected } from "../utils/fanout";

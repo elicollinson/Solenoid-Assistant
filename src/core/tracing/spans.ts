@@ -1,6 +1,7 @@
 // Generic OpenInference span helpers. `withSpanKind` is the single primitive
 // every traced seam builds on — adding a new span kind (RETRIEVER, GUARDRAIL,
 // EVALUATOR, ...) needs no new plumbing, just a different `kind` argument.
+import { setTraceFilter } from "@elicollinson/solenoid-engine";
 import { privateSourceContext } from "../privateSourceContext";
 import { trace, SpanStatusCode, INVALID_SPAN_CONTEXT } from "@opentelemetry/api";
 import type { Attributes, Span } from "@opentelemetry/api";
@@ -9,6 +10,10 @@ import {
   SemanticConventions,
 } from "@arizeai/openinference-semantic-conventions";
 import type { ChatMessage, ChatOptions } from "../providers";
+
+// Suppress all solenoid-engine spans (AGENT, LLM, TOOL, GUARDRAIL) whenever
+// privateSourceContext is active.
+setTraceFilter(() => !privateSourceContext.getStore());
 
 export type SpanKind = keyof typeof OpenInferenceSpanKind;
 export type { Attributes, Span };
@@ -151,9 +156,7 @@ export function llmRequestAttributes(opts: ChatOptions, providerName: string): A
     [SemanticConventions.LLM_PROVIDER]: providerName,
     [SemanticConventions.LLM_INVOCATION_PARAMETERS]: safeJson({
       think: opts.think,
-      format: opts.format?.name,
       turn: opts.turn,
-      phase: opts.phase,
     }),
   };
   opts.tools.forEach((t, i) => {

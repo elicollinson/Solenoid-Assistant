@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { basename, join } from "node:path";
 import { z } from "zod";
-import { currentConsent } from "../core/consent";
+import { currentToolGate } from "@elicollinson/solenoid-security";
 import { defineTool } from "../core/tools";
 import { parseConcept, type Concept } from "../okf/concept";
 import { INDEX_FILENAME, LOG_FILENAME, normalizeConceptId } from "../okf/bundle";
@@ -70,7 +70,7 @@ export class DreamWorkflow {
     finally { this.runtime.history.unlock(resource, owner); }
   }
   private async pass(signal?: AbortSignal) {
-    const gate = currentConsent();
+    const gate = currentToolGate();
     if (!gate) throw new HistoryConflict("Reflection requires the existing workflow permission context");
     // Every concept parsed once per read set; reloaded after each committed update.
     const memories = new Map<string, { sha: string; concept: Concept }>();

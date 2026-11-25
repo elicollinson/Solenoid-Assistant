@@ -6,6 +6,7 @@ export * from "./decisions";
 export * from "./people";
 export * from "./conversations";
 export * from "./chat";
+export * from "./chatCheckpoints";
 export * from "./media";
 export * from "./workflows";
 export * from "./activity";

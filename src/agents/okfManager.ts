@@ -1,16 +1,15 @@
-
-import { Agent } from "../core/rawAgent";
+import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
+import { AssistantAgent } from "../core/engine";
+import { createModelRoutes } from "../core/providerFactory";
 import { knowledgeIndex } from "../knowledgeSearch/runtime";
 import { DEFAULT_OKF_ROOT } from "../okf/bundle";
-import { createOkfTools } from "../tools/okf";
 import { okfManagerPrompt } from "../prompts";
-import { createModelRoutes } from "../core/providerFactory";
-import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
+import { createSecurityScreener } from "../safety/modelArmor";
+import { createOkfTools } from "../tools/okf";
 
 // Anchored to this module, not the process cwd: a bare "../../okf" resolves
-// against wherever the server was launched from (with `bun start` at the repo
-// root that meant ~/Documents/okf), so the store's location silently depended
-// on the launch directory.
+// against wherever the server was launched from, so the store's location
+// cannot depend on the launch directory.
 export interface CreateOkfManagerAgentOptions {
   root?: string;
   actor?: string;
@@ -19,7 +18,7 @@ export interface CreateOkfManagerAgentOptions {
 
 export function createOkfManagerAgent(
   options: CreateOkfManagerAgentOptions = {},
-): Agent {
+): AssistantAgent {
   const config = options.config ?? loadRuntimeConfig();
   const root = options.root ?? DEFAULT_OKF_ROOT;
   const { all } = createOkfTools({
@@ -27,11 +26,13 @@ export function createOkfManagerAgent(
     actor: options.actor ?? "okfManagerAgent",
     index: knowledgeIndex(root),
   });
-  return new Agent({
+  return new AssistantAgent({
     name: "okf-manager",
     routes: createModelRoutes(config),
     systemPrompt: okfManagerPrompt,
     tools: all,
+    screen: createSecurityScreener(config),
+    abortOnWriteQuarantine: true,
   });
 }
 

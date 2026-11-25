@@ -8,7 +8,7 @@
 // its place and loses them once answered, and that a write tool's arguments
 // reach the person being asked to approve them.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -22,7 +22,7 @@ import {
   startConversation,
 } from "../../../src/db/mutations/chat";
 import { zonedTime } from "../../../src/db/seed/time";
-import type { ChatListPayload, ChatPayload } from "../../../src/shared/chat";
+import type { ChatApproval, ChatListPayload, ChatPayload, ChatTurnRow } from "../../../src/shared/chat";
 import { ChatView } from "./ChatView";
 import { ChatPhone } from "./phone/ChatPhone";
 import type { VoiceModeState } from "./useVoiceMode";
@@ -236,5 +236,368 @@ describe("the model in the header", () => {
       expect(markup).not.toContain("google/");
       expect(markup).not.toContain("Gemma 4");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Surface 8 target render contracts: streaming, running tools, subagents,
+// deferred approvals, voice provenance, and React Compiler kit hygiene.
+// ---------------------------------------------------------------------------
+
+function isolatedState(overrides: Partial<ChatState> = {}): ChatState {
+  return {
+    status: "ready",
+    message: "",
+    conversations: [
+      { id: "conv-render", title: "Weekly check-in", lede: "", when: "09:20", state: "idle" },
+    ],
+    openId: "conv-render",
+    title: "Weekly check-in",
+    model: "google/gemma-4-26b-a4b-qat",
+    voiceInvoked: false,
+    stored: [],
+    lede: "",
+    restraint: null,
+    waiting: 0,
+    live: null,
+    open: noop,
+    start: async () => null,
+    send: noop,
+    answer: noop,
+    reload: noop,
+    ...overrides,
+  };
+}
+
+function visibleText(markup: string): string {
+  return markup.replace(/<[^>]+>/g, " ");
+}
+
+function desktopTextareaTag(markup: string): string {
+  return markup.match(/<textarea\b[^>]*>/)?.[0] ?? "";
+}
+
+function phoneInputTag(markup: string): string {
+  return markup.match(/<input\b[^>]*name="say"[^>]*>/)?.[0] ?? "";
+}
+
+describe("streaming and live execution on desktop and phone", () => {
+  test("renders streaming partial reply (live.streamingText) on both desktop and phone", () => {
+    const live: LiveTurn = {
+      ...EMPTY_LIVE,
+      turnId: "t-stream-1",
+      source: "text",
+      asked: "Summarize the week",
+      streamingText: "Here is the summary so far, still streaming token by token.",
+    };
+    const state = isolatedState({ live });
+
+    for (const markup of [desktop(state), phone(state)]) {
+      expect(markup).toContain("Summarize the week");
+      expect(markup).toContain("Here is the summary so far, still streaming token by token.");
+      expect(markup).toContain("still writing");
+    }
+  });
+
+  test("renders running tool indicator (status: 'running') on both desktop and phone", () => {
+    const live: LiveTurn = {
+      ...EMPTY_LIVE,
+      turnId: "t-tool-1",
+      source: "text",
+      asked: "Check my calendar",
+      calls: [
+        {
+          id: "call-running-1",
+          name: "calendar.list",
+          arg: "next 7 days",
+          duration: "",
+          kind: "read",
+          ok: true,
+          status: "running",
+        },
+      ],
+    };
+    const state = isolatedState({ live });
+
+    for (const markup of [desktop(state), phone(state)]) {
+      expect(markup).toContain("calendar.list");
+      expect(markup).toContain("next 7 days");
+      // Must show an explicit running indicator (running text/attribute or kit's green running ring).
+      expect(markup).toMatch(/running|var\(--signal-green\)/i);
+    }
+  });
+});
+
+describe("background subagents and synthesis turns on desktop and phone", () => {
+  test("renders active background subagent status on both desktop and phone", () => {
+    const live: LiveTurn = {
+      ...EMPTY_LIVE,
+      activeSubagents: [
+        {
+          id: "sa-1",
+          name: "calendar-researcher",
+          status: "running",
+          current: "checking August availability",
+        },
+      ],
+    };
+    const state = isolatedState({ live });
+
+    for (const markup of [desktop(state), phone(state)]) {
+      expect(markup).toContain("calendar-researcher");
+      expect(markup).toContain("checking August availability");
+    }
+  });
+
+  test("renders live subagent synthesis turn (source: 'subagent') without drawing an empty user bubble", () => {
+    const live: LiveTurn = {
+      ...EMPTY_LIVE,
+      turnId: "t-auto-1",
+      source: "subagent",
+      asked: "",
+      streamingText: "Synthesizing findings from calendar-researcher.",
+    };
+    const state = isolatedState({ live });
+
+    for (const markup of [desktop(state), phone(state)]) {
+      expect(markup).toContain("Synthesizing findings from calendar-researcher.");
+      expect(visibleText(markup)).toMatch(/\bsubagent\b|\bbackground\b/i);
+      // Async auto-turn has no user prompt and must not draw an empty "You" bubble.
+      expect(markup).not.toContain(">You<");
+    }
+  });
+
+  test("renders stored subagent synthesis turn (source: 'subagent') with provenance on both screens", () => {
+    const makeTurn = (source: "subagent" | "text"): ChatTurnRow => ({
+      id: "turn-sub-1",
+      by: "agent",
+      body: "Research agent compiled three options for Thursday.",
+      at: "09:42",
+      note: null,
+      toolSummary: null,
+      calls: [],
+      approval: null,
+      source,
+    });
+    const subagentState = isolatedState({ stored: [makeTurn("subagent")] });
+    const textState = isolatedState({ stored: [makeTurn("text")] });
+
+    for (const render of [desktop, phone]) {
+      const subagentMarkup = render(subagentState);
+      const textMarkup = render(textState);
+      expect(subagentMarkup).toContain("Research agent compiled three options for Thursday.");
+      expect(subagentMarkup).not.toBe(textMarkup);
+      expect(visibleText(subagentMarkup)).toMatch(/\bsubagent\b|\bbackground\b/i);
+    }
+  });
+});
+
+describe("deferred subagent approval bubble on desktop and phone", () => {
+  test("renders live deferred approval with actionable buttons while composer stays enabled", () => {
+    const live: LiveTurn = {
+      ...EMPTY_LIVE,
+      pending: null,
+      deferredApprovals: [
+        {
+          type: "deferred_approval",
+          decisionId: "dec-def-render-1",
+          ref: "ap/0825-9",
+          title: "Add Friday dentist reminder.",
+          why: "Creates a reminder in Reminders.",
+          hold: "Nothing has been written yet.",
+          tool: "reminders.create",
+          subagentName: "planner",
+          facts: [
+            ["Call", "reminders.create"],
+            ["title", "Dentist"],
+          ],
+          actions: [
+            { id: "act-def-yes", label: "Go ahead", stance: "affirm" },
+            { id: "act-def-no", label: "Not this one", stance: "quiet" },
+          ],
+        },
+      ],
+    };
+    const state = isolatedState({ live });
+
+    const desktopMarkup = desktop(state);
+    const phoneMarkup = phone(state);
+
+    for (const markup of [desktopMarkup, phoneMarkup]) {
+      expect(markup).toContain("ap/0825-9");
+      expect(markup).toContain("Add Friday dentist reminder.");
+      expect(markup).toContain("reminders.create");
+      expect(markup).toContain("Dentist");
+      expect(markup).toContain("planner");
+      expect(markup).toContain("Go ahead");
+      expect(markup).toContain("Not this one");
+      // Must NOT lock the composer like a blocking parent approval does.
+      expect(markup).not.toContain("Answer above first");
+      expect(markup).not.toContain("Waiting on your answer above.");
+    }
+
+    // Verify composer input itself is present and not disabled.
+    expect(desktopTextareaTag(desktopMarkup)).not.toBe("");
+    expect(desktopTextareaTag(desktopMarkup)).not.toMatch(/\bdisabled\b/);
+    expect(phoneInputTag(phoneMarkup)).not.toBe("");
+    expect(phoneInputTag(phoneMarkup)).not.toMatch(/\bdisabled\b/);
+  });
+
+  test("renders stored deferred approval bubble on both screens while composer stays enabled", () => {
+    const deferred: ChatApproval = {
+      decisionId: "dec-def-stored-1",
+      ref: "ap/0825-10",
+      title: "File hotel confirmation to OKF.",
+      why: "Writes a memory note.",
+      hold: "Nothing has been written yet.",
+      facts: [
+        ["Call", "okf.write"],
+        ["slug", "trip/boston-hotel"],
+      ],
+      choices: [
+        { id: "act-stored-yes", label: "Go ahead", stance: "affirm" },
+        { id: "act-stored-no", label: "Not this one", stance: "quiet" },
+      ],
+      state: "open",
+      chosenId: null,
+      settled: null,
+      deferred: true,
+      subagentName: "travel-helper",
+    };
+    const storedTurn: ChatTurnRow = {
+      id: "turn-def-1",
+      by: "agent",
+      body: "The travel subagent finished and queued one optional write.",
+      at: "09:45",
+      note: null,
+      toolSummary: null,
+      calls: [],
+      approval: null,
+      source: "subagent",
+      deferredApprovals: [deferred],
+    };
+    const state = isolatedState({ stored: [storedTurn], live: null });
+
+    const desktopMarkup = desktop(state);
+    const phoneMarkup = phone(state);
+
+    for (const markup of [desktopMarkup, phoneMarkup]) {
+      expect(markup).toContain("ap/0825-10");
+      expect(markup).toContain("File hotel confirmation to OKF.");
+      expect(markup).toContain("okf.write");
+      expect(markup).toContain("travel-helper");
+      expect(markup).toContain("Go ahead");
+      expect(markup).toContain("Not this one");
+      expect(markup).not.toContain("Answer above first");
+    }
+    expect(desktopTextareaTag(desktopMarkup)).not.toBe("");
+    expect(desktopTextareaTag(desktopMarkup)).not.toMatch(/\bdisabled\b/);
+    expect(phoneInputTag(phoneMarkup)).not.toBe("");
+    expect(phoneInputTag(phoneMarkup)).not.toMatch(/\bdisabled\b/);
+  });
+
+  test("contrasts blocking parent approval which still locks the composer on both screens", () => {
+    const blockingLive: LiveTurn = {
+      ...EMPTY_LIVE,
+      asked: "Book Thursday hold",
+      pending: {
+        type: "approval",
+        decisionId: "dec-block-render",
+        ref: "ap/0825-11",
+        title: "Book Thursday hold.",
+        why: "Creates a calendar event.",
+        hold: "Nothing has been written.",
+        tool: "calendar.create",
+        facts: [["Call", "calendar.create"]],
+        actions: [
+          { id: "act-b-yes", label: "Go ahead", stance: "affirm" },
+          { id: "act-b-no", label: "Not this one", stance: "quiet" },
+        ],
+      },
+    };
+    const state = isolatedState({ live: blockingLive });
+    const desktopMarkup = desktop(state);
+    const phoneMarkup = phone(state);
+
+    expect(desktopMarkup).toContain("Answer above first");
+    expect(desktopTextareaTag(desktopMarkup)).toMatch(/\bdisabled\b/);
+    expect(phoneMarkup).toContain("Answer above first");
+    expect(phoneInputTag(phoneMarkup)).toMatch(/\bdisabled\b/);
+  });
+});
+
+describe("voice-originated turn indicator (source: 'voice') on desktop and phone", () => {
+  test("distinguishes voice turns from text turns in the transcript on both screens", () => {
+    const makeTurns = (source: "voice" | "text"): ChatTurnRow[] => [
+      {
+        id: "turn-v-1",
+        by: "user",
+        body: "Remind me to call Sam at 5",
+        at: "09:30",
+        note: null,
+        toolSummary: null,
+        calls: [],
+        approval: null,
+        source,
+      },
+      {
+        id: "turn-v-2",
+        by: "agent",
+        body: "Got it, I'll remind you at 5.",
+        at: "09:30",
+        note: null,
+        toolSummary: null,
+        calls: [],
+        approval: null,
+        source,
+      },
+    ];
+
+    const voiceState = isolatedState({ stored: makeTurns("voice") });
+    const textState = isolatedState({ stored: makeTurns("text") });
+
+    for (const render of [desktop, phone]) {
+      const voiceMarkup = render(voiceState);
+      const textMarkup = render(textState);
+
+      expect(voiceMarkup).toContain("Remind me to call Sam at 5");
+      expect(voiceMarkup).toContain("Got it, I&#x27;ll remind you at 5.");
+      // Voice turns must render a visible provenance indicator in the transcript beyond the composer button.
+      expect(voiceMarkup).not.toBe(textMarkup);
+      const voiceMatches = voiceMarkup.match(/\bvoice\b|\bspoken\b/gi)?.length ?? 0;
+      const textMatches = textMarkup.match(/\bvoice\b|\bspoken\b/gi)?.length ?? 0;
+      expect(voiceMatches).toBeGreaterThan(textMatches);
+    }
+  });
+});
+
+describe("design-kit React Compiler hygiene", () => {
+  function collectKitSourceFiles(dirPath: string): string[] {
+    const entries = readdirSync(dirPath, { withFileTypes: true });
+    const files: string[] = [];
+    for (const entry of entries) {
+      const fullPath = join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...collectKitSourceFiles(fullPath));
+      } else if (entry.isFile() && /\.(?:ts|tsx)$/.test(entry.name)) {
+        files.push(fullPath);
+      }
+    }
+    return files;
+  }
+
+  test("web/src/kit/ contains zero manual useMemo, useCallback, or React.memo", () => {
+    const kitDir = join(import.meta.dir, "../kit");
+    const sourceFiles = collectKitSourceFiles(kitDir);
+    expect(sourceFiles.length).toBeGreaterThan(10);
+
+    const violations: string[] = [];
+    for (const file of sourceFiles) {
+      const content = readFileSync(file, "utf8");
+      if (/\b(?:useMemo|useCallback)\b|\bReact\.memo\b/.test(content)) {
+        violations.push(file);
+      }
+    }
+    expect(violations).toEqual([]);
   });
 });

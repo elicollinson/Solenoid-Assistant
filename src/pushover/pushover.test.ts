@@ -295,7 +295,7 @@ for (const outcome of ["approved", "declined", "expired"] as const) test(`chat $
     { finishReason: "tool_calls", toolCalls: [{ id: "send", name: "pushover_send", arguments: { message: "Test notification", requestId: "chat-test-1" } }] },
     { content: "Finished." },
   ];
-  const provider: ChatProvider = { traced: true, providerName: "test", async chat() { return { role: "assistant", content: "", finishReason: "stop", ...script.shift() }; } };
+  const provider: ChatProvider = { providerName: "test", async chat() { return { role: "assistant", content: "", finishReason: "stop", ...script.shift() }; } };
   const agent = new ChatAgent({ context: { db }, groups: ["pushover"], routes: [{ client: provider, model: "test" }], promptInjectionScreening: false });
   let approvals = 0;
   await withTurn({ conversationId: "test", emit() {}, settled() {}, async decide(request) { approvals++; expect(JSON.stringify(request)).not.toContain(settings.PUSHOVER_APP_TOKEN); return { decisionId: "test", outcome }; } },
@@ -313,7 +313,7 @@ test("chat rejection is shown as a failed submission without leaking provider er
     { content: "Not accepted." },
   ];
   const transcripts: ChatMessage[][] = [];
-  const provider: ChatProvider = { traced: true, providerName: "test", async chat(messages) { transcripts.push([...messages]); return { role: "assistant", content: "", finishReason: "stop", ...script.shift() }; } };
+  const provider: ChatProvider = { providerName: "test", async chat(messages) { transcripts.push([...messages]); return { role: "assistant", content: "", finishReason: "stop", ...script.shift() }; } };
   const agent = new ChatAgent({ context: { db }, groups: ["pushover"], routes: [{ client: provider, model: "test" }], promptInjectionScreening: false });
   let error: string | null = null;
   await withTurn({ conversationId: "test", emit() {}, settled(_id, failure) { error = failure; }, async decide() { return { decisionId: "test", outcome: "approved" }; } },

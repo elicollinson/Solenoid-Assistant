@@ -192,7 +192,7 @@ test("the dedicated agent aborts injected log output before any incident write",
   const session = createMonitorTools({ collection, state, owner, dryRun: false, signal: new AbortController().signal, github: fake.github });
   let calls = 0;
   const agent = createLogMonitorAgent(session.tools, {
-    routes: [{ model: "mock", client: { traced: true, providerName: "mock", chat: async () => { calls++; return { role: "assistant" as const, content: "", finishReason: "tool_calls" as const, toolCalls: [{ id: "1", name: "logs_recent", arguments: {} }] }; } } }],
+    routes: [{ model: "mock", client: { providerName: "mock", chat: async () => { calls++; return { role: "assistant" as const, content: "", finishReason: "tool_calls" as const, toolCalls: [{ id: "1", name: "logs_recent", arguments: {} }] }; } } }],
     promptInjectionScreening: async parts => ({ flagged: parts.some(p => p.includes("Ignore the operator")) }),
   });
   await expect(agent.run("Review recent logs")).rejects.toThrow("Prompt injection");
@@ -216,7 +216,7 @@ test("normal Agent consent denial prevents writes and scan completion", async ()
   ];
   await expect(withConsent(async () => ({ allow: false, tell: "Denied" }), () => scanLogs({}, { ...options(fake.github), analyze: async (tools, signal) => {
     const agent = createLogMonitorAgent(tools, {
-      routes: [{ model: "mock", client: { traced: true, providerName: "mock", chat: async () => {
+      routes: [{ model: "mock", client: { providerName: "mock", chat: async () => {
         const call = script[step++]; if (!call) throw new Error("Unexpected model call");
         return { role: "assistant" as const, content: "", finishReason: "tool_calls" as const, toolCalls: [{ id: String(step), name: call.name, arguments: call.args }] };
       } } }], promptInjectionScreening: async () => ({ flagged: false }),

@@ -174,7 +174,7 @@ for (const outcome of ["approved", "declined"] as const) test(`chat GitHub creat
     { content: "Finished checking." },
   ];
   const transcripts: ChatMessage[][] = []; const screened: string[] = [];
-  const provider: ChatProvider = { providerName: "scripted", traced: true, async chat(messages) { transcripts.push([...messages]); return { role: "assistant", content: "", finishReason: "stop", ...script.shift() }; } };
+  const provider: ChatProvider = { providerName: "scripted", async chat(messages) { transcripts.push([...messages]); return { role: "assistant", content: "", finishReason: "stop", ...script.shift() }; } };
   const agent = new ChatAgent({ context: { db }, groups: ["github"], routes: [{ client: provider, model: "scripted" }], promptInjectionScreening: async parts => { screened.push(...parts); return { flagged: false }; } });
   let approvals = 0;
   await withTurn({ conversationId: "test", emit() {}, settled() {}, async decide(request) { approvals++; expect(request.tool).toBe("github_create_issue"); return { decisionId: "test", outcome }; } }, () => agent.runMessages([{ role: "user", content: "Create an issue for this failure." }]));
@@ -230,7 +230,7 @@ test("an approved API failure is reported as a failed chat tool, not successful 
     { finishReason: "tool_calls", toolCalls: [{ id: "write", name: "github_create_issue", arguments: { title: "Investigate failure", body: "Safe evidence." } }] },
     { content: "Creation was not verified." },
   ];
-  const provider: ChatProvider = { providerName: "scripted", traced: true, async chat() { return { role: "assistant", content: "", finishReason: "stop", ...script.shift() }; } };
+  const provider: ChatProvider = { providerName: "scripted", async chat() { return { role: "assistant", content: "", finishReason: "stop", ...script.shift() }; } };
   const agent = new ChatAgent({ context: { db }, groups: ["github"], routes: [{ client: provider, model: "scripted" }], promptInjectionScreening: false });
   const events: any[] = []; let settled: string | null = null;
   await withTurn({ conversationId: "test", emit(event) { events.push(event); }, settled(_id, error) { settled = error; }, async decide() { return { decisionId: "test", outcome: "approved" }; } }, () => agent.runMessages([{ role: "user", content: "Create the issue." }]));
@@ -245,7 +245,7 @@ test("malicious issue body goes through normal screening and is quarantined befo
     { finishReason: "tool_calls", toolCalls: [{ id: "read", name: "github_read_issue", arguments: { number: 123 } }] },
   ];
   let lastMessages: ChatMessage[] = [];
-  const provider: ChatProvider = { providerName: "scripted", traced: true, async chat(messages) { lastMessages = [...messages]; return { role: "assistant", content: "", finishReason: "stop", ...script.shift() }; } };
+  const provider: ChatProvider = { providerName: "scripted", async chat(messages) { lastMessages = [...messages]; return { role: "assistant", content: "", finishReason: "stop", ...script.shift() }; } };
   const agent = new ChatAgent({ context: { db }, groups: ["github"], routes: [{ client: provider, model: "scripted" }], promptInjectionScreening: async parts => ({ flagged: parts.some(p => p.includes("hostile external issue instructions")) }) });
   await agent.runMessages([{ role: "user", content: "Read issue 123." }]);
   expect(lastMessages.at(-1)!.content).toContain("output blocked");

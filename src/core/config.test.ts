@@ -35,11 +35,10 @@ describe("loadRuntimeConfig", () => {
   test("applies one set of runtime defaults", () => {
     const config = loadRuntimeConfig({});
     expect(config.port).toBe(3000);
-    expect(config.llmProvider).toBe("ollama");
-    expect(config.model).toBe("glm-5.2");
-    expect(config.imageModel).toBe("glm-5.2");
-    expect(config.ollama.host).toBe("https://ollama.com");
-    expect(config.structuredOutputStrategy).toBe("two-stage");
+    expect(config.llmProvider).toBe("omlx");
+    expect(config.model).toBe("google/gemma-4-26b-a4b");
+    expect(config.imageModel).toBe("google/gemma-4-26b-a4b");
+    expect(config.omlx.baseUrl).toBe("http://localhost:8000/v1");
     expect(config.openrouter.baseUrl).toBe("https://openrouter.ai/api/v1");
     expect(config.openrouter.model).toBe("google/gemma-4-31b-it");
     expect(config.openrouter.apiKey).toBeUndefined();
@@ -50,14 +49,13 @@ describe("loadRuntimeConfig", () => {
       templateId: "base-detector",
     });
     expect(config.modelRoutes).toEqual([{
-      provider: "ollama",
-      model: "glm-5.2",
-      structuredOutputStrategy: "two-stage",
+      provider: "omlx",
+      model: "google/gemma-4-26b-a4b",
     }]);
   });
 
   test("normalizes blank optional values and validates the port", () => {
-    expect(loadRuntimeConfig({ OLLAMA_API_KEY: "" }).ollama.apiKey).toBeUndefined();
+    expect(loadRuntimeConfig({ OMLX_API_KEY: "" }).omlx.apiKey).toBeUndefined();
     expect(loadRuntimeConfig({ OPENAI_API_KEY: "" }).openai.apiKey).toBeUndefined();
     expect(loadRuntimeConfig({ OPENROUTER_API_KEY: "" }).openrouter.apiKey)
       .toBeUndefined();
@@ -116,49 +114,7 @@ describe("loadRuntimeConfig", () => {
     expect(config.openai.apiKey).toBe("lm-studio");
     expect(config.model).toBe("qwen/qwen3.5-9b");
     expect(config.imageModel).toBe("qwen/qwen3.5-9b");
-    expect(config.structuredOutputStrategy).toBe("native");
   });
-
-  test("selects structured-output behavior by backend with an explicit override", () => {
-    expect(
-      loadRuntimeConfig({ OLLAMA_API_URL: "http://localhost:11434" })
-        .structuredOutputStrategy,
-    ).toBe("native");
-    expect(
-      loadRuntimeConfig({
-        LLM_PROVIDER: "openai",
-        OPENAI_BASE_URL: "http://localhost:1234/v1",
-        STRUCTURED_OUTPUT_STRATEGY: "two-stage",
-      }).structuredOutputStrategy,
-    ).toBe("two-stage");
-  });
-
-  test("treats blank structured-output overrides as unset", () => {
-    for (const value of ["", "  \t\n"]) {
-      expect(
-        loadRuntimeConfig({
-          OLLAMA_API_URL: "https://ollama.com",
-          STRUCTURED_OUTPUT_STRATEGY: value,
-        }).structuredOutputStrategy,
-      ).toBe("two-stage");
-    }
-  });
-
-  test("preserves valid structured-output overrides and rejects invalid values", () => {
-    expect(
-      loadRuntimeConfig({ STRUCTURED_OUTPUT_STRATEGY: "native" })
-        .structuredOutputStrategy,
-    ).toBe("native");
-    expect(
-      loadRuntimeConfig({ STRUCTURED_OUTPUT_STRATEGY: "two-stage" })
-        .structuredOutputStrategy,
-    ).toBe("two-stage");
-    expect(() =>
-      loadRuntimeConfig({ STRUCTURED_OUTPUT_STRATEGY: "automatic" })
-    ).toThrow(/native.*two-stage/);
-  });
-
-
 });
 
 describe("credential proxy base URLs", () => {

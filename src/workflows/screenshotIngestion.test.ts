@@ -1,6 +1,6 @@
 import { initDb } from "../db";
 import { describe, expect, test } from "bun:test";
-import type { Agent } from "../core/rawAgent";
+import type { AssistantAgent as Agent } from "../core/engine";
 import type { AgentResource } from "../agents/resource";
 import type { ClassifiedScreenshot } from "../tools/photos";
 import type { PhotoRecord } from "../utils/osxPhotos";

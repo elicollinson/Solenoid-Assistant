@@ -4,15 +4,16 @@ import { defineTool } from "./tools";
 import {
   ToolBelt,
   defineToolGroup,
-  loaderName,
   renderBriefing,
   readOnly,
   renderLoaderDescription,
   toolSignature,
   type ToolGroup,
 } from "./toolGroups";
-import { Agent, PromptInjectionDetectedError } from "./rawAgent";
-import { authoredText } from "../safety/authoredText";
+import { OPEN_TOOL_GROUP, toolGroupOpener } from "@elicollinson/solenoid-engine";
+import { authoredText, createSecurity } from "@elicollinson/solenoid-security";
+import { compileToolGroup } from "../tools/groupAdapter";
+import { AssistantAgent, PromptInjectionDetectedError } from "./engine";
 import type { ChatMessage, ChatOptions, ChatProvider } from "./providers";
 
 // --- fixtures ---------------------------------------------------------------
@@ -62,7 +63,6 @@ function widgets(tools = [listTool, createTool]): ToolGroup {
 
 class ScriptedProvider implements ChatProvider {
   readonly providerName = "scripted";
-  readonly traced = true;
   readonly optsSeen: ChatOptions[] = [];
   /** The transcript as of the most recent call. */
   lastMessages: ChatMessage[] = [];
@@ -253,142 +253,134 @@ describe("ToolSession", () => {
 // --- the agent --------------------------------------------------------------
 
 describe("Agent with tool groups", () => {
+  const widgetsOpener = () => toolGroupOpener([compileToolGroup(widgets())])!;
+
   test("offers the loader and withholds the group until it is called", async () => {
     const client = new ScriptedProvider([
-      callTool("get_widgets_tools"),
+      callTool(OPEN_TOOL_GROUP, { group: "widgets" }),
       { content: "done" },
     ]);
-    const agent = new Agent({
+    const agent = new AssistantAgent({
       routes: routes(client),
-      toolGroups: [widgets()],
-      promptInjectionScreening: false,
+      tools: [widgetsOpener()],
     });
 
     await agent.run("go");
 
-    expect(client.toolNames(0)).toEqual(["get_widgets_tools"]);
+    expect(client.toolNames(0)).toEqual([OPEN_TOOL_GROUP]);
     expect(client.toolNames(1)).toEqual([
-      "get_widgets_tools",
+      OPEN_TOOL_GROUP,
       "widgets_list",
       "widgets_create",
     ]);
   });
 
   // A model that remembers the name from an earlier run, or guesses it off the
-  // loader's description, should be told what to do rather than that it dreamt
-  // the tool up.
-  test("a group tool called before its loader is refused with the loader's name", async () => {
+  // loader's description, is refused until the group is opened.
+  test("a group tool called before its loader is refused", async () => {
     const client = new ScriptedProvider([callTool("widgets_list"), { content: "done" }]);
-    const agent = new Agent({
+    const agent = new AssistantAgent({
       routes: routes(client),
-      toolGroups: [widgets()],
-      promptInjectionScreening: false,
+      tools: [widgetsOpener()],
     });
 
     await agent.run("go");
 
     // The refusal goes back as the tool result, which the next turn replays.
     const replayed = client.lastMessages.find((m) => m.role === "tool");
-    expect(replayed?.content).toBe(
-      `Error: "widgets_list" is not available until you call ${loaderName("widgets")}.`,
-    );
-    expect(client.toolNames(1)).toEqual(["get_widgets_tools"]);
+    expect(replayed?.content).toContain('unknown tool "widgets_list"');
+    expect(client.toolNames(1)).toEqual([OPEN_TOOL_GROUP]);
   });
 
   test("what one run opened is not the next run's starting state", async () => {
     const client = new ScriptedProvider([
-      callTool("get_widgets_tools"),
+      callTool(OPEN_TOOL_GROUP, { group: "widgets" }),
       { content: "first" },
       { content: "second" },
     ]);
-    const agent = new Agent({
+    const agent = new AssistantAgent({
       routes: routes(client),
-      toolGroups: [widgets()],
-      promptInjectionScreening: false,
+      tools: [widgetsOpener()],
     });
 
     await agent.run("open it");
     await agent.run("and again");
 
     expect(client.toolNames(1)).toContain("widgets_list");
-    expect(client.toolNames(2)).toEqual(["get_widgets_tools"]);
+    expect(client.toolNames(2)).toEqual([OPEN_TOOL_GROUP]);
   });
 
   test("a group tool runs normally once the group is open", async () => {
     const client = new ScriptedProvider([
-      callTool("get_widgets_tools"),
+      callTool(OPEN_TOOL_GROUP, { group: "widgets" }),
       callTool("widgets_create", { title: "one" }),
       { content: "done" },
     ]);
-    const agent = new Agent({
+    const agent = new AssistantAgent({
       routes: routes(client),
-      toolGroups: [widgets()],
-      promptInjectionScreening: false,
+      tools: [widgetsOpener()],
     });
 
     expect(await agent.run("go")).toBe("done");
   });
 
   test("the briefing passes a screen that flags everything; a tool result does not", async () => {
-    const flagEverything = async () => ({
-      flagged: true,
-      label: "MALICIOUS" as const,
-      score: 1,
+    const flagEverything = createSecurity({
+      provider: {
+        async assess() {
+          return {
+            flagged: true,
+            blocked: true,
+            label: "MALICIOUS" as const,
+            score: 1,
+          };
+        },
+      },
+      authoredText,
     });
 
-    const agent = new Agent({
-      routes: routes(new ScriptedProvider([])),
-      toolGroups: [widgets()],
-      promptInjectionScreening: flagEverything,
+    const client = new ScriptedProvider([
+      callTool(OPEN_TOOL_GROUP, { group: "widgets" }),
+      callTool("widgets_list"),
+      { content: "done" },
+    ]);
+    const agent = new AssistantAgent({
+      routes: routes(client),
+      tools: [widgetsOpener()],
+      screen: flagEverything.screen,
     });
-    const session = (agent as unknown as { groups: ToolBelt }).groups.session();
-    const invoke = (agent as unknown as {
-      invokeTool: (
-        n: string,
-        a: unknown,
-        s?: AbortSignal,
-        sess?: unknown,
-      ) => Promise<{ ok: boolean; output: string }>;
-    }).invokeTool.bind(agent);
 
-    // Entirely authored: redacted to nothing, so the screener is never reached.
-    const briefing = await invoke("get_widgets_tools", {}, undefined, session);
-    expect(briefing.ok).toBe(true);
-    expect(briefing.output).toContain("# Widgets");
-    // An ordinary result has no such licence, whatever tool produced it — it is screened and quarantined.
-    const listResult = await invoke("widgets_list", {}, undefined, session);
-    expect(listResult.ok).toBe(false);
-    expect(listResult.output).toContain("Prompt injection detected in tool output; output blocked.");
+    await agent.runMessages([{ role: "user", content: "go", origin: "operator" }]);
+    const toolMessages = client.lastMessages.filter((m) => m.role === "tool");
+    // Briefing is internal & registered as authored: delivered intact.
+    expect(toolMessages[0]?.content).toContain("# Widgets");
+    // An ordinary result has no such licence — it is screened and quarantined.
+    expect(toolMessages[1]?.content).toContain("Prompt injection detected in tool output; output blocked.");
 
     // When explicitly configured to abort, it rejects with PromptInjectionDetectedError.
-    const abortingAgent = new Agent({
-      routes: routes(new ScriptedProvider([])),
-      toolGroups: [widgets()],
-      promptInjectionScreening: flagEverything,
+    const abortClient = new ScriptedProvider([
+      callTool(OPEN_TOOL_GROUP, { group: "widgets" }),
+      callTool("widgets_list"),
+    ]);
+    const abortingAgent = new AssistantAgent({
+      routes: routes(abortClient),
+      tools: [widgetsOpener()],
+      screen: flagEverything.screen,
       onToolOutputInjection: "abort",
     });
-    const abortInvoke = (abortingAgent as unknown as {
-      invokeTool: (
-        n: string,
-        a: unknown,
-        s?: AbortSignal,
-        sess?: unknown,
-      ) => Promise<{ ok: boolean; output: string }>;
-    }).invokeTool.bind(abortingAgent);
-    await expect(abortInvoke("widgets_list", {}, undefined, session)).rejects.toBeInstanceOf(
-      PromptInjectionDetectedError,
-    );
+    await expect(
+      abortingAgent.runMessages([{ role: "user", content: "go", origin: "operator" }]),
+    ).rejects.toBeInstanceOf(PromptInjectionDetectedError);
   });
 
   test("a directly registered tool cannot shadow a group's name", () => {
     expect(
       () =>
-        new Agent({
+        new AssistantAgent({
           routes: routes(new ScriptedProvider([])),
-          tools: [listTool],
-          toolGroups: [widgets()],
+          tools: [listTool, widgetsOpener()],
         }),
-    ).toThrow(/claimed by a tool group/);
+    ).toThrow(/already registered/);
   });
 });
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { Agent } from "../core/rawAgent";
+import { AssistantAgent } from "../core/engine";
 import type { ChatMessage, ChatProvider } from "../core/providers";
 import { defineTool } from "../core/tools";
 import { createDb, runMigrations, ulid, type Db } from "../db";
@@ -48,12 +48,16 @@ async function finished(runId: string) {
   }
   throw new Error(`Run ${runId} never finished`);
 }
-const provider = (chat: ChatProvider["chat"]): ChatProvider => ({ providerName: "scripted", traced: true, chat });
+const provider = (chat: ChatProvider["chat"]): ChatProvider => ({ providerName: "scripted", chat });
 const reply = (content = "done"): ChatMessage => ({ role: "assistant", content, finishReason: "stop" });
-const agent = (client: ChatProvider, tools: ReturnType<typeof defineTool>[] = []) => new Agent({
+const agent = (client: ChatProvider, tools: ReturnType<typeof defineTool>[] = []) => new AssistantAgent({
   name: "execution-test", systemPrompt: "Keep the governing task rules.",
-  routes: [{ client, model: "scripted" }], tools, promptInjectionScreening: false,
+  routes: [{ client, model: "scripted" }], tools,
 });
+const extractEphemeralGuidance = (messages: ChatMessage[] | undefined): string | undefined => {
+  const userContent = messages?.find((m) => m.role === "user")?.content ?? "";
+  return userContent.match(/Optional guidance for this workflow execution only[^:]*:\n([\s\S]+)$/)?.[1];
+};
 
 // Exercise every registered schema, then a future registration unknown to the
 // catalog. The tool has no dispatch branch to update when another is added.
@@ -142,13 +146,13 @@ test("overlapping runs deliver isolated guidance before parent and nested single
   await startWorkflowRun(db, "weather-briefing", {}, { lookup, trigger: "schedule" }).settled;
   await parent.run("Outside workflow");
   const initial = captured.filter((messages) => !messages.some((m) => m.role === "tool"));
-  expect(initial.map((messages) => messages.find((m) => m.origin === "operator")?.content)).toEqual([
+  expect(initial.map((messages) => extractEphemeralGuidance(messages))).toEqual([
     "beta", "beta", "alpha", "alpha", undefined, undefined, undefined, undefined,
   ]);
   for (const messages of initial.slice(0, 4)) {
     expect(messages[0]).toMatchObject({ role: "system", content: "Keep the governing task rules." });
+    expect(messages[1]?.role).toBe("user");
     expect(messages[1]?.content).toContain("cannot override governing instructions");
-    expect(messages[2]?.role).toBe("user");
   }
   expect(db.select().from(s.workflowInstructions).all()).toEqual(saved);
   expect(db.select().from(s.workflowSchedules).all()).toEqual(schedules);
@@ -255,7 +259,7 @@ test("normal chat discovers, approves, starts a real registered workflow and rea
     expect(events.filter((e) => e.type === "approval")).toHaveLength(1);
     expect(events.find((e) => e.type === "tool" && e.name === "workflows.run")).toMatchObject({ ok: true, kind: "write" });
     expect(events.at(-1)).toMatchObject({ type: "message", body: `Run ${runId} finished: Lisbon is sunny.` });
-    expect(workflowMessages[0]?.find((m) => m.origin === "operator")?.content).toBe("Focus on walking weather");
+    expect(extractEphemeralGuidance(workflowMessages[0])).toBe("Focus on walking weather");
     expect((await toolCall()("workflows_read_run_logs", { runId })).lines[1].text).toContain(conversationId);
     expect(db.select().from(s.runLogs).where(eq(s.runLogs.runId, runId)).all().find(line => line.text.startsWith("Invocation: "))!.text).toContain(conversationId);
   } finally { weather.mockRestore(); }
@@ -307,7 +311,7 @@ test("chat guidance reaches the real log agent without narrowing coverage or com
     promptInjectionScreening: async () => ({ flagged: false }),
     routes: [{ model: "scripted", client: provider(async messages => {
       if (!messages.some(m => m.role === "tool")) {
-        seen.push(messages.find(m => m.origin === "operator")?.content);
+        seen.push(extractEphemeralGuidance(messages));
         expect(messages[0]?.content).toContain("Analyze ALL observed services");
         expect(messages[0]?.content).toContain("Review every evidence group");
         return { role: "assistant", content: "", finishReason: "tool_calls", toolCalls: [{ id: "recent", name: "logs_recent", arguments: {} }] };

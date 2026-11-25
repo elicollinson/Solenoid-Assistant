@@ -9,8 +9,9 @@
 // agent's as prose, approvals as one standard bubble — but the bubble goes full
 // width and its buttons stack, because at this width a row of two buttons is
 // two half-buttons.
-import { ApprovalBubble, Button, ChatTurn, ConversationRow, RetroWigglyLine } from "../../kit";
-import { echoed, modelLabel, spoken, useFollowBottom, type ChatState } from "../chat";
+import { Button, ConversationRow, RetroWigglyLine } from "../../kit";
+import { hasActiveTurn, modelLabel, useFollowBottom, type ChatState } from "../chat";
+import { LiveSection, StoredTurn } from "../ChatBlocks";
 import type { VoiceModeState } from "../useVoiceMode";
 import { PhoneScreen, type PhoneTab } from "./chrome";
 
@@ -114,6 +115,7 @@ function List({ chat, chrome }: { chat: ChatState; chrome: Partial<Chrome> }) {
 function Thread({ chat, voice, chrome }: { chat: ChatState; voice: VoiceModeState; chrome: Partial<Chrome> }) {
   const { box, content } = useFollowBottom();
   const live = chat.live;
+  const busy = hasActiveTurn(live);
   const waiting = Boolean(live?.pending);
 
   return (
@@ -202,73 +204,10 @@ function Thread({ chat, voice, chrome }: { chat: ChatState; voice: VoiceModeStat
           ) : null}
 
           {chat.stored.map((turn) => (
-            <ChatTurn
-              key={turn.id}
-              touch
-              by={turn.by}
-              at={turn.at}
-              calls={turn.calls}
-              toolSummary={turn.toolSummary}
-              note={turn.note}
-              approval={
-                turn.approval ? (
-                  <ApprovalBubble
-                    touch
-                    reference={turn.approval.ref}
-                    title={turn.approval.title}
-                    why={turn.approval.why}
-                    hold={turn.approval.hold}
-                    facts={turn.approval.facts}
-                    choices={turn.approval.choices}
-                    settled={turn.approval.settled}
-                    onChoose={chat.answer}
-                  />
-                ) : null
-              }
-            >
-              {turn.approval ? null : turn.body}
-            </ChatTurn>
+            <StoredTurn key={turn.id} touch turn={turn} onAnswer={chat.answer} />
           ))}
 
-          {live ? (
-            <>
-              {echoed(chat) ? null : (
-                <ChatTurn touch by="user" at="now">
-                  {live.asked}
-                </ChatTurn>
-              )}
-              <ChatTurn
-                touch
-                by="agent"
-                at="now"
-                calls={live.calls}
-                callsOpen
-                note={live.opened.length ? `opened ${live.opened.join(", ")}` : null}
-                pending={!live.error}
-                approval={
-                  live.pending ? (
-                    <ApprovalBubble
-                      touch
-                      reference={live.pending.ref}
-                      title={live.pending.title}
-                      why={live.pending.why}
-                      hold={live.pending.hold}
-                      facts={live.pending.facts}
-                      choices={live.pending.actions}
-                      onChoose={chat.answer}
-                    />
-                  ) : null
-                }
-              >
-                {spoken(live)}
-                {live.error ? (
-                  <span style={{ font: "var(--text-phone-note)", color: "var(--danger-text)" }}>
-                    That turn didn't finish — {live.error}
-                  </span>
-                ) : null}
-              </ChatTurn>
-            </>
-          ) : null}
+          {live ? <LiveSection chat={chat} touch /> : null}
         </div>
       </div>
 
@@ -297,8 +236,9 @@ function Thread({ chat, voice, chrome }: { chat: ChatState; voice: VoiceModeStat
       <ThreadComposer
         chat={chat}
         // A turn that ended in an error is still on screen, but it is over —
-        // nothing is running, and the next thing you say has to be sendable.
-        busy={Boolean(live && !live.error)}
+        // and idle deferred approvals or background subagents leave the
+        // composer open for the next thing you want to say.
+        busy={busy}
         waiting={waiting}
         voiceActive={voice.active}
         onToggleVoice={voice.active ? voice.stopVoice : voice.startVoice}
@@ -346,15 +286,31 @@ function ThreadComposer({
         voiceActive={voiceActive}
         onToggleVoice={onToggleVoice}
       />
-      <span style={{ font: "var(--text-mono)", color: "var(--text-4)" }}>
-        {waiting
-          ? "Answer above first."
-          : busy
-            ? "Working."
-            : voiceActive
-              ? "Voice stream open · speak or type"
-              : "Enter sends."}
-      </span>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--sp-3)" }}>
+        <span style={{ font: "var(--text-mono)", color: "var(--text-4)" }}>
+          {waiting
+            ? "Answer above first."
+            : busy
+              ? "Working."
+              : voiceActive
+                ? "Voice stream open · speak or type"
+                : "Enter sends."}
+        </span>
+        {busy && chat.cancel ? (
+          <button
+            type="button"
+            onClick={chat.cancel}
+            style={{
+              all: "unset",
+              cursor: "pointer",
+              ...CONTROL,
+              color: "var(--text-3)",
+            }}
+          >
+            Stop
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }

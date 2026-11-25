@@ -11,6 +11,7 @@ import {
   type LiveServerMessage,
   type Session,
 } from "@google/genai";
+import type { ExternalTurnToolCall } from "@elicollinson/solenoid-engine";
 import { loadRuntimeConfig, type RuntimeConfig } from "../core/config";
 import type { Db } from "../db";
 import { loadChat } from "../db/queries/chat";
@@ -272,19 +273,23 @@ export class GeminiLiveSession {
   private readonly db: Db;
   private readonly conversationId: string;
   private readonly config: RuntimeConfig;
+  private readonly coordinator?: SessionCoordinator;
   private readonly onEvent: (event: GeminiLiveEvent) => void;
   private session?: Session;
   private closed = false;
   private connectionGeneration = 0;
   private connecting = false;
   private currentUserText = "";
+  private pendingUserText = "";
   private readonly toolsByName = new Map<string, ExecutableTool>();
   private readonly declarations: FunctionDeclaration[] = [];
   private currentTurnText = "";
   private currentTurnCalls: Array<{ name: string }> = [];
+  private currentTurnToolCalls: ExternalTurnToolCall[] = [];
   private openedGroups = new Set<string>();
   private readonly pendingCalls = new Map<string, { cancelled: boolean }>();
   private serverStatus = InteractionStatus.IDLE;
+  private pendingVoiceWrites: Promise<void> | null = null;
 
   private get extendedThinking(): boolean {
     return this.config.gemini.liveModel.replace(/^models\//, "") === "gemini-3.8-live-extended-thinking";
@@ -295,6 +300,7 @@ export class GeminiLiveSession {
     this.conversationId = options.conversationId;
     const config = options.config ?? loadRuntimeConfig();
     this.config = { ...config, gemini: { ...config.gemini } };
+    this.coordinator = options.coordinator;
     this.onEvent = options.onEvent;
 
     this.initTools();
@@ -468,6 +474,7 @@ export class GeminiLiveSession {
     this.session = undefined;
     this.finishInteraction();
     previous?.close();
+    if (this.pendingVoiceWrites) await this.pendingVoiceWrites;
     this.config.gemini.liveModel = enabled ? "models/gemini-3.8-live-extended-thinking" : "models/gemini-3.8-live";
     this.toolsByName.clear();
     this.declarations.length = 0;
@@ -478,7 +485,11 @@ export class GeminiLiveSession {
   private flushUserTranscript(): void {
     const text = this.currentUserText.trim();
     if (!text) return;
-    appendUserMessage(this.db, this.conversationId, text, new Date());
+    if (this.coordinator) {
+      this.pendingUserText = this.pendingUserText ? `${this.pendingUserText}\n${text}` : text;
+    } else {
+      appendUserMessage(this.db, this.conversationId, text, new Date());
+    }
     this.currentUserText = "";
     this.onEvent({ type: "user_text", text });
   }
@@ -583,9 +594,21 @@ export class GeminiLiveSession {
       // result must not revive a cancelled interaction or touch a closed session.
       if (this.closed || pending.cancelled) return;
       if (!tool?.isLoader) {
+        const durationMs = Math.round(performance.now() - started);
         this.currentTurnCalls.push({ name });
+        if (this.coordinator) {
+          this.currentTurnToolCalls.push({
+            id,
+            name,
+            args: call.args ?? {},
+            output: typeof result === "string" ? result : JSON.stringify(result),
+            ok,
+            durationMs,
+            kind: tool?.kind ?? "read",
+          });
+        }
         this.onEvent({ type: "tool", name: displayName(name), kind: tool?.kind ?? "read",
-          arg: displayArg(call.args), duration: displayDuration(performance.now() - started), ok });
+          arg: displayArg(call.args), duration: displayDuration(durationMs), ok });
       }
       this.serverStatus = InteractionStatus.IN_PROGRESS;
       this.session?.sendToolResponse({ functionResponses: [{ id, name,
@@ -601,10 +624,52 @@ export class GeminiLiveSession {
 
   private finishInteraction(): void {
     this.flushUserTranscript();
+    const userText = this.pendingUserText.trim();
     const body = this.currentTurnText.trim();
     const toolSummary = summarize(this.currentTurnCalls);
     const note = this.openedGroups.size ? `opened ${[...this.openedGroups].join(", ")}` : null;
-    if (!body && !this.currentTurnCalls.length && !this.openedGroups.size) return;
+    const hasAssistantContent = Boolean(body || this.currentTurnCalls.length || this.openedGroups.size);
+
+    if (this.coordinator) {
+      if (!userText && !hasAssistantContent) return;
+      const toolCalls = this.currentTurnToolCalls.length ? [...this.currentTurnToolCalls] : undefined;
+      const model = this.config.gemini.liveModel || "models/gemini-3.8-live-extended-thinking";
+      const assistantText = hasAssistantContent ? body || "(Voice response)" : undefined;
+      const writePromise = this.coordinator
+        .appendVoiceTurn(this.conversationId, {
+          ...(userText ? { userText } : {}),
+          ...(assistantText ? { assistantText } : {}),
+          ...(toolCalls ? { toolCalls } : {}),
+          source: "voice",
+          model,
+          screened: false,
+          timestamp: new Date().toISOString(),
+        })
+        .catch((err) => {
+          log.warn("Failed to persist Gemini Live turn via coordinator", {
+            conversationId: this.conversationId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      const prev = this.pendingVoiceWrites ?? Promise.resolve();
+      const next = prev.then(() => writePromise).finally(() => {
+        if (this.pendingVoiceWrites === next) {
+          this.pendingVoiceWrites = null;
+        }
+      });
+      this.pendingVoiceWrites = next;
+      if (hasAssistantContent) {
+        this.onEvent({ type: "turn_complete", agentText: body, toolSummary });
+      }
+      this.pendingUserText = "";
+      this.currentTurnText = "";
+      this.currentTurnCalls = [];
+      this.currentTurnToolCalls = [];
+      this.openedGroups.clear();
+      return;
+    }
+
+    if (!hasAssistantContent) return;
     try {
       appendAgentMessage(this.db, this.conversationId, body || "(Voice response)", { toolSummary, note }, new Date());
     } catch (err) {
@@ -633,7 +698,11 @@ export class GeminiLiveSession {
   sendText(text: string): void {
     if (this.closed || this.connecting || !this.session) return;
     try {
-      appendUserMessage(this.db, this.conversationId, text, new Date());
+      if (this.coordinator) {
+        this.pendingUserText = this.pendingUserText ? `${this.pendingUserText}\n${text}` : text;
+      } else {
+        appendUserMessage(this.db, this.conversationId, text, new Date());
+      }
       this.onEvent({ type: "user_text", text });
       this.session.sendClientContent({
         turns: [

@@ -1,14 +1,13 @@
 import {
-  ApprovalBubble,
   Button,
-  ChatTurn,
   Composer,
   ConversationRow,
   MonoLabel,
   RetroWigglyLine,
   StatusMark,
 } from "../kit";
-import { echoed, modelLabel, spoken, useFollowBottom, type ChatState } from "./chat";
+import { hasActiveTurn, modelLabel, useFollowBottom, type ChatState } from "./chat";
+import { LiveSection, StoredTurn } from "./ChatBlocks";
 import type { VoiceModeState } from "./useVoiceMode";
 
 /**
@@ -28,6 +27,8 @@ export function ChatView({ chat, voice }: { chat: ChatState; voice: VoiceModeSta
   const { box, content } = useFollowBottom();
   const live = chat.live;
   const open = Boolean(chat.openId);
+  const busy = hasActiveTurn(live);
+  const waiting = Boolean(live?.pending);
 
   return (
     <>
@@ -124,34 +125,9 @@ export function ChatView({ chat, voice }: { chat: ChatState; voice: VoiceModeSta
             {open ? (
               <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-8)", paddingTop: "var(--sp-6)" }}>
                 {chat.stored.map((turn) => (
-                  <ChatTurn
-                    key={turn.id}
-                    by={turn.by}
-                    at={turn.at}
-                    calls={turn.calls}
-                    toolSummary={turn.toolSummary}
-                    note={turn.note}
-                    approval={
-                      turn.approval ? (
-                        <ApprovalBubble
-                          reference={turn.approval.ref}
-                          title={turn.approval.title}
-                          why={turn.approval.why}
-                          hold={turn.approval.hold}
-                          facts={turn.approval.facts}
-                          choices={turn.approval.choices}
-                          settled={turn.approval.settled}
-                          onChoose={chat.answer}
-                        />
-                      ) : null
-                    }
-                  >
-                    {/* An approval's own turn IS the ask, and the bubble says
-                        it. Repeating the body above would print it twice. */}
-                    {turn.approval ? null : turn.body}
-                  </ChatTurn>
+                  <StoredTurn key={turn.id} turn={turn} onAnswer={chat.answer} />
                 ))}
-                {live ? <Live chat={chat} /> : null}
+                {live ? <LiveSection chat={chat} /> : null}
               </div>
             ) : null}
           </div>
@@ -188,16 +164,32 @@ export function ChatView({ chat, voice }: { chat: ChatState; voice: VoiceModeSta
               />
             </div>
           ) : null}
-          <div style={{ maxWidth: "var(--measure)" }}>
+          <div style={{ maxWidth: "var(--measure)", display: "flex", flexDirection: "column", gap: "var(--sp-2)" }}>
             <Composer
               onSend={chat.send}
-              busy={Boolean(live && !live.error)}
-              waiting={Boolean(live?.pending)}
+              busy={busy}
+              waiting={waiting}
               voiceActive={voice.active}
               onToggleVoice={voice.active ? voice.stopVoice : voice.startVoice}
               placeholder={voice.active ? "Voice mode active — speak or type" : "Tell me what to do"}
               style={{ borderTop: "none", padding: 0 }}
             />
+            {busy && chat.cancel ? (
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <Button
+                  variant="bare"
+                  size="sm"
+                  onClick={chat.cancel}
+                  style={{
+                    font: "var(--text-mono-control)",
+                    letterSpacing: "var(--tracking-control)",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  Stop
+                </Button>
+              </div>
+            ) : null}
           </div>
         </footer>
       </main>
@@ -274,55 +266,6 @@ export function ChatView({ chat, voice }: { chat: ChatState; voice: VoiceModeSta
 /** What the screen says when nothing is open. The design's own sentence. */
 const EMPTY_LIST =
   "Nothing said yet. Whatever you send starts a conversation of its own, and I'll keep it here.";
-
-/**
- * The turn in flight.
- *
- * Drawn from the stream rather than from the database, and it looks exactly
- * like a stored turn on purpose: when the run finishes, the live copy is
- * dropped and the written one takes its place, and that swap should be
- * invisible.
- */
-function Live({ chat }: { chat: ChatState }) {
-  const live = chat.live!;
-  return (
-    <>
-      {echoed(chat) ? null : (
-        <ChatTurn by="user" at="now">
-          {live.asked}
-        </ChatTurn>
-      )}
-      <ChatTurn
-        by="agent"
-        at="now"
-        calls={live.calls}
-        callsOpen
-        note={live.opened.length ? `opened ${live.opened.join(", ")}` : null}
-        pending={!live.error}
-        approval={
-          live.pending ? (
-            <ApprovalBubble
-              reference={live.pending.ref}
-              title={live.pending.title}
-              why={live.pending.why}
-              hold={live.pending.hold}
-              facts={live.pending.facts}
-              choices={live.pending.actions}
-              onChoose={chat.answer}
-            />
-          ) : null
-        }
-      >
-        {spoken(live)}
-        {live.error ? (
-          <span style={{ font: "var(--text-body-sm)", color: "var(--danger-text)" }}>
-            That turn didn't finish — {live.error}
-          </span>
-        ) : null}
-      </ChatTurn>
-    </>
-  );
-}
 
 function Notice({ children }: { children: React.ReactNode }) {
   return (

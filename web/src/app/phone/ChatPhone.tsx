@@ -9,6 +9,7 @@
 // agent's as prose, approvals as one standard bubble — but the bubble goes full
 // width and its buttons stack, because at this width a row of two buttons is
 // two half-buttons.
+import { useId, useState, type KeyboardEvent } from "react";
 import { Button, ConversationRow, RetroWigglyLine } from "../../kit";
 import { hasActiveTurn, modelLabel, useFollowBottom, type ChatState } from "../chat";
 import { LiveSection, StoredTurn } from "../ChatBlocks";
@@ -135,10 +136,17 @@ function Thread({ chat, voice, chrome }: { chat: ChatState; voice: VoiceModeStat
             onClick={() => chat.open(null)}
             style={{
               all: "unset",
+              appearance: "none",
+              WebkitAppearance: "none",
+              background: "transparent",
+              border: "none",
               cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              minHeight: "var(--touch)",
               alignSelf: "flex-start",
-              padding: "var(--sp-3) var(--sp-4)",
-              margin: "calc(var(--sp-3) * -1) calc(var(--sp-4) * -1)",
+              padding: "0 var(--sp-4)",
+              margin: "0 calc(var(--sp-4) * -1)",
               ...CONTROL,
               color: "var(--text-3)",
             }}
@@ -148,14 +156,15 @@ function Thread({ chat, voice, chrome }: { chat: ChatState; voice: VoiceModeStat
           <span
             style={{
               font: "var(--text-mono-meta)",
-              padding: "2px 6px",
+              padding: "2px 7px",
               borderRadius: "var(--radius-control)",
               background: "var(--surface-raised)",
-              border: "1px solid var(--border)",
+              border: "var(--border)",
               color: chat.voiceInvoked || voice.active ? "var(--text-1)" : "var(--text-3)",
               display: "inline-flex",
               alignItems: "center",
               gap: "5px",
+              whiteSpace: "nowrap",
               fontSize: "10px",
               textTransform: "uppercase",
               letterSpacing: "0.06em",
@@ -302,9 +311,18 @@ function ThreadComposer({
             onClick={chat.cancel}
             style={{
               all: "unset",
+              appearance: "none",
+              WebkitAppearance: "none",
+              background: "transparent",
+              border: "none",
               cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              minHeight: "var(--touch)",
+              padding: "0 var(--sp-3)",
+              margin: "calc(var(--sp-2) * -1) calc(var(--sp-3) * -1)",
               ...CONTROL,
-              color: "var(--text-3)",
+              color: "var(--danger-text)",
             }}
           >
             Stop
@@ -328,30 +346,45 @@ function Bar({
   voiceActive?: boolean;
   onToggleVoice?: () => void;
 }) {
+  const [text, setText] = useState("");
+  const inputId = useId();
+  const canSend = !disabled && !busy && Boolean(text.trim());
+
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) {
+      if (event.key === "Enter") event.preventDefault();
+    }
+  };
+
   return (
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        const field = event.currentTarget.elements.namedItem("say");
-        if (!(field instanceof HTMLInputElement)) return;
-        const said = field.value.trim();
+        const said = text.trim();
         if (!said || disabled || busy) return;
-        field.value = "";
+        setText("");
         onSend(said);
       }}
       style={{
         display: "flex",
         alignItems: "center",
-        gap: "var(--sp-3)",
+        gap: "var(--sp-2)",
         minHeight: "var(--touch)",
-        padding: "0 var(--sp-3) 0 var(--sp-5)",
+        padding: "3px 3px 3px var(--sp-5)",
         borderRadius: "var(--radius-card)",
         border: "var(--border-strong)",
         background: "var(--surface-raised)",
       }}
     >
+      <label htmlFor={inputId} className="sr-only">
+        Message Solenoid
+      </label>
       <input
+        id={inputId}
         name="say"
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        onKeyDown={onKeyDown}
         disabled={disabled}
         placeholder={disabled ? "Answer above first" : voiceActive ? "Voice active — speak or type" : "Tell me what to do"}
         style={{
@@ -370,25 +403,29 @@ function Bar({
           onClick={onToggleVoice}
           style={{
             all: "unset",
+            appearance: "none",
+            WebkitAppearance: "none",
+            boxSizing: "border-box",
             cursor: "pointer",
             display: "inline-flex",
             alignItems: "center",
+            justifyContent: "center",
             gap: "5px",
-            minHeight: 34,
-            padding: "0 var(--sp-3)",
+            minHeight: "var(--touch)",
+            padding: "0 var(--sp-4)",
             borderRadius: "var(--radius-control)",
-            background: voiceActive ? "var(--surface-hover)" : "transparent",
-            border: "1px solid",
-            borderColor: voiceActive ? "var(--line-strong)" : "var(--border)",
+            background: voiceActive ? "var(--surface-selected)" : "var(--surface-panel)",
+            border: voiceActive ? "1px solid var(--accent)" : "1px solid var(--line-strong)",
             color: voiceActive ? "var(--text-1)" : "var(--text-2)",
-            font: "var(--text-mono-meta)",
-            fontSize: "11px",
+            font: "var(--text-mono-control)",
+            letterSpacing: "var(--tracking-control)",
             textTransform: "uppercase",
-            letterSpacing: "0.06em",
+            flexShrink: 0,
           }}
           title={voiceActive ? "End voice session" : "Start voice mode with Gemini Live"}
         >
           <span
+            aria-hidden="true"
             style={{
               width: "6px",
               height: "6px",
@@ -401,19 +438,24 @@ function Bar({
       ) : null}
       <button
         type="submit"
-        disabled={disabled || busy}
+        disabled={!canSend}
         style={{
           all: "unset",
-          cursor: disabled || busy ? "default" : "pointer",
+          appearance: "none",
+          WebkitAppearance: "none",
+          boxSizing: "border-box",
+          cursor: canSend ? "pointer" : "default",
           display: "inline-flex",
           alignItems: "center",
-          minHeight: 34,
-          padding: "0 var(--sp-4)",
+          justifyContent: "center",
+          minHeight: "var(--touch)",
+          padding: "0 var(--sp-5)",
           borderRadius: "var(--radius-control)",
           background: "var(--affirm)",
           color: "var(--text-on-accent)",
           font: "var(--text-ui-sm)",
-          opacity: disabled || busy ? 0.45 : 1,
+          opacity: canSend ? 1 : 0.45,
+          flexShrink: 0,
         }}
       >
         Send

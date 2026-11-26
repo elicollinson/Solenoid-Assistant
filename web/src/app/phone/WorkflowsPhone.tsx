@@ -140,7 +140,7 @@ export function WorkflowsPhone({
       <PhoneTitle title="Workflows" lede={workflows.lede} />
       <SourceStatus style={{ padding: "0 var(--gutter-phone) var(--sp-6)", font: "var(--text-phone-note)" }} />
 
-      <div style={{ display: "flex", gap: "var(--sp-2)", padding: "0 var(--gutter-phone) var(--sp-6)", overflowX: "auto", flexShrink: 0 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-2)", padding: "0 var(--gutter-phone) var(--sp-6)", flexShrink: 0 }}>
         {FILTERS.map((label) => (
           <Chip
             key={label}
@@ -161,7 +161,7 @@ export function WorkflowsPhone({
           const rows = shown.filter((row) => (isPaused(row) ? "idle" : row.state) === state);
           if (!rows.length) return null;
           return (
-            <div key={state}>
+            <div key={state} style={{ display: "flex", flexDirection: "column" }}>
               <SectionRule label={label} style={{ padding: "var(--sp-7) 0 var(--sp-4)" }} />
               {rows.map((row) => (
                 <Row key={row.slug} row={row} paused={isPaused(row)} onOpen={() => onOpen(row.slug)} />
@@ -212,13 +212,16 @@ function Row({ row, paused, onOpen }: { row: WorkflowRow; paused: boolean; onOpe
       onPointerLeave={() => setPress(false)}
       style={{
         all: "unset",
+        appearance: "none",
+        WebkitAppearance: "none",
+        border: "none",
         boxSizing: "border-box",
         cursor: "pointer",
         display: "grid",
         gridTemplateColumns: "18px 1fr",
         gap: "var(--sp-5)",
         alignItems: "start",
-        width: "auto",
+        width: "calc(100% + 2 * var(--gutter-phone))",
         minHeight: "var(--touch)",
         padding: "var(--sp-6) var(--gutter-phone)",
         // The row bleeds to the edge of the phone; the gutter its parent

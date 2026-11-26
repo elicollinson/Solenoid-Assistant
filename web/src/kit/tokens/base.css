@@ -8,7 +8,20 @@ body {
 }
 a { color: var(--accent-quiet); text-decoration: none; }
 a:hover { color: var(--accent); }
-button { font: inherit; }
+button { font: inherit; -webkit-appearance: none; appearance: none; }
+
+/* Visually hidden labels for screen readers without disturbing layout. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* Phone frames scroll, but a device does not show a scrollbar. */
 [data-frame="phone"], [data-frame="phone"] * { scrollbar-width: none; }
@@ -30,3 +43,9 @@ button { font: inherit; }
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Controls drawn with `all: unset` lose the browser's focus ring along with its
+   styling, which left keyboard users with no idea where they were. Inline
+   styles win over this sheet, hence !important; :focus-visible keeps it off
+   mouse clicks. */
+:focus-visible { outline: 2px solid var(--accent) !important; outline-offset: 2px; }

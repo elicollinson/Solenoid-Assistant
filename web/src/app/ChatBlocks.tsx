@@ -96,6 +96,10 @@ export function LiveToolCalls({
         onClick={() => setOpen((o) => !o)}
         style={{
           all: "unset",
+          appearance: "none",
+          WebkitAppearance: "none",
+          background: "transparent",
+          border: "none",
           cursor: "pointer",
           display: "flex",
           alignItems: "center",
@@ -369,7 +373,7 @@ export function StoredTurn({
 
   if (turn.source === "voice" || turn.source === "subagent") {
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-1)" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2)" }}>
         <TurnProvenance source={turn.source} align={turn.by === "user" ? "end" : "start"} />
         {node}
       </div>
@@ -460,7 +464,7 @@ export function LiveSection({
 
       {agentTurn ? (
         live.source === "subagent" ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-1)" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2)" }}>
             <TurnProvenance source="subagent" />
             {agentTurn}
           </div>

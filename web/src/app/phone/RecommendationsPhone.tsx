@@ -82,7 +82,7 @@ export function RecommendationsPhone({
     <>
       <PhoneTitle title="Recommendations" lede={lede} />
 
-      <div style={{ display: "flex", gap: "var(--sp-2)", padding: "0 var(--gutter-phone) var(--sp-6)", overflowX: "auto", flexShrink: 0 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-2)", padding: "0 var(--gutter-phone) var(--sp-6)", flexShrink: 0 }}>
         {FILTERS.map((label) => (
           <Chip
             key={label}

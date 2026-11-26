@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent } from "react";
 import { Button } from "../core/Button";
 
 /**
@@ -19,6 +19,7 @@ import { Button } from "../core/Button";
  */
 export function Composer({
   onSend,
+  onCancel,
   busy = false,
   waiting = false,
   placeholder = "Ask Solenoid",
@@ -28,6 +29,8 @@ export function Composer({
   style,
 }: {
   onSend: (text: string) => void;
+  /** Cancel an in-flight turn without shifting the footer's height. */
+  onCancel?: () => void;
   /** A turn is running. You can still type the next thing; it just cannot go. */
   busy?: boolean;
   /** A turn is stopped on an approval. Nothing may be said until it is settled. */
@@ -42,14 +45,16 @@ export function Composer({
 }) {
   const [text, setText] = useState("");
   const field = useRef<HTMLTextAreaElement>(null);
+  const inputId = useId();
+  const minControlHeight = size === "touch" ? 44 : 40;
 
   // Grow to fit. Reset to auto first or the box can only ever get taller.
   useEffect(() => {
     const node = field.current;
     if (!node) return;
     node.style.height = "auto";
-    node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
-  }, [text]);
+    node.style.height = `${Math.max(minControlHeight, Math.min(node.scrollHeight, 160))}px`;
+  }, [text, minControlHeight]);
 
   const blocked = busy || waiting;
   const send = () => {
@@ -59,14 +64,23 @@ export function Composer({
     setText("");
   };
 
+  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    send();
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Pairing isComposing with keyCode === 229 catches Safari's out-of-order
+    // confirming Enter keydown during CJK / IME composition.
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     if (event.key !== "Enter" || event.shiftKey) return;
     event.preventDefault();
     send();
   };
 
   return (
-    <div
+    <form
+      onSubmit={onSubmit}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -76,8 +90,12 @@ export function Composer({
         ...style,
       }}
     >
-      <div style={{ display: "flex", alignItems: "flex-end", gap: "var(--sp-4)" }}>
+      <label htmlFor={inputId} className="sr-only">
+        Message Solenoid
+      </label>
+      <div style={{ display: "flex", alignItems: "flex-end", gap: "var(--sp-3)" }}>
         <textarea
+          id={inputId}
           ref={field}
           rows={1}
           value={text}
@@ -88,36 +106,40 @@ export function Composer({
           style={{
             flex: 1,
             minWidth: 0,
+            minHeight: minControlHeight,
             resize: "none",
             boxSizing: "border-box",
-            padding: size === "touch" ? "var(--sp-4) var(--sp-5)" : "var(--sp-3) var(--sp-4)",
+            padding: size === "touch" ? "10px var(--sp-5)" : "8px var(--sp-5)",
             borderRadius: "var(--radius-control)",
-            border: "var(--border)",
+            border: "var(--border-strong)",
             background: "var(--surface-raised)",
             color: "var(--text-1)",
             // 16px on the phone. Below that Safari zooms the page on focus and
             // never zooms back, which leaves the tab bar off screen.
             font: size === "touch" ? "var(--text-phone-body)" : "var(--text-body)",
-            outline: "none",
+            lineHeight: size === "touch" ? "1.45" : "1.5",
           }}
         />
         {onToggleVoice ? (
           <Button
-            variant={voiceActive ? "quiet" : "bare"}
+            variant="quiet"
             size={size === "touch" ? "touch" : "md"}
             onClick={onToggleVoice}
             style={{
-              display: "flex",
-              alignItems: "center",
+              height: minControlHeight,
+              padding: "0 var(--sp-5)",
               gap: "var(--sp-2)",
               font: "var(--text-mono-control)",
               letterSpacing: "var(--tracking-control)",
-              color: voiceActive ? "var(--text-1)" : "var(--text-3)",
-              background: voiceActive ? "var(--surface-hover)" : undefined,
+              textTransform: "uppercase",
+              border: voiceActive ? "1px solid var(--accent)" : "1px solid var(--line-strong)",
+              background: voiceActive ? "var(--surface-selected)" : "var(--surface-raised)",
+              color: voiceActive ? "var(--text-1)" : "var(--text-2)",
             }}
             title={voiceActive ? "End voice session" : "Start voice mode with Gemini Live"}
           >
             <span
+              aria-hidden="true"
               style={{
                 width: "6px",
                 height: "6px",
@@ -129,11 +151,22 @@ export function Composer({
             {voiceActive ? "End Voice" : "Voice"}
           </Button>
         ) : null}
+        {busy && onCancel ? (
+          <Button
+            variant="danger"
+            size={size === "touch" ? "touch" : "md"}
+            onClick={onCancel}
+            style={{ height: minControlHeight, padding: "0 var(--sp-5)" }}
+          >
+            Stop
+          </Button>
+        ) : null}
         <Button
+          type="submit"
           variant="affirm"
           size={size === "touch" ? "touch" : "md"}
           disabled={blocked || !text.trim()}
-          onClick={send}
+          style={{ height: minControlHeight, padding: "0 var(--sp-7)" }}
         >
           Send
         </Button>
@@ -147,6 +180,6 @@ export function Composer({
               ? "Voice stream is open · speak or type"
               : "Enter sends · shift-enter for a new line"}
       </span>
-    </div>
+    </form>
   );
 }

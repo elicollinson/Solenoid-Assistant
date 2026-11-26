@@ -20,8 +20,8 @@ import { createChatAgent, type ChatAgent } from "../../agents/chat";
 import { loadChat, loadConversations } from "../../db/queries/chat";
 import {
   NoSuchDecisionError,
+  blankConversation,
   latestConversation,
-  startConversation,
 } from "../../db/mutations/chat";
 import { NotWaitingError, answerApproval, runChatTurn } from "../../chat/session";
 import { getDefaultCoordinator, type SessionCoordinator } from "../../chat/coordinator";
@@ -94,7 +94,7 @@ export function createChatRoutes(
       "/api/chat",
       ({ set }) => {
         set.status = 201;
-        return { conversationId: startConversation(resolveDb()) };
+        return { conversationId: blankConversation(resolveDb()) };
       },
       {
         detail: { summary: "Start a conversation. It names itself from the first thing you say." },

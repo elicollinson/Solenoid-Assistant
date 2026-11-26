@@ -63,7 +63,7 @@ export function MemoryPhone({
     <>
       <PhoneTitle title="Things I know" lede={knowledge.lede} />
 
-      <div style={{ display: "flex", gap: "var(--sp-2)", padding: "0 var(--gutter-phone) var(--sp-6)", overflowX: "auto", flexShrink: 0 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-2)", padding: "0 var(--gutter-phone) var(--sp-6)", flexShrink: 0 }}>
         {knowledge.filters.map((filter) => (
           <Chip
             key={filter.label}
@@ -87,7 +87,7 @@ export function MemoryPhone({
           const rows = shown.filter((row) => row.group === name);
           if (!rows.length) return null;
           return (
-            <div key={name}>
+            <div key={name} style={{ display: "flex", flexDirection: "column" }}>
               <SectionRule label={name} style={{ padding: "var(--sp-7) 0 var(--sp-4)" }} />
               {rows.map((row) => (
                 <Row key={row.id} row={row} onOpen={() => onOpen(row.id)} />
@@ -114,12 +114,16 @@ function Row({ row, onOpen }: { row: KnowledgeRow; onOpen: () => void }) {
       onPointerLeave={() => setPress(false)}
       style={{
         all: "unset",
+        appearance: "none",
+        WebkitAppearance: "none",
+        border: "none",
         boxSizing: "border-box",
         cursor: "pointer",
         display: "grid",
         gridTemplateColumns: "18px 1fr",
         gap: "var(--sp-5)",
         alignItems: "start",
+        width: "calc(100% + 2 * var(--gutter-phone))",
         minHeight: "var(--touch)",
         padding: "var(--sp-6) var(--gutter-phone)",
         margin: "0 calc(-1 * var(--gutter-phone))",

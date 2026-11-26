@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import {
   Button,
   Composer,
@@ -11,6 +12,18 @@ import { LiveSection, StoredTurn } from "./ChatBlocks";
 import type { VoiceModeState } from "./useVoiceMode";
 
 /**
+ * Shared horizontal rail for the header, transcript, and composer so the title,
+ * model badge, right-aligned user bubbles, and composer edges line up cleanly
+ * at standard desktop widths while staying bounded on ultrawide monitors.
+ * Individual agent paragraphs stay constrained to `--measure` inside `ChatTurn`.
+ */
+const COLUMN: CSSProperties = {
+  width: "100%",
+  maxWidth: 880,
+  marginInline: "auto",
+};
+
+/**
  * Talking to the agent, on the desktop.
  *
  * Two columns rather than one, and the second is not an afterthought: the
@@ -18,10 +31,6 @@ import type { VoiceModeState } from "./useVoiceMode";
  * this app puts "the other things like the one you are looking at". Chat is the
  * only surface where that list is also the navigation, so it carries the New
  * control, and the restraint line sits under it.
- *
- * The transcript is held to `--measure` inside the canvas. A conversation is
- * prose, and prose at 900px is unreadable — the same decision the reminders
- * lede makes with the same empty half.
  */
 export function ChatView({ chat, voice }: { chat: ChatState; voice: VoiceModeState }) {
   const { box, content } = useFollowBottom();
@@ -35,83 +44,91 @@ export function ChatView({ chat, voice }: { chat: ChatState; voice: VoiceModeSta
       <main style={{ gridColumn: "2", display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
         <header
           style={{
-            display: "flex",
-            alignItems: "flex-end",
-            justifyContent: "space-between",
-            gap: "var(--sp-8)",
             padding: "var(--sp-9) var(--sp-10) 18px",
             borderBottom: "var(--border)",
           }}
         >
-          <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2)", minWidth: 0 }}>
-            <h1
-              style={{
-                margin: 0,
-                font: "var(--text-display)",
-                letterSpacing: "var(--tracking-display)",
-                color: "var(--text-1)",
-                textWrap: "pretty",
-              }}
-            >
-              {chat.title ?? (open ? "New conversation" : "Chat")}
-            </h1>
-            <p
-              style={{
-                margin: 0,
-                font: "var(--text-body)",
-                color: "var(--text-3)",
-                maxWidth: "var(--measure)",
-                textWrap: "pretty",
-              }}
-            >
-              {open
-                ? chat.lede || "Ask me anything. Anything needing your word stops here as a bubble."
-                : EMPTY_LIST}
-            </p>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-4)", flexShrink: 0 }}>
-            {open ? (
-              <span
+          <div
+            style={{
+              ...COLUMN,
+              display: "flex",
+              alignItems: "flex-end",
+              justifyContent: "space-between",
+              gap: "var(--sp-8)",
+            }}
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2)", minWidth: 0 }}>
+              <h1
                 style={{
-                  font: "var(--text-mono-meta)",
-                  padding: "4px 8px",
-                  borderRadius: "var(--radius-control)",
-                  background: "var(--surface-raised)",
-                  border: "1px solid var(--border)",
-                  color: chat.voiceInvoked || voice.active ? "var(--text-1)" : "var(--text-3)",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  fontSize: "11px",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.06em",
+                  margin: 0,
+                  font: "var(--text-display)",
+                  letterSpacing: "var(--tracking-display)",
+                  color: "var(--text-1)",
+                  textWrap: "pretty",
                 }}
               >
+                {chat.title ?? (open ? "New conversation" : "Chat")}
+              </h1>
+              <p
+                style={{
+                  margin: 0,
+                  font: "var(--text-body)",
+                  color: "var(--text-3)",
+                  maxWidth: "var(--measure)",
+                  textWrap: "pretty",
+                }}
+              >
+                {open
+                  ? chat.lede || "Ask me anything. Anything needing your word stops here as a bubble."
+                  : EMPTY_LIST}
+              </p>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-4)", flexShrink: 0 }}>
+              {open ? (
                 <span
                   style={{
-                    width: "6px",
-                    height: "6px",
-                    borderRadius: "50%",
-                    backgroundColor: chat.voiceInvoked || voice.active ? "var(--signal-green)" : "var(--text-4)",
+                    font: "var(--text-mono-meta)",
+                    padding: "4px 9px",
+                    borderRadius: "var(--radius-control)",
+                    background: "var(--surface-raised)",
+                    border: "var(--border)",
+                    color: chat.voiceInvoked || voice.active ? "var(--text-1)" : "var(--text-3)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    whiteSpace: "nowrap",
+                    fontSize: "11px",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.06em",
                   }}
-                />
-                {chat.voiceInvoked || voice.active ? "Gemini Live" : modelLabel(chat.model) ?? "Model"}
-              </span>
-            ) : null}
-
-            {chat.waiting ? (
-              <span style={{ display: "flex", alignItems: "center", gap: "var(--sp-3)" }}>
-                <StatusMark state="attention" size={11} />
-                <span style={{ font: "var(--text-mono)", color: "var(--text-3)" }}>
-                  {chat.waiting === 1 ? "one is waiting on you" : `${chat.waiting} are waiting on you`}
+                >
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      width: "6px",
+                      height: "6px",
+                      borderRadius: "50%",
+                      backgroundColor: chat.voiceInvoked || voice.active ? "var(--signal-green)" : "var(--text-4)",
+                    }}
+                  />
+                  {chat.voiceInvoked || voice.active ? "Gemini Live" : modelLabel(chat.model) ?? "Model"}
                 </span>
-              </span>
-            ) : null}
+              ) : null}
+
+              {chat.waiting ? (
+                <span style={{ display: "flex", alignItems: "center", gap: "var(--sp-3)" }}>
+                  <StatusMark state="attention" size={11} />
+                  <span style={{ font: "var(--text-mono)", color: "var(--text-3)" }}>
+                    {chat.waiting === 1 ? "one is waiting on you" : `${chat.waiting} are waiting on you`}
+                  </span>
+                </span>
+              ) : null}
+            </div>
           </div>
         </header>
 
         <div ref={box} style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "0 var(--sp-10) var(--sp-9)" }}>
-          <div ref={content} style={{ maxWidth: "var(--measure)", display: "flex", flexDirection: "column" }}>
+          <div ref={content} style={{ ...COLUMN, display: "flex", flexDirection: "column" }}>
             {chat.status === "error" ? (
               <Notice>
                 I couldn't read it — {chat.message}. Start the server with <code>bun run start:server</code>.
@@ -135,38 +152,36 @@ export function ChatView({ chat, voice }: { chat: ChatState; voice: VoiceModeSta
 
         <footer
           style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "var(--sp-4)",
             padding: "var(--sp-6) var(--sp-10) var(--sp-8)",
             borderTop: "var(--border)",
             background: "var(--surface-panel)",
           }}
         >
-          {voice.error ? (
-            <p role="alert" style={{ maxWidth: "var(--measure)", margin: 0 }}>
-              Voice mode failed: {voice.error}
-            </p>
-          ) : null}
-          {voice.active ? (
-            <div style={{ maxWidth: "var(--measure)" }}>
-              <RetroWigglyLine
-                active={voice.active}
-                analyserNode={voice.analyserNode}
-                isWorking={voice.isWorking} isSpeaking={voice.isSpeaking}
-                isMuted={voice.isMuted}
-                extendedThinking={voice.extendedThinking}
-                thinkingDisabled={voice.status !== "open" || voice.isWorking || voice.isSpeaking}
-                reconnecting={voice.status === "connecting"}
-                onToggleThinking={voice.toggleExtendedThinking}
-                onToggleMute={voice.toggleMute}
-                onEndVoice={voice.stopVoice}
-              />
-            </div>
-          ) : null}
-          <div style={{ maxWidth: "var(--measure)", display: "flex", flexDirection: "column", gap: "var(--sp-2)" }}>
+          <div style={{ ...COLUMN, display: "flex", flexDirection: "column", gap: "var(--sp-4)" }}>
+            {voice.error ? (
+              <p role="alert" style={{ margin: 0, font: "var(--text-body-sm)", color: "var(--danger-text)" }}>
+                Voice mode failed: {voice.error}
+              </p>
+            ) : null}
+            {voice.active ? (
+              <div>
+                <RetroWigglyLine
+                  active={voice.active}
+                  analyserNode={voice.analyserNode}
+                  isWorking={voice.isWorking} isSpeaking={voice.isSpeaking}
+                  isMuted={voice.isMuted}
+                  extendedThinking={voice.extendedThinking}
+                  thinkingDisabled={voice.status !== "open" || voice.isWorking || voice.isSpeaking}
+                  reconnecting={voice.status === "connecting"}
+                  onToggleThinking={voice.toggleExtendedThinking}
+                  onToggleMute={voice.toggleMute}
+                  onEndVoice={voice.stopVoice}
+                />
+              </div>
+            ) : null}
             <Composer
               onSend={chat.send}
+              onCancel={chat.cancel}
               busy={busy}
               waiting={waiting}
               voiceActive={voice.active}
@@ -174,22 +189,6 @@ export function ChatView({ chat, voice }: { chat: ChatState; voice: VoiceModeSta
               placeholder={voice.active ? "Voice mode active — speak or type" : "Tell me what to do"}
               style={{ borderTop: "none", padding: 0 }}
             />
-            {busy && chat.cancel ? (
-              <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <Button
-                  variant="bare"
-                  size="sm"
-                  onClick={chat.cancel}
-                  style={{
-                    font: "var(--text-mono-control)",
-                    letterSpacing: "var(--tracking-control)",
-                    textTransform: "uppercase",
-                  }}
-                >
-                  Stop
-                </Button>
-              </div>
-            ) : null}
           </div>
         </footer>
       </main>

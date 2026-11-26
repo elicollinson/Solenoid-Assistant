@@ -49,3 +49,63 @@ button { font: inherit; -webkit-appearance: none; appearance: none; }
    styles win over this sheet, hence !important; :focus-visible keeps it off
    mouse clicks. */
 :focus-visible { outline: 2px solid var(--accent) !important; outline-offset: 2px; }
+
+/* Collapsible reasoning disclosure at the top of an assistant turn.
+   Native <details>/<summary> keeps closed thoughts findable in page and
+   keyboard-accessible; ::details-content smoothly animates where supported
+   and degrades cleanly to an instant toggle elsewhere. */
+.solenoid-reasoning {
+  border-radius: var(--radius-control);
+  background: var(--surface-sunken);
+  font: var(--text-mono);
+  color: var(--text-3);
+}
+.solenoid-reasoning > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-control);
+  color: var(--text-3);
+  user-select: none;
+  transition: color var(--dur) var(--ease);
+}
+.solenoid-reasoning > summary::-webkit-details-marker {
+  display: none;
+}
+.solenoid-reasoning > summary:hover {
+  color: var(--text-1);
+}
+.solenoid-reasoning > summary::before {
+  content: "";
+  inline-size: 0.65em;
+  block-size: 0.65em;
+  flex-shrink: 0;
+  background-color: var(--accent);
+  clip-path: polygon(20% 10%, 88% 50%, 20% 90%);
+  rotate: 0deg;
+}
+.solenoid-reasoning[open] > summary::before {
+  rotate: 90deg;
+}
+.solenoid-reasoning::details-content {
+  interpolate-size: allow-keywords;
+  overflow: clip;
+  contain: layout;
+}
+.solenoid-reasoning:not([open])::details-content {
+  block-size: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .solenoid-reasoning > summary::before {
+    transition: rotate 0.18s var(--ease);
+  }
+  .solenoid-reasoning::details-content {
+    transition: block-size, content-visibility, display;
+    transition-duration: 0.22s;
+    transition-timing-function: ease-in-out;
+    transition-behavior: allow-discrete;
+  }
+}

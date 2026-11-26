@@ -21,6 +21,7 @@ import { ToolCalls, type ToolCall } from "./ToolCalls";
 export function ChatTurn({
   by,
   at,
+  reasoning,
   children,
   calls = [],
   callsOpen = false,
@@ -34,6 +35,8 @@ export function ChatTurn({
   by: "user" | "agent";
   /** "09:39", "Thu 09:39". Derived at read time — never stored. */
   at: string;
+  /** Collapsible model thinking shown at the top of an agent turn, above prose. */
+  reasoning?: ReactNode;
   children?: ReactNode;
   calls?: readonly ToolCall[];
   /** Expanded rather than collapsed. What a turn still running is doing is the
@@ -97,6 +100,7 @@ export function ChatTurn({
         </p>
       ) : (
         <>
+          {reasoning}
           {children || pending ? (
             <div
               style={{

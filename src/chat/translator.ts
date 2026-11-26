@@ -284,12 +284,14 @@ export class AgUiToChatEventTranslator {
                 : this.lastNonEmptyAssistantText.length > 0
                   ? (this.lastNonEmptyAssistantId ?? this.currentRunId ?? "assistant")
                   : (this.pendingAssistantId ?? this.lastAssistantId ?? this.currentRunId ?? "assistant");
+            const reasoning = this.live.streamingReasoning.trim() || null;
             const messageEvent: ChatEvent = {
               type: "message",
               messageId,
               body,
               note: noteFor(this.live.opened),
               toolSummary: summarizeDisplayCalls(this.live.calls),
+              ...(reasoning ? { reasoning } : {}),
               source: this.live.source,
             };
             this.clearActiveTurn();
@@ -512,8 +514,17 @@ export class AgUiToChatEventTranslator {
         return [endEvent];
       }
 
+      case EventType.REASONING_MESSAGE_START: {
+        // Separate distinct reasoning blocks across multi-step turns cleanly.
+        if (this.live?.streamingReasoning.trim().length) {
+          const sep: ChatEvent = { type: "reasoning_delta", text: "\n\n" };
+          this.applyLiveEvent(sep);
+          return [sep];
+        }
+        return [];
+      }
+
       case EventType.REASONING_START:
-      case EventType.REASONING_MESSAGE_START:
       case EventType.REASONING_MESSAGE_END:
       case EventType.REASONING_END:
       case EventType.REASONING_ENCRYPTED_VALUE:
@@ -806,8 +817,14 @@ export class AgUiToChatEventTranslator {
     const calls: ChatToolCall[] = [];
     const opened: string[] = [];
     const openedSet = new Set<string>();
+    const reasoningParts: string[] = [];
 
     for (const msg of turnSlice) {
+      if (msg.role === "reasoning") {
+        const text = typeof msg.content === "string" ? msg.content.trim() : "";
+        if (text) reasoningParts.push(text);
+        continue;
+      }
       if (msg.role !== "assistant") continue;
       this.lastAssistantId = msg.id;
       if (msg.content && msg.content.length > 0) {
@@ -875,7 +892,7 @@ export class AgUiToChatEventTranslator {
       source,
       said,
       streamingText: "",
-      streamingReasoning: "",
+      streamingReasoning: reasoningParts.join("\n\n"),
       calls,
       opened,
       pending: null,
@@ -1027,9 +1044,18 @@ export function hydrateTurnsFromThread(
     const openedSet = new Set<string>();
     const calls: ChatToolCall[] = [];
     const seenCallIds = new Set<string>();
+    const reasoningParts: string[] = [];
     let approval: ChatApproval | null = null;
     let lastWithContent: AssistantMessage | null = null;
     let resolvedSource: "text" | "voice" | "subagent" = current.defaultSource;
+
+    for (const m of current.messages) {
+      if (m.role === "reasoning") {
+        const text = typeof m.content === "string" ? m.content.trim() : "";
+        if (text) reasoningParts.push(text);
+      }
+    }
+    const reasoning = reasoningParts.length ? reasoningParts.join("\n\n") : null;
 
     for (const assistant of assistants) {
       const explicitSource = metadataSource(assistant);
@@ -1103,6 +1129,7 @@ export function hydrateTurnsFromThread(
       toolSummary: summarizeDisplayCalls(calls),
       calls,
       approval,
+      ...(reasoning ? { reasoning } : {}),
       source: resolvedSource,
     });
   };

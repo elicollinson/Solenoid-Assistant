@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApprovalBubble, Badge, ChatTurn, MonoLabel, StatusMark } from "../kit";
 import {
   echoed,
@@ -149,25 +149,66 @@ export function LiveToolCalls({
   );
 }
 
-/** Quiet live reasoning stream shown above prose when reasoning tokens arrive. */
-export function LiveReasoning({ text, touch = false }: { text?: string; touch?: boolean }) {
-  if (!text?.trim()) return null;
+/**
+ * Collapsible model reasoning disclosure placed at the top of an assistant turn.
+ * Starts open while streaming and automatically closes once the turn finishes
+ * (or pauses for approval), remaining re-openable at any time.
+ */
+export function ReasoningAccordion({
+  text,
+  streaming = false,
+  touch = false,
+}: {
+  text?: string | null;
+  streaming?: boolean;
+  touch?: boolean;
+}) {
+  const trimmed = text?.trim() ?? "";
+  const [open, setOpen] = useState(streaming);
+  const prevStreaming = useRef(streaming);
+
+  useEffect(() => {
+    if (prevStreaming.current && !streaming) {
+      setOpen(false);
+    } else if (!prevStreaming.current && streaming) {
+      setOpen(true);
+    }
+    prevStreaming.current = streaming;
+  }, [streaming]);
+
+  if (!trimmed) return null;
+
   return (
-    <div
-      style={{
-        font: "var(--text-mono)",
-        color: "var(--text-4)",
-        borderLeft: "2px solid var(--line-strong)",
-        paddingLeft: "var(--sp-4)",
-        marginBottom: "var(--sp-3)",
-        maxWidth: touch ? "none" : "56ch",
-        whiteSpace: "pre-wrap",
+    <details
+      open={open}
+      onToggle={(event) => {
+        setOpen(event.currentTarget.open);
       }}
+      className="solenoid-reasoning"
+      style={{ maxWidth: touch ? "none" : "56ch" }}
     >
-      {text}
-    </div>
+      <summary style={touch ? { minHeight: "var(--touch)", boxSizing: "border-box" } : undefined}>
+        {streaming ? "Thinking…" : "Thinking"}
+      </summary>
+      <div style={{ padding: "0 var(--sp-4) var(--sp-4)" }}>
+        <div
+          style={{
+            borderLeft: "2px solid var(--line-strong)",
+            paddingLeft: "var(--sp-4)",
+            color: "var(--text-3)",
+            whiteSpace: "pre-wrap",
+            overflowWrap: "anywhere",
+          }}
+        >
+          {trimmed}
+        </div>
+      </div>
+    </details>
   );
 }
+
+/** Backwards-compatible alias for live reasoning disclosure. */
+export const LiveReasoning = ReasoningAccordion;
 
 /** Live summary strip of background subagents attached to this conversation. */
 export function ActiveSubagentsBar({
@@ -360,6 +401,11 @@ export function StoredTurn({
       touch={touch}
       by={turn.by}
       at={turn.at}
+      reasoning={
+        turn.by === "agent" && turn.reasoning ? (
+          <ReasoningAccordion text={turn.reasoning} touch={touch} />
+        ) : null
+      }
       calls={turn.calls}
       toolSummary={turn.toolSummary}
       note={turn.note}
@@ -416,6 +462,15 @@ export function LiveSection({
       touch={touch}
       by="agent"
       at="now"
+      reasoning={
+        live.streamingReasoning ? (
+          <ReasoningAccordion
+            text={live.streamingReasoning}
+            streaming={active && !live.pending}
+            touch={touch}
+          />
+        ) : null
+      }
       calls={[]}
       note={live.opened.length ? `opened ${live.opened.join(", ")}` : null}
       pending={active}
@@ -439,7 +494,6 @@ export function LiveSection({
         ) : null
       }
     >
-      <LiveReasoning text={live.streamingReasoning} touch={touch} />
       {prose}
       {live.error ? (
         <span

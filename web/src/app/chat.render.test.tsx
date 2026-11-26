@@ -12,6 +12,9 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { Window } from "happy-dom";
 import { createDb, runMigrations, type Db } from "../../../src/db";
 import { loadChat, loadConversations } from "../../../src/db/queries/chat";
 import {
@@ -23,6 +26,7 @@ import {
 } from "../../../src/db/mutations/chat";
 import { zonedTime } from "../../../src/db/seed/time";
 import type { ChatApproval, ChatListPayload, ChatPayload, ChatTurnRow } from "../../../src/shared/chat";
+import { ReasoningAccordion } from "./ChatBlocks";
 import { ChatView } from "./ChatView";
 import { ChatPhone } from "./phone/ChatPhone";
 import type { VoiceModeState } from "./useVoiceMode";
@@ -567,6 +571,109 @@ describe("voice-originated turn indicator (source: 'voice') on desktop and phone
       const voiceMatches = voiceMarkup.match(/\bvoice\b|\bspoken\b/gi)?.length ?? 0;
       const textMatches = textMarkup.match(/\bvoice\b|\bspoken\b/gi)?.length ?? 0;
       expect(voiceMatches).toBeGreaterThan(textMatches);
+    }
+  });
+});
+
+describe("collapsible thinking accordion", () => {
+  test("starts open while streaming and sits above the prose on desktop and phone", () => {
+    const live: LiveTurn = {
+      ...EMPTY_LIVE,
+      turnId: "t-think-1",
+      source: "text",
+      asked: "Compare two chargers",
+      streamingReasoning: "Checking wattage split and port specs.",
+      streamingText: "Here is the comparison.",
+    };
+    const state = isolatedState({ live });
+
+    for (const markup of [desktop(state), phone(state)]) {
+      expect(markup).toMatch(/<details[^>]*\bopen(?:=""|\b)[^>]*class="solenoid-reasoning"/);
+      expect(markup).toContain("Thinking…");
+      expect(markup).toContain("Checking wattage split and port specs.");
+      // Accordion sits above the assistant prose at the top of the message.
+      expect(markup.indexOf("solenoid-reasoning")).toBeLessThan(
+        markup.indexOf("Here is the comparison."),
+      );
+    }
+  });
+
+  test("renders collapsed once completed on desktop and phone while keeping thoughts re-openable", () => {
+    const turn: ChatTurnRow = {
+      id: "turn-think-1",
+      by: "agent",
+      body: "Here is the final answer.",
+      at: "09:42",
+      note: null,
+      toolSummary: null,
+      calls: [],
+      approval: null,
+      reasoning: "Evaluated both sides carefully.",
+      source: "text",
+    };
+    const state = isolatedState({ stored: [turn], live: null });
+
+    for (const markup of [desktop(state), phone(state)]) {
+      const detailsTag = markup.match(/<details\b[^>]*class="solenoid-reasoning"[^>]*>/)?.[0] ?? "";
+      expect(detailsTag).not.toBe("");
+      expect(detailsTag).not.toMatch(/\bopen\b/);
+      expect(markup).toContain(">Thinking<");
+      expect(markup).toContain("Evaluated both sides carefully.");
+      expect(markup.indexOf("solenoid-reasoning")).toBeLessThan(
+        markup.indexOf("Here is the final answer."),
+      );
+    }
+  });
+
+  test("auto-closes when streaming finishes and can be toggled open and closed interactively", async () => {
+    const win = new Window({ url: "http://localhost:3000" });
+    const prev = {
+      window: globalThis.window,
+      document: globalThis.document,
+      HTMLElement: globalThis.HTMLElement,
+      IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT,
+    };
+    Object.assign(globalThis, {
+      window: win,
+      document: win.document,
+      HTMLElement: win.HTMLElement,
+      IS_REACT_ACT_ENVIRONMENT: true,
+    });
+    const host = win.document.createElement("div");
+    win.document.body.append(host);
+    const root = createRoot(host as unknown as Element);
+
+    try {
+      await act(async () => {
+        root.render(<ReasoningAccordion text="Initial thought" streaming />);
+      });
+      const details = () => host.querySelector("details") as unknown as HTMLDetailsElement;
+      const summary = () => host.querySelector("summary") as unknown as HTMLElement;
+
+      expect(details().open).toBe(true);
+      expect(summary().textContent).toBe("Thinking…");
+
+      // Streaming finishes -> accordion closes automatically.
+      await act(async () => {
+        root.render(<ReasoningAccordion text="Initial thought" streaming={false} />);
+      });
+      expect(details().open).toBe(false);
+      expect(summary().textContent).toBe("Thinking");
+
+      // User opens and closes it again.
+      await act(async () => {
+        summary().click();
+      });
+      expect(details().open).toBe(true);
+
+      await act(async () => {
+        summary().click();
+      });
+      expect(details().open).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+      await win.happyDOM.close();
+      Object.assign(globalThis, prev);
     }
   });
 });

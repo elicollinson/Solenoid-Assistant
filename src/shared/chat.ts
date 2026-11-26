@@ -85,6 +85,8 @@ export interface ChatTurnRow {
   /** The calls behind the summary, once the run that made them is readable. */
   calls: ChatToolCall[];
   approval: ChatApproval | null;
+  /** Collapsible model reasoning recorded for this assistant turn, if any. */
+  reasoning?: string | null;
   /** Turn provenance stamped from checkpoint metadata (`text`, `voice`, or `subagent`). */
   source?: "text" | "voice" | "subagent";
   /** Non-blocking deferred approvals opened by subagents during/around this turn. */
@@ -261,6 +263,7 @@ export type ChatEvent =
     body: string;
     note: string | null;
     toolSummary: string | null;
+    reasoning?: string | null;
     source?: "text" | "subagent";
   }
   /** Turn was cancelled by user request. */

@@ -1764,4 +1764,53 @@ describe("Tier 1 — Golden Replay & Checkpoint Equivalence", () => {
       source: "voice",
     });
   });
+
+  test("Persisted reasoning: hydrates multi-step reasoning blocks and preserves surviving thoughts across mid-step retry", () => {
+    const steps: TimelineStep[] = [
+      { kind: "agui", event: runStarted("run-reason") },
+      ...openingMessage("u-r", "user", "Compare options.").map(
+        (event): TimelineStep => ({ kind: "agui", event }),
+      ),
+      { kind: "agui", event: stepStarted("turn 1") },
+      ...reasoningEvents("r-step-1", ["Step 1 thought."]).map(
+        (event): TimelineStep => ({ kind: "agui", event }),
+      ),
+      { kind: "agui", event: stepFinished("turn 1") },
+      ...toolCallStartSeq("tc-r1", "okf_read", "a-r1", { id: "okf:note/a" }).map(
+        (event): TimelineStep => ({ kind: "agui", event }),
+      ),
+      { kind: "agui", event: toolCallResult("tc-r1", '{"ok":true}', { durationMs: 50 }) },
+      { kind: "mark", label: "afterStep1" },
+      { kind: "agui", event: stepStarted("turn 2") },
+      ...reasoningEvents("r-discarded", ["Discarded retry thought."]).map(
+        (event): TimelineStep => ({ kind: "agui", event }),
+      ),
+      { kind: "agui", event: stepFinished("turn 2") },
+      { kind: "agui", event: customRetry("503", 100) },
+      { kind: "snapshot_to", label: "afterStep1" },
+      { kind: "agui", event: stepStarted("turn 2") },
+      ...reasoningEvents("r-step-2", ["Step 2 final thought."]).map(
+        (event): TimelineStep => ({ kind: "agui", event }),
+      ),
+      { kind: "agui", event: textStart("a-r2", "assistant") },
+      { kind: "agui", event: textDelta("a-r2", "Here is the comparison.") },
+      { kind: "agui", event: textEnd("a-r2") },
+      { kind: "agui", event: stepFinished("turn 2") },
+      { kind: "agui", event: runFinishedSuccess("run-reason") },
+    ];
+
+    const result = replayAndCompare(steps);
+    const resetEvent = result.emitted.find(
+      (e): e is Extract<ChatEvent, { type: "reset" }> => e.type === "reset",
+    );
+    expect(resetEvent?.live.streamingReasoning).toBe("Step 1 thought.");
+
+    const msgEvent = result.emitted.find(
+      (e): e is Extract<ChatEvent, { type: "message" }> => e.type === "message",
+    );
+    expect(msgEvent?.reasoning).toBe("Step 1 thought.\n\nStep 2 final thought.");
+
+    const hydrated = hydrateTurnsFromThread(result.thread, { now: FIXED_NOW });
+    expect(hydrated[1]?.reasoning).toBe("Step 1 thought.\n\nStep 2 final thought.");
+  });
 });

@@ -2,11 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import {
   Agent,
-  AgentTimeoutError,
   ContentSafetyDetectedError,
   PromptInjectionDetectedError,
   PromptInjectionScreeningError,
-} from "../core/rawAgent";
+  ProviderStalledError,
+} from "../core/engine";
 import { fanout, fulfilled, rejected, runIsolated } from "./fanout";
 import type { ChatMessage, ChatProvider } from "../core/providers";
 import type { PromptTemplate } from "../prompts";
@@ -15,7 +15,6 @@ import type { PromptTemplate } from "../prompts";
 // results stay deterministic even when calls run concurrently.
 class KeyedProvider implements ChatProvider {
   readonly providerName = "keyed";
-  readonly traced = true;
 
   constructor(private readonly reply: (userText: string) => Partial<ChatMessage>) {}
 
@@ -31,11 +30,8 @@ const items = [{ item: "a" }, { item: "b" }, { item: "c" }];
 
 const agentThat = (
   reply: (userText: string) => Partial<ChatMessage>,
-  timeoutMs?: number,
 ) => new Agent({
   routes: [{ client: new KeyedProvider(reply), model: "test-model" }],
-  timeoutMs,
-  promptInjectionScreening: false,
 });
 
 describe("fanout", () => {
@@ -90,17 +86,15 @@ describe("fanout", () => {
   });
 
   test("a timed-out structured response becomes a rejected item, not a poisoned batch", async () => {
-    const agent = agentThat(
-      (text) => text.includes("b")
-        ? { content: "" }
-        : { content: JSON.stringify({ item: "ok" }) },
-      20,
-    );
+    const agent = agentThat((text) => {
+      if (text.includes("b")) throw new ProviderStalledError("idle", 20, "keyed");
+      return { content: JSON.stringify({ item: "ok" }) };
+    });
 
     const results = await fanout(items, agent, prompt, schema, 8);
 
     expect(fulfilled(results)).toHaveLength(2);
-    expect(rejected(results)[0]).toBeInstanceOf(AgentTimeoutError);
+    expect(rejected(results)[0]).toBeInstanceOf(ProviderStalledError);
   });
 
   test("empty input yields empty output", async () => {
@@ -137,12 +131,12 @@ describe("runIsolated", () => {
 
   test("quarantines detections at any agent boundary while siblings continue", async () => {
     const batch = await runIsolated({
-      items: ["input", "model", "ok"],
+      items: ["input", "tool", "ok"],
       key: (item) => item,
       concurrency: 2,
       execute: async (item) => {
         if (item === "input") throw new PromptInjectionDetectedError("input");
-        if (item === "model") throw new PromptInjectionDetectedError("model_output");
+        if (item === "tool") throw new PromptInjectionDetectedError("tool_output");
         return "done";
       },
     });
@@ -157,10 +151,10 @@ describe("runIsolated", () => {
       },
       {
         status: "quarantined",
-        key: "model",
+        key: "tool",
         index: 1,
         reason: "prompt_injection",
-        boundary: "model_output",
+        boundary: "tool_output",
       },
       { status: "fulfilled", key: "ok", index: 2, value: "done" },
     ]);

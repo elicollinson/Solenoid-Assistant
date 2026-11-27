@@ -14,7 +14,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { createDb, runMigrations, ulid, type Db } from "../db";
 import * as s from "../db/schema";
-import { Agent } from "../core/rawAgent";
+import { AssistantAgent } from "../core/engine";
 import { defineTool } from "../core/tools";
 import type { ChatMessage, ChatProvider } from "../core/providers";
 import { grantWorkflowPermission, readDeferredWrite, settleDeferredWrite } from "../db/mutations/workflows";
@@ -29,7 +29,6 @@ import { createUiRoutes } from "../http/routes/ui";
 
 class Scripted implements ChatProvider {
   readonly providerName = "scripted";
-  readonly traced = true;
   calls = 0;
   constructor(private readonly script: Partial<ChatMessage>[]) {}
   async chat(): Promise<ChatMessage> {
@@ -58,12 +57,11 @@ const remember = defineTool({
   },
 });
 
-function agentFor(script: Partial<ChatMessage>[]): Agent {
-  return new Agent({
+function agentFor(script: Partial<ChatMessage>[]): AssistantAgent {
+  return new AssistantAgent({
     name: "under-test",
     routes: [{ client: new Scripted(script), model: "scripted" }],
     tools: [remember],
-    promptInjectionScreening: false,
   });
 }
 
@@ -75,10 +73,11 @@ const write = (line: string): Partial<ChatMessage> => ({
 /** Run one turn the way `runner.ts` does — inside this run's permissions. */
 async function turnUnderPermissions(line = "Ferris pays on the 30th."): Promise<string> {
   const agent = agentFor([write(line), { content: "done" }]);
-  return withRunPermissions(
+  const result = await withRunPermissions(
     { db, workflowId, runId, slug: "weather-briefing" },
     () => agent.runMessages([{ role: "user", content: "remember that", origin: "operator" }]),
   );
+  return result.output;
 }
 
 const openDecisions = () =>
@@ -170,10 +169,12 @@ describe("what a run may actually do", () => {
     const agent = agentFor([write("anything"), { content: "I could not." }]);
 
     expect(
-      await withRunPermissions(
-        { db, workflowId, runId, slug: "weather-briefing" },
-        () => agent.runMessages([{ role: "user", content: "remember that", origin: "operator" }]),
-      ),
+      (
+        await withRunPermissions(
+          { db, workflowId, runId, slug: "weather-briefing" },
+          () => agent.runMessages([{ role: "user", content: "remember that", origin: "operator" }]),
+        )
+      ).output,
     ).toBe("I could not.");
 
     expect(ran).toEqual([]);
@@ -219,14 +220,13 @@ describe("what a run may actually do", () => {
         return { lines: [] };
       },
     });
-    const agent = new Agent({
+    const agent = new AssistantAgent({
       name: "reader",
       routes: [{ client: new Scripted([
         { finishReason: "tool_calls", toolCalls: [{ id: "c1", name: "memory_read", arguments: {} }] },
         { content: "nothing there" },
       ]), model: "scripted" }],
       tools: [look],
-      promptInjectionScreening: false,
     });
 
     await withRunPermissions(
@@ -241,7 +241,7 @@ describe("what a run may actually do", () => {
 describe("outside a run", () => {
   test("there is no gate, because there is no workflow to have a rule about", async () => {
     const agent = agentFor([write("straight through"), { content: "done" }]);
-    expect(await agent.runMessages([{ role: "user", content: "remember", origin: "operator" }])).toBe("done");
+    expect((await agent.runMessages([{ role: "user", content: "remember", origin: "operator" }])).output).toBe("done");
     expect(ran).toEqual(["straight through"]);
   });
 });
@@ -454,7 +454,7 @@ describe("answering one twice", () => {
     remindersGroup({ db }).tools.find((t) => t.definition.function.name === "reminders_create")!;
 
   const deferAReminder = async () => {
-    const agent = new Agent({
+    const agent = new AssistantAgent({
       name: "under-test",
       routes: [{
         client: new Scripted([
@@ -467,7 +467,6 @@ describe("answering one twice", () => {
         model: "scripted",
       }],
       tools: [reminderTool()],
-      promptInjectionScreening: false,
     });
     await withRunPermissions(
       { db, workflowId, runId, slug: "weather-briefing" },

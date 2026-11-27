@@ -3,7 +3,7 @@ import { createClassifierAgent } from "../agents/classifier";
 import { createContentCardSourcingAgent } from "../agents/contentCardSourcing";
 import { getDb, type Db } from "../db";
 import { collectionSourceExists, type LocalIngestionResult } from "../db/mutations/collections";
-import { currentConsent } from "../core/consent";
+import { currentToolGate } from "@elicollinson/solenoid-security";
 import { collectionWriteTool } from "./collectionWrite";
 import type { Collection } from "../shared/collections";
 import type { AgentResource } from "../agents/resource";
@@ -244,9 +244,15 @@ async function ingestClassified(
       };
     }
 
-    const contentCard = await (await contentAgent()).agent.run(
-      classification.name,
-      contentCardSchema,
+    const contentRunner = (await contentAgent()).agent;
+    const contentCard = (
+      "runStructured" in contentRunner && typeof contentRunner.runStructured === "function"
+        ? await contentRunner.runStructured(classification.name, contentCardSchema)
+        : await (
+            contentRunner as unknown as {
+              run(prompt: string, schema: typeof contentCardSchema): Promise<ContentCard>;
+            }
+          ).run(classification.name, contentCardSchema)
     ) as ContentCard;
 
     const write = collectionWriteTool(db);
@@ -255,7 +261,7 @@ async function ingestClassified(
       path: screenshot.path, classification, contentCard,
       collection: classificationToCollection(classification.classification),
     });
-    const gate = currentConsent();
+    const gate = currentToolGate();
     if (!gate) throw new Error("Collection saves require a workflow permission context");
     const verdict = await gate({
       tool: write.definition.function.name, kind: write.kind, args: input,

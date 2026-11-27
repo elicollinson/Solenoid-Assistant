@@ -5,6 +5,7 @@ import { configureLogging, flushLogs, log, shutdownLogging } from "./core/logger
 import { initTracing, shutdownTracing } from "./core/tracing";
 import { installShutdownHandler } from "./core/shutdown";
 import { disposeModelArmor } from "./safety/modelArmor";
+import { SessionCoordinator, setDefaultCoordinator } from "./chat/coordinator";
 import { describeDrift } from "./workflows/sync";
 import { isRunnable } from "./workflows/runner";
 
@@ -39,6 +40,18 @@ for (const slug of drift.unrunnable) {
   });
 }
 
+const coordinator = new SessionCoordinator({ db: getDb() });
+setDefaultCoordinator(coordinator);
+const reconciled = await coordinator.reconcileOnBoot();
+if (reconciled.length) {
+  log.warn(
+    `Reconciled ${reconciled.length} orphaned chat session(s) left running by a previous process`,
+    {
+      sessions: reconciled.map((r) => `${r.sessionId}:${r.newStatus}`).join(","),
+    },
+  );
+}
+
 const { app } = await import("./index");
 app.listen({ port: config.port, hostname: config.host });
 
@@ -56,9 +69,10 @@ log.info(`API docs at http://localhost:${app.server?.port}/openapi`);
 
 installShutdownHandler(async () => {
   await app.stop();
+  await coordinator.close();
   await disposeModelArmor();
   await shutdownTracing();
-  // Last, so it carries whatever the four lines above had to say.
+  // Last, so it carries whatever the lines above had to say.
   await flushLogs();
   await shutdownLogging();
 });

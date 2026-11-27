@@ -48,7 +48,6 @@ export function WorkflowsView({
 
   return (
     <main style={{ gridColumn: "2 / span 2", display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <SourceStatus />
       <header
         style={{
           display: "flex",
@@ -65,7 +64,7 @@ export function WorkflowsView({
           </h1>
           <p style={{ margin: 0, font: "var(--text-body)", color: "var(--text-3)" }}>{workflows.lede}</p>
         </div>
-        <div style={{ display: "flex", gap: "var(--sp-2)", flexShrink: 0 }}>
+        <div style={{ display: "flex", gap: "var(--sp-2)", flexWrap: "wrap", flexShrink: 0 }}>
           {FILTERS.map((f) => (
             <Chip key={f} selected={filter === f} onClick={() => setFilter(f)}>
               {f}
@@ -73,6 +72,15 @@ export function WorkflowsView({
           ))}
         </div>
       </header>
+      <SourceStatus
+        style={{
+          padding: "var(--sp-3) var(--sp-10)",
+          borderBottom: "var(--border)",
+          background: "var(--surface-panel)",
+          font: "var(--text-mono)",
+          color: "var(--text-4)",
+        }}
+      />
 
       {error ? (
         <p

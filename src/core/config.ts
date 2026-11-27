@@ -6,46 +6,39 @@ const optionalEnvString = z.preprocess(
   z.string().optional(),
 );
 
+const MODEL_PROVIDERS = ["omlx", "lmstudio", "openai", "openrouter"] as const;
+
+export type ModelProviderName = (typeof MODEL_PROVIDERS)[number];
+
+export type LogLevelName = "debug" | "info" | "warn" | "error";
+
+export interface ModelRouteConfig {
+  provider: ModelProviderName;
+  model: string;
+}
+
 const runtimeConfigSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
   /**
-   * Which interface to listen on. Loopback by default, which is a deliberate
-   * change of posture rather than a shrug: this server answers questions about
-   * the user's messages, contacts, calendar and screenshots, and holds no
-   * authentication of any kind. Bound to 0.0.0.0 it is that, offered to
-   * everyone on whatever wifi the laptop is on.
-   *
-   * Reaching it from another device is what `tailscale serve` is for — the
-   * daemon proxies from the tailnet to 127.0.0.1, so the app is reachable by
-   * exactly the machines the tailnet already vouches for and by nothing else.
-   * See `bun run serve:tailscale`.
-   *
-   * `HOST=0.0.0.0` puts it back, for a LAN you actually trust.
+   * Which interface to listen on. Loopback by default: this server answers
+   * questions about the user's messages, contacts, calendar and screenshots,
+   * and holds no authentication of its own. Use `tailscale serve` for remote
+   * access, or set `HOST=0.0.0.0` for a trusted LAN.
    */
   HOST: optionalEnvString.default("127.0.0.1"),
-  LLM_PROVIDER: z.enum(["ollama", "openai", "openrouter"]).default("ollama"),
+  LLM_PROVIDER: z.enum(MODEL_PROVIDERS).default("omlx"),
   LLM_ROUTES: optionalEnvString,
-  MODEL: optionalEnvString.default("glm-5.2"),
+  MODEL: optionalEnvString.default("google/gemma-4-26b-a4b"),
   IMAGE_MODEL: optionalEnvString,
-  OLLAMA_API_URL: optionalEnvString.default("https://ollama.com"),
-  OLLAMA_API_KEY: optionalEnvString,
+  OMLX_BASE_URL: optionalEnvString,
+  OMLX_API_KEY: optionalEnvString,
+  LMSTUDIO_BASE_URL: optionalEnvString,
+  LMSTUDIO_API_KEY: optionalEnvString,
   OPENAI_BASE_URL: optionalEnvString,
   OPENAI_API_KEY: optionalEnvString,
-  /**
-   * How long LM Studio keeps a model it loaded on demand once requests stop.
-   * Sent as `ttl` on every request; 0 sends none and the model stays loaded.
-   */
-  OPENAI_MODEL_TTL_SECONDS: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.coerce.number().int().min(0).max(86_400).default(900),
-  ),
   OPENROUTER_BASE_URL: optionalEnvString.default("https://openrouter.ai/api/v1"),
   OPENROUTER_API_KEY: optionalEnvString,
   OPENROUTER_MODEL: optionalEnvString.default("google/gemma-4-31b-it"),
-  STRUCTURED_OUTPUT_STRATEGY: z.preprocess(
-    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
-    z.enum(["native", "two-stage"]).optional(),
-  ),
   MODEL_ARMOR_ENABLED: optionalEnvString.default("true"),
   MODEL_ARMOR_PROJECT_ID: optionalEnvString,
   MODEL_ARMOR_LOCATION: optionalEnvString.default("us-central1"),
@@ -94,7 +87,7 @@ const runtimeConfigSchema = z.object({
   GEMINI_BASE_URL: optionalEnvString,
   GEMINI_LIVE_MODEL: optionalEnvString.default("models/gemini-3.8-live-extended-thinking"),
   GEMINI_LIVE_THINKING_LEVEL: z.preprocess(
-    (value) => value === "" ? undefined : value,
+    (value) => (value === "" ? undefined : value),
     z.enum(["low", "medium", "high"]).default("high"),
   ),
   GEMINI_VOICE: optionalEnvString.default("Sulafat"),
@@ -108,17 +101,18 @@ export interface RuntimeConfig {
   llmProvider: ModelProviderName;
   model: string;
   imageModel: string;
-  structuredOutputStrategy: "native" | "two-stage";
   modelRoutes: [ModelRouteConfig, ...ModelRouteConfig[]];
-  ollama: {
-    host: string;
+  omlx: {
+    baseUrl: string;
+    apiKey?: string;
+  };
+  lmstudio: {
+    baseUrl: string;
     apiKey?: string;
   };
   openai: {
     baseUrl?: string;
     apiKey?: string;
-    /** Seconds; 0 means the server's own default (no unload). */
-    modelTtlSeconds: number;
   };
   openrouter: {
     baseUrl: string;
@@ -168,39 +162,12 @@ export interface RuntimeConfig {
   };
 }
 
-export type ModelProviderName = "ollama" | "openai" | "openrouter";
-
-export type LogLevelName = "debug" | "info" | "warn" | "error";
-
-export interface ModelRouteConfig {
-  provider: ModelProviderName;
-  model: string;
-  structuredOutputStrategy: "native" | "two-stage";
-}
-
 const modelRouteInputSchema = z.object({
-  provider: z.enum(["ollama", "openai", "openrouter"]),
+  provider: z.enum(MODEL_PROVIDERS),
   model: z.string().trim().min(1),
-  structuredOutputStrategy: z.enum(["native", "two-stage"]).optional(),
 });
 
-function defaultStructuredOutputStrategy(
-  provider: ModelProviderName,
-  ollamaHost: string,
-): "native" | "two-stage" {
-  if (provider !== "ollama") return "native";
-  try {
-    return new URL(ollamaHost).hostname === "ollama.com" ? "two-stage" : "native";
-  } catch {
-    return "native";
-  }
-}
-
-function parseModelRoutes(
-  raw: string,
-  globalStrategy: "native" | "two-stage" | undefined,
-  ollamaHost: string,
-): [ModelRouteConfig, ...ModelRouteConfig[]] {
+function parseModelRoutes(raw: string): [ModelRouteConfig, ...ModelRouteConfig[]] {
   let json: unknown;
   try {
     json = JSON.parse(raw);
@@ -213,10 +180,6 @@ function parseModelRoutes(
   return routes.map((route) => ({
     provider: route.provider,
     model: route.model,
-    structuredOutputStrategy:
-      route.structuredOutputStrategy ??
-      globalStrategy ??
-      defaultStructuredOutputStrategy(route.provider, ollamaHost),
   })) as [ModelRouteConfig, ...ModelRouteConfig[]];
 }
 
@@ -224,30 +187,26 @@ export function loadRuntimeConfig(
   env: Record<string, string | undefined> = process.env,
 ): RuntimeConfig {
   const parsed = runtimeConfigSchema.parse(env);
-  const legacyPrimaryRoute: ModelRouteConfig = {
+  const primaryDefault: ModelRouteConfig = {
     provider: parsed.LLM_PROVIDER,
     model: parsed.MODEL,
-    structuredOutputStrategy:
-      parsed.STRUCTURED_OUTPUT_STRATEGY ??
-      defaultStructuredOutputStrategy(parsed.LLM_PROVIDER, parsed.OLLAMA_API_URL),
   };
   const modelRoutes: [ModelRouteConfig, ...ModelRouteConfig[]] = parsed.LLM_ROUTES
-    ? parseModelRoutes(
-        parsed.LLM_ROUTES,
-        parsed.STRUCTURED_OUTPUT_STRATEGY,
-        parsed.OLLAMA_API_URL,
-      )
+    ? parseModelRoutes(parsed.LLM_ROUTES)
     : [
-        legacyPrimaryRoute,
+        primaryDefault,
         ...(parsed.OPENROUTER_API_KEY && parsed.LLM_PROVIDER !== "openrouter"
-          ? [{
-              provider: "openrouter" as const,
-              model: parsed.OPENROUTER_MODEL,
-              structuredOutputStrategy: "native" as const,
-            }]
+          ? [
+              {
+                provider: "openrouter" as const,
+                model: parsed.OPENROUTER_MODEL,
+              },
+            ]
           : []),
       ];
   const primaryRoute = modelRoutes[0]!;
+  const omlxApiKey = parsed.OMLX_API_KEY ?? parsed.OPENAI_API_KEY;
+  const lmstudioApiKey = parsed.LMSTUDIO_API_KEY ?? parsed.OPENAI_API_KEY;
   return {
     pushover: loadPushoverConfig(env),
     port: parsed.PORT,
@@ -255,16 +214,18 @@ export function loadRuntimeConfig(
     llmProvider: primaryRoute.provider,
     model: primaryRoute.model,
     imageModel: parsed.IMAGE_MODEL ?? primaryRoute.model,
-    structuredOutputStrategy: primaryRoute.structuredOutputStrategy,
     modelRoutes,
-    ollama: {
-      host: parsed.OLLAMA_API_URL,
-      ...(parsed.OLLAMA_API_KEY ? { apiKey: parsed.OLLAMA_API_KEY } : {}),
+    omlx: {
+      baseUrl: parsed.OMLX_BASE_URL ?? parsed.OPENAI_BASE_URL ?? "http://localhost:8000/v1",
+      ...(omlxApiKey ? { apiKey: omlxApiKey } : {}),
+    },
+    lmstudio: {
+      baseUrl: parsed.LMSTUDIO_BASE_URL ?? parsed.OPENAI_BASE_URL ?? "http://localhost:1234/v1",
+      ...(lmstudioApiKey ? { apiKey: lmstudioApiKey } : {}),
     },
     openai: {
       ...(parsed.OPENAI_BASE_URL ? { baseUrl: parsed.OPENAI_BASE_URL } : {}),
       ...(parsed.OPENAI_API_KEY ? { apiKey: parsed.OPENAI_API_KEY } : {}),
-      modelTtlSeconds: parsed.OPENAI_MODEL_TTL_SECONDS,
     },
     openrouter: {
       baseUrl: parsed.OPENROUTER_BASE_URL,
@@ -281,8 +242,12 @@ export function loadRuntimeConfig(
       templateId: parsed.MODEL_ARMOR_TEMPLATE_ID,
       ...(parsed.MODEL_ARMOR_API_KEY ? { apiKey: parsed.MODEL_ARMOR_API_KEY } : {}),
       ...(parsed.MODEL_ARMOR_API_ENDPOINT ? { apiEndpoint: parsed.MODEL_ARMOR_API_ENDPOINT } : {}),
-      ...(parsed.MODEL_ARMOR_CREDENTIALS_JSON ? { credentialsJson: parsed.MODEL_ARMOR_CREDENTIALS_JSON } : {}),
-      ...(parsed.MODEL_ARMOR_CREDENTIALS_BASE64 ? { credentialsBase64: parsed.MODEL_ARMOR_CREDENTIALS_BASE64 } : {}),
+      ...(parsed.MODEL_ARMOR_CREDENTIALS_JSON
+        ? { credentialsJson: parsed.MODEL_ARMOR_CREDENTIALS_JSON }
+        : {}),
+      ...(parsed.MODEL_ARMOR_CREDENTIALS_BASE64
+        ? { credentialsBase64: parsed.MODEL_ARMOR_CREDENTIALS_BASE64 }
+        : {}),
     },
     phoenix: {
       enabled: parsed.PHOENIX_TRACING_ENABLED !== "false",

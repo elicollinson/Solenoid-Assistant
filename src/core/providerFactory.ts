@@ -1,17 +1,22 @@
 import OpenAI from "openai";
 import {
+  OpenAICompatibleProvider,
+  stallGuardedFetch,
+  type ChatProvider,
+  type ModelRoute,
+  type ModelRouteChain,
+  type ReasoningDialect,
+} from "@elicollinson/solenoid-engine";
+import {
   loadRuntimeConfig,
   type ModelRouteConfig,
   type RuntimeConfig,
 } from "./config";
-import { createOllamaClient } from "./ollama";
-import {
-  OllamaProvider,
-  OpenAIProvider,
-  OpenRouterProvider,
-  type ChatProvider,
-} from "./providers";
-import type { ModelRoute, ModelRouteChain } from "./rawAgent";
+
+/** Longest timer supported by JS runtimes; stallGuardedFetch owns silence timeouts. */
+const NO_TIMEOUT_MS = 2 ** 31 - 1;
+const DEFAULT_FIRST_BYTE_MS = 5 * 60_000;
+const DEFAULT_IDLE_MS = 60_000;
 
 export interface OpenAIClientOptions {
   baseURL?: string;
@@ -23,7 +28,62 @@ export interface OpenRouterClientOptions {
   apiKey?: string;
 }
 
-/** Build an OpenAI-compatible client, including local servers such as LM Studio. */
+function guardedFetch(provider: ReasoningDialect): typeof fetch {
+  // Delegate through globalThis.fetch dynamically so offline tests intercepting
+  // fetch always capture calls cleanly while live runs keep stall detection.
+  return stallGuardedFetch(
+    {
+      firstByteMs: DEFAULT_FIRST_BYTE_MS,
+      idleMs: DEFAULT_IDLE_MS,
+      provider,
+    },
+    ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+      globalThis.fetch(input, init)) as typeof fetch,
+  );
+}
+
+function buildClient(
+  baseURL: string,
+  apiKey: string,
+  dialect: ReasoningDialect,
+): OpenAI {
+  return new OpenAI({
+    baseURL,
+    apiKey,
+    // Agent owns bounded retries and route fallback; stall guard owns timeouts.
+    maxRetries: 0,
+    timeout: NO_TIMEOUT_MS,
+    fetch: guardedFetch(dialect),
+  });
+}
+
+function asEngineOpenAI(
+  client: OpenAI,
+): ConstructorParameters<typeof OpenAICompatibleProvider>[0] {
+  return client as unknown as ConstructorParameters<typeof OpenAICompatibleProvider>[0];
+}
+
+/** Build an oMLX OpenAI-compatible client (default local MLX backend). */
+export function createOmlxClient(
+  options: OpenAIClientOptions = {},
+  config: RuntimeConfig = loadRuntimeConfig(),
+): OpenAI {
+  const baseURL = options.baseURL ?? config.omlx.baseUrl;
+  const apiKey = options.apiKey ?? config.omlx.apiKey ?? "omlx";
+  return buildClient(baseURL, apiKey, "omlx");
+}
+
+/** Build an LM Studio OpenAI-compatible client. */
+export function createLmStudioClient(
+  options: OpenAIClientOptions = {},
+  config: RuntimeConfig = loadRuntimeConfig(),
+): OpenAI {
+  const baseURL = options.baseURL ?? config.lmstudio.baseUrl;
+  const apiKey = options.apiKey ?? config.lmstudio.apiKey ?? "lm-studio";
+  return buildClient(baseURL, apiKey, "lmstudio");
+}
+
+/** Build an OpenAI-compatible client for explicit OPENAI_BASE_URL configurations. */
 export function createOpenAIClient(
   options: OpenAIClientOptions = {},
   config: RuntimeConfig = loadRuntimeConfig(),
@@ -32,40 +92,11 @@ export function createOpenAIClient(
   if (!baseURL) {
     throw new Error(
       "OPENAI_BASE_URL must be set when LLM_PROVIDER=openai " +
-        "(for LM Studio, use http://<host>:1234/v1)",
+        "(for local servers, use e.g. http://<host>:8000/v1 or http://<host>:1234/v1)",
     );
   }
-
-  const ttl = config.openai.modelTtlSeconds;
-  return new OpenAI({
-    baseURL,
-    // The SDK requires a value. LM Studio ignores this placeholder when API
-    // authentication is disabled; when enabled, configure the real token.
-    apiKey: options.apiKey ?? config.openai.apiKey ?? "lm-studio",
-    ...(ttl > 0 ? { fetch: withModelTtl(ttl) } : {}),
-  });
-}
-
-/**
- * Add LM Studio's `ttl` to every JSON request that names a model. A model
- * loaded on demand by such a request unloads after `ttl` idle seconds; without
- * it the model stays resident until someone unloads it by hand. A model that
- * was already loaded keeps whatever TTL it was loaded with.
- */
-export function withModelTtl(ttl: number, inner: typeof fetch = fetch): typeof fetch {
-  return ((input, init) => {
-    if (typeof init?.body === "string") {
-      try {
-        const body = JSON.parse(init.body) as unknown;
-        if (body && typeof body === "object" && !Array.isArray(body) && "model" in body && !("ttl" in body)) {
-          return inner(input, { ...init, body: JSON.stringify({ ...body, ttl }) });
-        }
-      } catch {
-        // Not JSON; send it as it is.
-      }
-    }
-    return inner(input, init);
-  }) as typeof fetch;
+  const apiKey = options.apiKey ?? config.openai.apiKey ?? "lm-studio";
+  return buildClient(baseURL, apiKey, "lmstudio");
 }
 
 /** Build the OpenRouter OpenAI-compatible client without credential crossover. */
@@ -75,13 +106,14 @@ export function createOpenRouterClient(
 ): OpenAI {
   const apiKey = options.apiKey ?? config.openrouter.apiKey;
   if (!apiKey) throw new Error("OPENROUTER_API_KEY must be set for OpenRouter routes");
-  return new OpenAI({
-    baseURL: options.baseURL ?? config.openrouter.baseUrl,
+  return buildClient(
+    options.baseURL ?? config.openrouter.baseUrl,
     apiKey,
-  });
+    "openrouter",
+  );
 }
 
-/** Select the configured provider while preserving Ollama as the default. */
+/** Select the primary configured provider. */
 export function createChatProvider(
   config: RuntimeConfig = loadRuntimeConfig(),
 ): ChatProvider {
@@ -93,19 +125,27 @@ function createProviderForRoute(
   config: RuntimeConfig,
 ): ChatProvider {
   if (route.provider === "openrouter") {
-    return new OpenRouterProvider(
-      createOpenRouterClient({}, config),
-      { structuredOutputStrategy: route.structuredOutputStrategy },
+    return new OpenAICompatibleProvider(
+      asEngineOpenAI(createOpenRouterClient({}, config)),
+      "openrouter",
+    );
+  }
+  if (route.provider === "lmstudio") {
+    return new OpenAICompatibleProvider(
+      asEngineOpenAI(createLmStudioClient({}, config)),
+      "lmstudio",
     );
   }
   if (route.provider === "openai") {
-    return new OpenAIProvider(createOpenAIClient({}, config), {
-      structuredOutputStrategy: route.structuredOutputStrategy,
-    });
+    return new OpenAICompatibleProvider(
+      asEngineOpenAI(createOpenAIClient({}, config)),
+      "lmstudio",
+    );
   }
-  return new OllamaProvider(createOllamaClient({}, config), {
-    structuredOutputStrategy: route.structuredOutputStrategy,
-  });
+  return new OpenAICompatibleProvider(
+    asEngineOpenAI(createOmlxClient({}, config)),
+    "omlx",
+  );
 }
 
 /** Resolve one declarative route using its provider-specific connection. */
@@ -126,9 +166,7 @@ export function createModelRoutes(
 ): ModelRouteChain {
   const routes = config.modelRoutes.map((route, index) => ({
     ...createModelRoute(route, config),
-    ...(index === 0 && options.primaryModel
-      ? { model: options.primaryModel }
-      : {}),
+    ...(index === 0 && options.primaryModel ? { model: options.primaryModel } : {}),
   }));
   if (!routes[0]) throw new Error("At least one model route must be configured");
   return routes as unknown as ModelRouteChain;

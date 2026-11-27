@@ -13,7 +13,7 @@ import {
   type FieldDoc,
   type ToolGroup,
 } from "../core/toolGroups";
-import type { Agent } from "../core/rawAgent";
+import type { Agent } from "@elicollinson/solenoid-engine";
 import type { Db } from "../db";
 import * as s from "../db/schema";
 import { describeTable } from "../db/schemaDoc";
@@ -474,13 +474,10 @@ export interface ClassifyScreenshotsResult {
 
 /** Zod schema for the optional vision model configuration (matches VisionOptions). */
 const visionOptionsSchema = z.object({
-  provider: z.enum(["ollama", "openai", "openrouter"]).optional(),
+  provider: z.enum(["omlx", "lmstudio", "openai", "openrouter"]).optional(),
   model: z.string().optional(),
-  host: z.string().optional(),
   baseURL: z.string().optional(),
   apiKey: z.string().optional(),
-  structuredOutputStrategy: z.enum(["native", "two-stage"]).optional(),
-  timeoutMs: z.number().positive().optional(),
 });
 
 /**
@@ -597,9 +594,17 @@ export async function classifyScreenshots(
           ? [`Prominent text: ${description.prominentText.join(" | ")}`]
           : []),
       ].join("\n");
-      const classification = await classifierAgent.run(
-        promptForClassifier,
-        ClassificationResultSchema,
+      const classification = (
+        "runStructured" in classifierAgent && typeof classifierAgent.runStructured === "function"
+          ? await classifierAgent.runStructured(promptForClassifier, ClassificationResultSchema)
+          : await (
+              classifierAgent as unknown as {
+                run(
+                  prompt: string,
+                  schema: typeof ClassificationResultSchema,
+                ): Promise<ClassificationResult>;
+              }
+            ).run(promptForClassifier, ClassificationResultSchema)
       ) as ClassificationResult;
       return { ...base, status: "classified", classification };
     },

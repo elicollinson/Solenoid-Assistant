@@ -1,9 +1,15 @@
-import { Agent, AgentCancelledError, isPromptInjectionScreeningError, isGuardrailDetectedError, isPromptInjectionDetectedError } from "../core/rawAgent";
-import { createModelRoutes } from "../core/providerFactory";
-import { loadRuntimeConfig } from "../core/config";
-import { log } from "../core/logger";
+import {
+  AgentAbortedError,
+  isPromptInjectionDetectedError,
+  isPromptInjectionScreeningError,
+  type Agent,
+} from "@elicollinson/solenoid-engine";
 import { createImessageConversationAgent } from "../agents/imessageIntake";
 import { okfManagerAgent } from "../agents/okfManager";
+import { loadRuntimeConfig } from "../core/config";
+import { AssistantAgent, isGuardrailDetectedError } from "../core/engine";
+import { log } from "../core/logger";
+import { createModelRoutes } from "../core/providerFactory";
 import {
   conversationExtractionPrompt,
   imessageIntakeSchema,
@@ -14,20 +20,22 @@ import {
   type ImessageIntakeResult,
   type OkfManagerResult,
 } from "../prompts";
-import { runIsolated } from "../utils/fanout";
+import { createSecurityScreener } from "../safety/modelArmor";
 import {
   readAllTrustedMessageWindow,
   type TrustedMessageView,
   type TrustedMessageWindowResult,
 } from "../tools/imessage";
+import { runIsolated } from "../utils/fanout";
 
 const MEMORY_PASS_THRESHOLD = 7;
 const runtimeConfig = loadRuntimeConfig();
 
-const memoryGraderAgent = new Agent({
+const memoryGraderAgent = new AssistantAgent({
   name: "memory-grader",
   routes: createModelRoutes(runtimeConfig),
   systemPrompt: memoryGraderSystemPrompt,
+  screen: createSecurityScreener(runtimeConfig),
 });
 
 export interface MessageExtractionParams {
@@ -61,11 +69,7 @@ const NEVER_ABORTED = new AbortController().signal;
 
 function ensureActive(signal: AbortSignal): void {
   if (!signal.aborted) return;
-  const reason = signal.reason;
-  throw new AgentCancelledError(
-    `Message extraction was cancelled: ${reason instanceof Error ? reason.message : String(reason ?? "cancelled")}`,
-    { cause: reason },
-  );
+  throw new AgentAbortedError();
 }
 
 interface Conversation {
@@ -193,15 +197,22 @@ export async function extractMessages(
     result.memoryContext.push(...chunk.memoryContext);
     for (const { id, outcome } of chunk.conversationOutcomes) {
       const previous = conversationOutcomes.get(id);
-      if (!previous || outcome === "quarantined" || (outcome === "failed" && previous === "processed")) {
+      if (
+        !previous ||
+        outcome === "quarantined" ||
+        (outcome === "failed" && previous === "processed")
+      ) {
         conversationOutcomes.set(id, outcome);
       }
     }
     if (chunk.screening.quarantinedMemoryUpdates) {
-      result.screening.quarantinedMemoryUpdates = (result.screening.quarantinedMemoryUpdates ?? 0) + chunk.screening.quarantinedMemoryUpdates;
+      result.screening.quarantinedMemoryUpdates =
+        (result.screening.quarantinedMemoryUpdates ?? 0) +
+        chunk.screening.quarantinedMemoryUpdates;
     }
     if (chunk.screening.failedMemoryUpdates) {
-      result.screening.failedMemoryUpdates = (result.screening.failedMemoryUpdates ?? 0) + chunk.screening.failedMemoryUpdates;
+      result.screening.failedMemoryUpdates =
+        (result.screening.failedMemoryUpdates ?? 0) + chunk.screening.failedMemoryUpdates;
     }
     if (chunk.okfUpdate !== "none") {
       if (result.okfUpdate === "none") result.okfUpdate = chunk.okfUpdate;
@@ -232,11 +243,12 @@ async function extractMessageChunk(
     key: (conversation) => conversation.id,
     concurrency: 8,
     name: "imessage-conversation-extraction",
-    execute: (conversation) => intakeAgent.runWithSignal(
-      signal,
-      conversationExtractionPrompt(conversation),
-      imessageIntakeSchema,
-    ),
+    execute: (conversation) =>
+      intakeAgent.runStructured(
+        conversationExtractionPrompt(conversation),
+        imessageIntakeSchema,
+        { signal },
+      ),
   });
   ensureActive(signal);
 
@@ -256,7 +268,7 @@ async function extractMessageChunk(
   const successful = extraction.results.flatMap((result) =>
     result.status === "fulfilled"
       ? [{ conversation: conversations[result.index]!, value: result.value }]
-      : []
+      : [],
   );
   for (const { conversation, value } of successful) {
     if (value.conversationSummaries.length === 0) continue;
@@ -278,12 +290,12 @@ async function extractMessageChunk(
     key: (_output, index) => index,
     concurrency: 8,
     name: "message-memory-grading",
-    execute: (output) => (dependencies.grader ?? memoryGraderAgent).runWithSignal(
-      signal,
-      memoryGraderPrompt,
-      { output },
-      memoryGraderSchema,
-    ),
+    execute: (output) =>
+      (dependencies.grader ?? memoryGraderAgent).runStructured(
+        memoryGraderPrompt({ output }),
+        memoryGraderSchema,
+        { signal },
+      ),
   });
   ensureActive(signal);
   if (graded.failed > 0 || graded.quarantined > 0) {
@@ -308,16 +320,19 @@ async function extractMessageChunk(
     const memories = conversation.memoryContext.filter((_, index) => {
       const grade = graded.results[memoryOffset + index];
       if (grade?.status !== "fulfilled") return false;
-      return (grade.value.memoryRelevance + grade.value.memoryActionability) / 2 > MEMORY_PASS_THRESHOLD;
+      return (
+        (grade.value.memoryRelevance + grade.value.memoryActionability) / 2 >
+        MEMORY_PASS_THRESHOLD
+      );
     });
     memoryOffset += conversation.memoryContext.length;
     if (memories.length === 0) continue;
     try {
       // Await every writer: separate conversations may update the same OKF entry.
-      const update = await (dependencies.okfManager ?? okfManagerAgent).runWithSignal(
-        signal,
+      const update = await (dependencies.okfManager ?? okfManagerAgent).runStructured(
         `Update the okf with these memories:\n${memories.map((memory) => `- ${memory}`).join("\n")}`,
         okfManagerResultSchema,
+        { signal },
       );
       ensureActive(signal);
       memoryContext.push(...memories);
@@ -330,20 +345,27 @@ async function extractMessageChunk(
       ensureActive(signal);
       // Do not retry a writer invocation: it may have already changed files.
       // Preserve cancellation and fail closed when screening is unavailable.
-      if (error instanceof AgentCancelledError || isPromptInjectionScreeningError(error)) throw error;
+      if (error instanceof AgentAbortedError || isPromptInjectionScreeningError(error)) {
+        throw error;
+      }
       if (!isGuardrailDetectedError(error)) {
         failedMemoryUpdates++;
         failedWrites.add(source.id);
-        log.warn("messageExtraction: conversation memory update failed; continuing without replay", {
-          errorType: error instanceof Error ? error.name : "UnknownError",
-          partialWritesPossible: true,
-        });
+        log.warn(
+          "messageExtraction: conversation memory update failed; continuing without replay",
+          {
+            errorType: error instanceof Error ? error.name : "UnknownError",
+            partialWritesPossible: true,
+          },
+        );
         continue;
       }
       quarantinedMemoryUpdates++;
       log.warn("messageExtraction: conversation memory update quarantined", {
         boundary: error.boundary,
-        classification: isPromptInjectionDetectedError(error) ? "prompt_injection" : "content_safety",
+        classification: isPromptInjectionDetectedError(error)
+          ? "prompt_injection"
+          : "content_safety",
       });
     }
   }
@@ -364,10 +386,10 @@ async function extractMessageChunk(
       outcome: failedWrites.has(conversations[result.index]!.id)
         ? "failed"
         : result.status === "fulfilled"
-        ? "processed"
-        : result.status === "quarantined"
-        ? "quarantined"
-        : "failed",
+          ? "processed"
+          : result.status === "quarantined"
+            ? "quarantined"
+            : "failed",
     })),
   };
 }

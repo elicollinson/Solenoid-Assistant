@@ -17,8 +17,11 @@ import type {
   ChatEvent,
   ChatListPayload,
   ChatPayload,
+  ChatSkillCommand,
   ChatToolCall,
   ChatTurnRow,
+  LiveTurnSnapshot,
+  SubagentStatusItem,
 } from "../../../src/shared/chat";
 import type { Surface } from "../../../src/shared/surface";
 
@@ -31,18 +34,42 @@ export type * from "../../../src/shared/chat";
  * not thinking about what you type next, it is waiting on the button above it.
  */
 export interface LiveTurn {
+  /** Optional server-assigned turn id for persistent SSE correlation. */
+  turnId?: string;
+  /** Whether this turn started from typed user text or an async subagent auto-turn. */
+  source?: "text" | "subagent";
   /** What you just said, drawn immediately rather than after the round trip. */
   asked: string;
   /** The agent's sentences so far — the ones before each act. */
   said: string[];
+  /** Live streaming prose accumulated from `delta` frames before `message` commits. */
+  streamingText?: string;
+  /** Live streaming reasoning accumulated from `reasoning_delta` frames. */
+  streamingReasoning?: string;
   calls: ChatToolCall[];
   opened: string[];
   pending: Extract<ChatEvent, { type: "approval" }> | null;
+  /** Non-blocking deferred approvals opened by background subagents (composer stays unlocked!). */
+  deferredApprovals?: Array<Extract<ChatEvent, { type: "deferred_approval" }>>;
+  /** Live background subagents attached to this conversation. */
+  activeSubagents?: SubagentStatusItem[];
   /** Set once, at the end. The turn is over when this is non-null. */
   error: string | null;
 }
 
-const EMPTY: LiveTurn = { asked: "", said: [], calls: [], opened: [], pending: null, error: null };
+export const EMPTY_LIVE_TURN: LiveTurn = {
+  asked: "",
+  said: [],
+  streamingText: "",
+  streamingReasoning: "",
+  calls: [],
+  opened: [],
+  pending: null,
+  deferredApprovals: [],
+  activeSubagents: [],
+  error: null,
+};
+const EMPTY: LiveTurn = EMPTY_LIVE_TURN;
 
 /**
  * How the header names the model answering typed chat: the id without its
@@ -70,6 +97,8 @@ export interface ChatState {
   restraint: string | null;
   /** How many conversations are waiting on you. */
   waiting: number;
+  /** Enabled reusable skills available via `/<slug>` slash commands in chat. */
+  skills?: readonly ChatSkillCommand[];
   /** The turn in flight, or null between turns. */
   live: LiveTurn | null;
   /** Open one, or pass null to go back to the list. */
@@ -85,6 +114,8 @@ export interface ChatState {
   send(text: string, into?: string): void;
   /** Press a button on the approval the run is waiting on. */
   answer(actionId: string): void;
+  /** Cancel an active turn on the open conversation. */
+  cancel?: () => void;
   /** Re-read from the server. */
   reload(): void;
 }
@@ -92,44 +123,107 @@ export interface ChatState {
 /**
  * Parse an SSE body by hand.
  *
- * `EventSource` is not usable here for one flat reason: it only issues GET, and
- * this is a POST with a body. The framing is small enough to read — records
- * separated by a blank line, `data:` lines joined — and doing it here keeps the
- * whole exchange on one connection rather than inventing a message id to fetch
- * a stream for.
+ * `EventSource` is avoided so we control headers, `AbortController` teardown,
+ * and compatibility with both persistent `GET /stream` and fallback streaming
+ * `POST /messages` responses.
  */
-async function* readEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<ChatEvent> {
+async function* readEvents(
+  body: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+): AsyncGenerator<ChatEvent> {
   const reader = body.getReader();
-  // Decoded here rather than through TextDecoderStream: `stream: true` is the
-  // part that matters, and it holds a partial multi-byte character back until
-  // the rest of it arrives instead of emitting a replacement character in the
-  // middle of a word.
+  // Decoded here rather than through TextDecoderStream: `stream: true` holds a
+  // partial multi-byte character back until the rest arrives instead of
+  // emitting a replacement character in the middle of a word.
   const decoder = new TextDecoder();
   let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let cut = buffer.indexOf("\n\n");
-    while (cut !== -1) {
-      const record = buffer.slice(0, cut);
-      buffer = buffer.slice(cut + 2);
-      const data = record
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trim())
-        .join("");
-      if (data) {
-        try {
-          yield JSON.parse(data) as ChatEvent;
-        } catch {
-          // A half-written frame is not worth ending a conversation over. The
-          // stream is still framed correctly; only this record is unreadable.
+  const onAbort = () => {
+    void reader.cancel().catch(() => {});
+  };
+  if (signal) {
+    if (signal.aborted) {
+      onAbort();
+      reader.releaseLock();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
+  try {
+    while (!signal?.aborted) {
+      const { done, value } = await reader.read();
+      if (done || signal?.aborted) break;
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+      let cut = buffer.indexOf("\n\n");
+      while (cut !== -1) {
+        if (signal?.aborted) return;
+        const record = buffer.slice(0, cut);
+        buffer = buffer.slice(cut + 2);
+        const data = record
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trim())
+          .join("\n");
+        if (data) {
+          try {
+            yield JSON.parse(data) as ChatEvent;
+          } catch {
+            // A half-written frame is not worth ending a conversation over. The
+            // stream is still framed correctly; only this record is unreadable.
+          }
         }
+        cut = buffer.indexOf("\n\n");
       }
-      cut = buffer.indexOf("\n\n");
+    }
+  } catch (error) {
+    if (signal?.aborted) return;
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    try {
+      reader.releaseLock();
+    } catch {
+      // Lock may already be released after cancel.
     }
   }
+}
+
+/** Whether `live` holds an actively running turn (as opposed to idle background overlays or a finished error). */
+export function hasActiveTurn(live: LiveTurn | null): boolean {
+  if (!live || live.error) return false;
+  return Boolean(
+    live.turnId ||
+      live.asked ||
+      live.source === "subagent" ||
+      live.said.length > 0 ||
+      live.streamingText ||
+      live.streamingReasoning ||
+      live.calls.length > 0 ||
+      live.opened.length > 0 ||
+      live.pending,
+  );
+}
+
+function hasVisibleLiveState(live: LiveTurn): boolean {
+  return Boolean(
+    hasActiveTurn(live) ||
+      live.error ||
+      (live.deferredApprovals && live.deferredApprovals.length > 0) ||
+      (live.activeSubagents && live.activeSubagents.length > 0),
+  );
+}
+
+function preserveBackgroundOverlays(current: LiveTurn | null): LiveTurn | null {
+  if (!current) return null;
+  const remainingSubagents = (current.activeSubagents ?? []).filter((s) => s.status === "running");
+  const remainingDeferred = current.deferredApprovals ?? [];
+  if (remainingSubagents.length === 0 && remainingDeferred.length === 0) {
+    return null;
+  }
+  return {
+    ...emptyLiveTurn(),
+    activeSubagents: remainingSubagents.map((s) => ({ ...s })),
+    deferredApprovals: [...remainingDeferred],
+  };
 }
 
 /**
@@ -146,17 +240,108 @@ export function useChat(surface: Surface = "desktop"): ChatState {
   const [openId, setOpenId] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [live, setLive] = useState<LiveTurn | null>(null);
+  const [skills, setSkills] = useState<ChatSkillCommand[]>([]);
   const [nonce, setNonce] = useState(0);
   // Guards the composer against a second send, and is checked rather than
   // `live` because state is a render behind and two quick returns would both
   // see null.
   const running = useRef(false);
+  // True while POST /messages is awaiting its HTTP reply so an initial empty
+  // SSE snapshot racing with the first send cannot wipe the optimistic turn.
+  const pendingSend = useRef(false);
+  // Always reflects the currently selected conversation synchronously so late
+  // frames or async replies from a previous conversation are ignored.
+  const openIdRef = useRef<string | null>(openId);
+  openIdRef.current = openId;
   // StrictMode replays effects; one loaded app still creates just one chat.
   const initialized = useRef(false);
   const creating = useRef<Promise<string | null> | null>(null);
 
   const q = surface === "desktop" ? "" : `?surface=${surface}`;
   const reload = useCallback(() => setNonce((n) => n + 1), []);
+
+  const handleEvent = useCallback(
+    (event: ChatEvent) => {
+      switch (event.type) {
+        case "snapshot": {
+          if (event.live) {
+            const hydrated = apply(emptyLiveTurn(), event);
+            running.current = hasActiveTurn(hydrated);
+            setLive(hasVisibleLiveState(hydrated) ? hydrated : null);
+          } else if (!pendingSend.current) {
+            running.current = false;
+            setLive(null);
+          }
+          return;
+        }
+        case "turn_start": {
+          running.current = true;
+          pendingSend.current = false;
+          setLive((current) => apply(current ?? emptyLiveTurn(), event));
+          return;
+        }
+        case "reset": {
+          const next = apply(emptyLiveTurn(), event);
+          running.current = hasActiveTurn(next);
+          setLive(hasVisibleLiveState(next) ? next : null);
+          return;
+        }
+        case "deferred_approval": {
+          // Non-blocking: never locks `running.current`.
+          setLive((current) => apply(current ?? emptyLiveTurn(), event));
+          return;
+        }
+        case "settled": {
+          setLive((current) => {
+            if (!current) return null;
+            const next = apply(current, event);
+            return hasVisibleLiveState(next) ? next : null;
+          });
+          reload();
+          return;
+        }
+        case "subagent_status": {
+          // Background subagent progress never locks the composer.
+          setLive((current) => {
+            const next = apply(current ?? emptyLiveTurn(), event);
+            return hasVisibleLiveState(next) ? next : null;
+          });
+          return;
+        }
+        case "message": {
+          // The turn's prose is written down by the time this arrives, so the
+          // stored transcript is now the truth and the live copy is dropped
+          // (preserving any still-running background overlays).
+          running.current = false;
+          pendingSend.current = false;
+          setLive((current) => preserveBackgroundOverlays(current));
+          reload();
+          return;
+        }
+        case "cancelled": {
+          running.current = false;
+          pendingSend.current = false;
+          setLive((current) => {
+            if (!current) return null;
+            const applied = apply(current, event);
+            return preserveBackgroundOverlays(applied);
+          });
+          reload();
+          return;
+        }
+        case "error": {
+          running.current = false;
+          pendingSend.current = false;
+          setLive((current) => apply(current ?? emptyLiveTurn(), event));
+          return;
+        }
+        default: {
+          setLive((current) => apply(current ?? emptyLiveTurn(), event));
+        }
+      }
+    },
+    [reload],
+  );
 
   // The list. Re-read whenever a turn ends, because a turn changes the row it
   // belongs to — its stamp, its line, and whether it is waiting on you.
@@ -199,8 +384,64 @@ export function useChat(surface: Surface = "desktop"): ChatState {
     return () => controller.abort();
   }, [openId, q, nonce]);
 
-  /** Leaving a conversation drops the turn on screen with it. */
+  // Persistent SSE stream for the open conversation. Hydrates in-flight state
+  // on connect and delivers streaming tokens, tool execution, subagent status,
+  // deferred approvals, and async auto-turns without waiting for user input.
+  useEffect(() => {
+    if (!openId) return;
+    const convId = openId;
+    const controller = new AbortController();
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+
+    const connect = async () => {
+      if (controller.signal.aborted || openIdRef.current !== convId) return;
+      try {
+        const response = await fetch(`/api/chat/${encodeURIComponent(convId)}/stream`, {
+          signal: controller.signal,
+          headers: { accept: "text/event-stream" },
+        });
+        if (controller.signal.aborted || openIdRef.current !== convId) return;
+        const contentType = response.headers.get("content-type") ?? "";
+        if (!response.ok || !response.body || !contentType.includes("text/event-stream")) {
+          // Non-SSE response (e.g. a non-streaming stub or 404): exit cleanly.
+          return;
+        }
+        attempt = 0;
+        for await (const event of readEvents(response.body, controller.signal)) {
+          if (controller.signal.aborted || openIdRef.current !== convId) return;
+          handleEvent(event);
+        }
+        if (!controller.signal.aborted && openIdRef.current === convId) {
+          const delay = Math.min(1000 * 2 ** attempt, 10_000);
+          attempt += 1;
+          reconnectTimer = setTimeout(() => {
+            void connect();
+          }, delay);
+        }
+      } catch {
+        if (controller.signal.aborted || openIdRef.current !== convId) return;
+        const delay = Math.min(1000 * 2 ** attempt, 10_000);
+        attempt += 1;
+        reconnectTimer = setTimeout(() => {
+          void connect();
+        }, delay);
+      }
+    };
+
+    void connect();
+
+    return () => {
+      controller.abort();
+      if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+    };
+  }, [openId, handleEvent]);
+
+  /** Leaving a conversation aborts its stream and drops the turn on screen with it. */
   const open = useCallback((id: string | null) => {
+    openIdRef.current = id;
+    running.current = false;
+    pendingSend.current = false;
     setOpenId(id);
     setLive(null);
   }, []);
@@ -211,6 +452,9 @@ export function useChat(surface: Surface = "desktop"): ChatState {
       .then(async (response) => {
         if (!response.ok) throw new Error(`the server answered ${response.status}`);
         const { conversationId } = (await response.json()) as { conversationId: string };
+        openIdRef.current = conversationId;
+        running.current = false;
+        pendingSend.current = false;
         setFailure(null);
         setLive(null);
         setOpenId(conversationId);
@@ -234,69 +478,140 @@ export function useChat(surface: Surface = "desktop"): ChatState {
     void start();
   }, [start]);
 
+  // Keep the `/` skill picker current as skills are created or edited.
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/chat/skills", { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const body = (await response.json()) as { skills?: unknown };
+        if (Array.isArray(body?.skills)) {
+          setSkills(body.skills as ChatSkillCommand[]);
+        }
+      })
+      .catch(() => {
+        // Non-fatal: chat works without the slash-skill catalog.
+      });
+    return () => controller.abort();
+  }, [nonce]);
+
   const send = useCallback(
     (text: string, into?: string) => {
       const said = text.trim();
       if (!said || running.current) return;
       running.current = true;
-      setLive({ ...EMPTY, asked: said });
+      pendingSend.current = true;
+      setLive((current) => ({
+        ...emptyLiveTurn(),
+        asked: said,
+        source: "text",
+        deferredApprovals: [...(current?.deferredApprovals ?? [])],
+        activeSubagents: (current?.activeSubagents ?? []).map((s) => ({ ...s })),
+      }));
 
       void (async () => {
+        let target: string | null = into ?? openIdRef.current;
         try {
-          const target = into ?? openId ?? await start();
-          if (!target) throw new Error("Could not start a conversation");
-          // Creating the conversation clears live state; restore this first turn.
-          if (!into && !openId) setLive({ ...EMPTY, asked: said });
+          if (!target) {
+            target = await start();
+            if (!target) throw new Error("Could not start a conversation");
+            // Creating the conversation clears live state; restore this first turn.
+            running.current = true;
+            pendingSend.current = true;
+            setLive({ ...emptyLiveTurn(), asked: said, source: "text" });
+          }
           const response = await fetch(`/api/chat/${encodeURIComponent(target)}/messages`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ text: said }),
           });
-          if (!response.ok || !response.body) {
+          pendingSend.current = false;
+          if (!response.ok) {
             throw new Error(`the server answered ${response.status}`);
           }
-          for await (const event of readEvents(response.body)) {
-            setLive((current) => (current ? apply(current, event) : current));
-            // The turn's prose is written down by the time this arrives, so the
-            // stored transcript is now the truth and the live one is a
-            // duplicate. Dropping it here rather than on the re-read avoids the
-            // frame where both are on screen.
-            if (event.type === "message") {
-              setLive(null);
-              reload();
+          if (openIdRef.current !== target) return;
+          const contentType = response.headers.get("content-type") ?? "";
+          if (response.status === 202 || !contentType.includes("text/event-stream")) {
+            // Persistent GET /api/chat/:id/stream delivers live frames and unlocks `running`.
+            return;
+          }
+          if (!response.body) {
+            running.current = false;
+            return;
+          }
+          try {
+            for await (const event of readEvents(response.body)) {
+              if (openIdRef.current !== target) break;
+              handleEvent(event);
             }
+          } finally {
+            running.current = false;
           }
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error);
-          setLive((current) => (current ? { ...current, error: message } : current));
-        } finally {
+          pendingSend.current = false;
           running.current = false;
+          if (target && openIdRef.current && openIdRef.current !== target) return;
+          const message = error instanceof Error ? error.message : String(error);
+          setLive((current) =>
+            current
+              ? { ...current, error: message }
+              : { ...emptyLiveTurn(), asked: said, source: "text", error: message },
+          );
         }
       })();
     },
-    [openId, reload, start],
+    [handleEvent, start],
   );
 
   /**
-   * Answer the question the run is sitting on.
+   * Answer a blocking approval or a non-blocking deferred subagent approval.
    *
-   * The bubble's buttons go the moment you press one — the run is already
-   * moving — and a refusal puts them back, because a 409 means somebody
-   * answered it somewhere else and a re-read will say what they chose.
+   * Optimistically clears ONLY the matching approval (leaving any unrelated
+   * blocking or deferred approvals untouched), posts the opaque actionId, and
+   * reloads so stored approvals stay in sync.
    */
   const answer = useCallback(
     (actionId: string) => {
-      setLive((current) => (current ? { ...current, pending: null } : current));
+      setLive((current) => {
+        if (!current) return current;
+        const matchesPending = current.pending?.actions.some((a) => a.id === actionId) ?? false;
+        const prevDeferred = current.deferredApprovals ?? [];
+        const nextDeferred = prevDeferred.filter((d) => !d.actions.some((a) => a.id === actionId));
+        const removedDeferred = nextDeferred.length !== prevDeferred.length;
+        if (!matchesPending && !removedDeferred) return current;
+        const next: LiveTurn = {
+          ...current,
+          pending: matchesPending ? null : current.pending,
+          deferredApprovals: nextDeferred,
+        };
+        return hasVisibleLiveState(next) ? next : null;
+      });
       void fetch("/api/chat/decisions", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ actionId }),
-      }).then((response) => {
-        if (!response.ok) reload();
-      });
+      })
+        .then(() => {
+          reload();
+        })
+        .catch(() => {
+          reload();
+        });
     },
     [reload],
   );
+
+  /** Request cancellation of an active turn on the open conversation. */
+  const cancel = useCallback(() => {
+    const target = openIdRef.current;
+    if (!target) return;
+    void fetch(`/api/chat/${encodeURIComponent(target)}/cancel`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+    }).catch(() => {
+      // Stream remains source of truth for cancelled state.
+    });
+  }, []);
 
   const currentPayload = payload?.conversationId === openId ? payload : null;
 
@@ -312,11 +627,13 @@ export function useChat(surface: Surface = "desktop"): ChatState {
     lede: (currentPayload ?? list)?.lede ?? "",
     restraint: (currentPayload ?? list)?.restraint ?? null,
     waiting: list?.waiting ?? 0,
+    skills,
     live,
     open,
     start,
     send,
     answer,
+    cancel,
     reload,
   };
 }
@@ -412,6 +729,54 @@ export function spoken(live: LiveTurn): string {
 }
 
 /**
+ * Combined live prose for a turn in flight: committed interim `say` sentences
+ * plus live-streamed `streamingText` tokens, without duplicating an open gate's
+ * title.
+ */
+export function liveProse(live: LiveTurn): string {
+  const prior = spoken(live);
+  const stream = live.streamingText ?? "";
+  const duplicateOfPending = Boolean(live.pending && stream.trim() === live.pending.title);
+  const activeStream = duplicateOfPending ? "" : stream;
+  if (prior && activeStream) return `${prior}\n\n${activeStream}`;
+  return prior || activeStream;
+}
+
+function emptyLiveTurn(): LiveTurn {
+  return {
+    ...EMPTY,
+    said: [],
+    calls: [],
+    opened: [],
+    deferredApprovals: [],
+    activeSubagents: [],
+  };
+}
+
+function fromSnapshot(snap: LiveTurnSnapshot): LiveTurn {
+  return {
+    turnId: snap.turnId,
+    asked: snap.asked,
+    source: snap.source,
+    said: [...snap.said],
+    streamingText: snap.streamingText,
+    streamingReasoning: snap.streamingReasoning,
+    calls: snap.calls.map((c) => ({ ...c })),
+    opened: [...snap.opened],
+    pending: snap.pending,
+    deferredApprovals: [...snap.deferredApprovals],
+    activeSubagents: snap.activeSubagents.map((s) => ({ ...s })),
+    error: snap.error,
+  };
+}
+
+function failRunningCalls(calls: readonly ChatToolCall[]): ChatToolCall[] {
+  return calls.map((c) =>
+    c.status === "running" ? { ...c, ok: false, status: "failed" as const } : c,
+  );
+}
+
+/**
  * One event, folded into the turn on screen.
  *
  * The `default` is not dead code. This runs against whatever the server is
@@ -421,12 +786,75 @@ export function spoken(live: LiveTurn): string {
  * flight, taking it off the screen with nothing logged. An event this build
  * does not know is one to ignore.
  */
-function apply(turn: LiveTurn, event: ChatEvent): LiveTurn {
+export function apply(turn: LiveTurn, event: ChatEvent): LiveTurn {
   switch (event.type) {
+    case "turn_start":
+      return {
+        ...emptyLiveTurn(),
+        turnId: event.turnId,
+        asked: event.asked,
+        source: event.source,
+        deferredApprovals: [...(turn.deferredApprovals ?? [])],
+        activeSubagents: (turn.activeSubagents ?? []).map((s) => ({ ...s })),
+      };
+    case "snapshot":
+      return event.live ? fromSnapshot(event.live) : emptyLiveTurn();
+    case "delta":
+      return {
+        ...turn,
+        streamingText: (turn.streamingText ?? "") + event.text,
+      };
+    case "reasoning_delta":
+      return {
+        ...turn,
+        streamingReasoning: (turn.streamingReasoning ?? "") + event.text,
+      };
     case "opened":
-      return { ...turn, opened: [...turn.opened, event.group] };
+      return turn.opened.includes(event.group)
+        ? turn
+        : { ...turn, opened: [...turn.opened, event.group] };
     case "say":
-      return { ...turn, said: [...turn.said, event.body] };
+      return {
+        ...turn,
+        said: [...turn.said, event.body],
+        streamingText: "",
+      };
+    case "tool_start": {
+      const nextCall: ChatToolCall = {
+        id: event.id,
+        name: event.name,
+        arg: event.arg,
+        duration: "",
+        kind: event.kind,
+        ok: true,
+        status: "running",
+      };
+      const existingIdx = turn.calls.findIndex((c) => c.id === event.id);
+      if (existingIdx !== -1) {
+        const calls = [...turn.calls];
+        calls[existingIdx] = nextCall;
+        return { ...turn, calls };
+      }
+      return { ...turn, calls: [...turn.calls, nextCall] };
+    }
+    case "tool_end": {
+      const updatedCall: ChatToolCall = {
+        id: event.id,
+        name: event.name,
+        arg: event.arg,
+        duration: event.duration,
+        kind: event.kind,
+        ok: event.ok,
+        status: event.ok ? "completed" : "failed",
+      };
+      const existingIdx = turn.calls.findIndex((c) => c.id === event.id);
+      if (existingIdx !== -1) {
+        const calls = [...turn.calls];
+        calls[existingIdx] = updatedCall;
+        return { ...turn, calls };
+      }
+      return { ...turn, calls: [...turn.calls, updatedCall] };
+    }
     case "tool":
       return {
         ...turn,
@@ -436,16 +864,52 @@ function apply(turn: LiveTurn, event: ChatEvent): LiveTurn {
           duration: event.duration,
           kind: event.kind,
           ok: event.ok,
+          status: event.ok ? "completed" : "failed",
         }],
       };
+    case "reset":
+      return fromSnapshot(event.live);
     case "approval":
       return { ...turn, pending: event };
-    case "settled":
-      return { ...turn, pending: null };
-    case "error":
-      return { ...turn, error: event.message };
+    case "deferred_approval": {
+      const existing = turn.deferredApprovals ?? [];
+      if (existing.some((d) => d.decisionId === event.decisionId)) return turn;
+      return { ...turn, deferredApprovals: [...existing, event] };
+    }
+    case "settled": {
+      const pending =
+        turn.pending && turn.pending.decisionId === event.decisionId ? null : turn.pending;
+      const prevDeferred = turn.deferredApprovals ?? [];
+      const nextDeferred = prevDeferred.filter((d) => d.decisionId !== event.decisionId);
+      if (pending === turn.pending && nextDeferred.length === prevDeferred.length) {
+        return turn;
+      }
+      return {
+        ...turn,
+        pending,
+        deferredApprovals: nextDeferred,
+      };
+    }
+    case "subagent_status":
+      return {
+        ...turn,
+        activeSubagents: event.subagents.map((s) => ({ ...s })),
+      };
     case "message":
       return turn;
+    case "cancelled":
+      return {
+        ...turn,
+        pending: null,
+        calls: failRunningCalls(turn.calls),
+      };
+    case "error":
+      return {
+        ...turn,
+        pending: null,
+        calls: failRunningCalls(turn.calls),
+        error: event.message,
+      };
     default:
       return turn;
   }

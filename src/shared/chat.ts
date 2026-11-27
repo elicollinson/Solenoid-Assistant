@@ -12,9 +12,11 @@
 // where they differ, the screen would draw a turn one way as it arrived and
 // another way after a reload.
 
-/** One completed tool call, as the design's mono line draws it:
+/** One completed (or running) tool call, as the design's mono line draws it:
  *  `memory.read okf:contact/ferris · 0.4s`. */
 export interface ChatToolCall {
+  /** Optional AG-UI toolCallId so live running calls update in place when they finish. */
+  id?: string;
   /** Dotted, as the design writes it: `reminders.create`. */
   name: string;
   arg: string | null;
@@ -22,6 +24,8 @@ export interface ChatToolCall {
   /** A read ran on its own; a write was put to you first. */
   kind: "read" | "write";
   ok: boolean;
+  /** Live execution state; stored/completed calls default to completed/failed via `ok`. */
+  status?: "running" | "completed" | "failed";
 }
 
 /** One button. `id` is what the client posts back — never a boolean. */
@@ -59,6 +63,17 @@ export interface ChatApproval {
   /** What followed, in the transcript's own words: "You said 'Go ahead', 15:20.
    *  Nothing was written." Null while open. */
   settled: string | null;
+  /** True when deferred non-blockingly by a background subagent. */
+  deferred?: boolean;
+  /** Subagent name that requested a deferred write, if any. */
+  subagentName?: string | null;
+}
+
+export interface ChatSkillCommand {
+  name: string;
+  title: string;
+  description: string;
+  source?: "builtin" | "user";
 }
 
 export interface ChatTurnRow {
@@ -74,10 +89,38 @@ export interface ChatTurnRow {
   note: string | null;
   /** "4 tool calls · docs.read, web.form_walk, calendar.check". */
   toolSummary: string | null;
-  /** The calls behind the summary, once the run that made them is readable.
-   *  Empty on a reload today: only the summary is stored. */
+  /** The calls behind the summary, once the run that made them is readable. */
   calls: ChatToolCall[];
   approval: ChatApproval | null;
+  /** Collapsible model reasoning recorded for this assistant turn, if any. */
+  reasoning?: string | null;
+  /** Turn provenance stamped from checkpoint metadata (`text`, `voice`, or `subagent`). */
+  source?: "text" | "voice" | "subagent";
+  /** Non-blocking deferred approvals opened by subagents during/around this turn. */
+  deferredApprovals?: ChatApproval[];
+}
+
+export interface SubagentStatusItem {
+  id: string;
+  name: string;
+  status: string;
+  current?: string | null;
+}
+
+/** Serializable snapshot of an in-flight turn for SSE reconnect/hydration. */
+export interface LiveTurnSnapshot {
+  turnId: string;
+  asked: string;
+  source: "text" | "subagent";
+  said: string[];
+  streamingText: string;
+  streamingReasoning: string;
+  calls: ChatToolCall[];
+  opened: string[];
+  pending: Extract<ChatEvent, { type: "approval" }> | null;
+  deferredApprovals: Array<Extract<ChatEvent, { type: "deferred_approval" }>>;
+  activeSubagents: SubagentStatusItem[];
+  error: string | null;
 }
 
 /** One row of the conversation list — the desktop's aside, the phone's screen. */
@@ -140,6 +183,14 @@ export interface ChatPayload {
  * half compiles against it and has no Bun types.
  */
 export type ChatEvent =
+  /** A new turn (typed user message or async subagent auto-turn) began. */
+  | { type: "turn_start"; turnId: string; asked: string; source: "text" | "subagent" }
+  /** Initial state pushed immediately when subscribing to GET /api/chat/:id/stream. */
+  | { type: "snapshot"; live: LiveTurnSnapshot | null }
+  /** Streamed assistant prose delta. */
+  | { type: "delta"; text: string }
+  /** Streamed assistant reasoning delta. */
+  | { type: "reasoning_delta"; text: string }
   /** The model fetched a group's tools. The screen says so, because opening
    *  ten groups and opening one are very different turns to watch. */
   | { type: "opened"; group: string }
@@ -152,7 +203,21 @@ export type ChatEvent =
    * shows the outcome where the live stream showed the intent.
    */
   | { type: "say"; body: string }
-  /** One completed tool call, as ToolCalls.tsx draws it. */
+  /** A tool call started running. */
+  | { type: "tool_start"; id: string; name: string; kind: "read" | "write"; arg: string | null }
+  /** A running tool call finished (pairs with `tool_start` by `id`). */
+  | {
+    type: "tool_end";
+    id: string;
+    name: string;
+    kind: "read" | "write";
+    arg: string | null;
+    duration: string;
+    ok: boolean;
+    /** The call completed, but its untrusted response was withheld. */
+    responseQuarantined?: boolean;
+  }
+  /** One completed tool call, as ToolCalls.tsx draws it (legacy single-event form). */
   | {
     type: "tool";
     name: string;
@@ -163,6 +228,8 @@ export type ChatEvent =
     /** The call completed, but its untrusted response was withheld. */
     responseQuarantined?: boolean;
   }
+  /** Atomic rollback emitted on AG-UI `MESSAGES_SNAPSHOT` after retry or route fallback. */
+  | { type: "reset"; scope: "step" | "attempt"; reason: string; live: LiveTurnSnapshot }
   /** A write is waiting on you. The turn is stopped until /decisions answers. */
   | {
     type: "approval";
@@ -178,9 +245,24 @@ export type ChatEvent =
     facts: readonly ChatFact[];
     actions: readonly ChatChoice[];
   }
+  /** Non-blocking deferred write approval opened by a background subagent. */
+  | {
+    type: "deferred_approval";
+    decisionId: string;
+    ref: string;
+    title: string;
+    why: string | null;
+    hold: string | null;
+    tool: string;
+    subagentName: string;
+    facts: readonly ChatFact[];
+    actions: readonly ChatChoice[];
+  }
   /** How an approval ended — including "expired", which the screen would
    *  otherwise have to infer from a stream that simply stopped. */
   | { type: "settled"; decisionId: string; outcome: ApprovalOutcome }
+  /** Live summary of background subagents attached to this conversation. */
+  | { type: "subagent_status"; subagents: readonly SubagentStatusItem[] }
   /** The turn's prose, once. */
   | {
     type: "message";
@@ -188,5 +270,9 @@ export type ChatEvent =
     body: string;
     note: string | null;
     toolSummary: string | null;
+    reasoning?: string | null;
+    source?: "text" | "subagent";
   }
+  /** Turn was cancelled by user request. */
+  | { type: "cancelled"; reason?: string }
   | { type: "error"; message: string };

@@ -5,7 +5,7 @@
 // stored count is wrong by morning, so they are computed here. What is *not*
 // derivable is the agent's own prose, and that comes out of `narratives` and
 // `surface_notes` exactly as it was written.
-import { and, asc, desc, eq, gt, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "../index";
 import * as s from "../schema";
 import type { HomePayload, HomeAction, HomeFeedItem, HomeSection, HomeStance, HomeToolCall } from "../../shared/home";
@@ -191,9 +191,8 @@ export function loadHome(db: Db, now: Date = new Date(), surface: Surface = "des
     db.select({ n: sql<number>`count(*)` }).from(s.workflowRuns).where(eq(s.workflowRuns.state, "running")),
   );
 
-  // What the agent has asked you in the chat and is still holding a run on.
-  // Blocking, specifically: a suggestion waiting in the feed is not the same
-  // as a turn that has stopped mid-sentence and cannot go on without you.
+  // Open approvals on user chats — both blocking turn gates and deferred
+  // subagent approvals — count toward the Chat rail waiting badge.
   const chatWaiting = count(
     db
       .select({ n: sql<number>`count(*)` })
@@ -202,8 +201,14 @@ export function loadHome(db: Db, now: Date = new Date(), surface: Surface = "des
       .where(
         and(
           eq(s.decisions.state, "open"),
-          eq(s.decisions.blocking, true),
           eq(s.conversations.channel, "agent_chat"),
+          notInArray(
+            s.conversations.id,
+            db
+              .select({ id: s.workflowRuns.transcriptConversationId })
+              .from(s.workflowRuns)
+              .where(isNotNull(s.workflowRuns.transcriptConversationId)),
+          ),
         ),
       ),
   );

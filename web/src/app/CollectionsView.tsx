@@ -2,8 +2,25 @@ import { useState, type CSSProperties } from "react";
 import { Button, MonoLabel } from "../kit";
 import { useCollections, saveCollectionItem } from "./api";
 import { COLLECTIONS, COLLECTION_LABELS, webUrl, type CollectionItem } from "../../../src/shared/collections";
+import { PhoneBody, PhoneTitle } from "./phone/chrome";
 
-const field: CSSProperties = { boxSizing: "border-box", width: "100%", padding: "var(--sp-3)", background: "var(--surface-panel)", color: "var(--text-1)", border: "var(--border-strong)", font: "var(--text-body-sm)" };
+const field: CSSProperties = {
+  boxSizing: "border-box",
+  width: "100%",
+  padding: "var(--sp-3) var(--sp-4)",
+  background: "var(--surface-raised)",
+  color: "var(--text-1)",
+  border: "var(--border-strong)",
+  borderRadius: "var(--radius-control)",
+  font: "var(--text-body-sm)",
+};
+
+const fieldLabel: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "var(--sp-2)",
+};
+
 export function CollectionsView({ phone = false }: { phone?: boolean }) {
   const [collection, setCollection] = useState("");
   const [q, setQ] = useState("");
@@ -14,31 +31,142 @@ export function CollectionsView({ phone = false }: { phone?: boolean }) {
   const query = new URLSearchParams({ q, archived, offset: String(offset), limit: "30", ...(collection ? { collection } : {}) });
   const result = useCollections(query.toString(), nonce);
   const changed = () => { setOffset(0); setOpen(null); };
-  return <main style={{ gridColumn: "2 / -1", overflow: "auto", minHeight: 0, padding: phone ? "var(--sp-5)" : "var(--sp-8)", display: "flex", flexDirection: "column", gap: "var(--sp-5)" }}>
-    <MonoLabel>Your collections</MonoLabel>
-    <h1 style={{ margin: 0, color: "var(--text-1)", font: "var(--text-title)" }}>Saved from screenshots</h1>
-    <p style={{ margin: 0 }}>Books, shows, music and other discoveries, with the sources they came from.</p>
-    <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-3)" }}>
-      <a href="/api/collections/export" download>Export all data</a>
-      <Button size="sm" variant="bare" onClick={() => setNonce((n) => n + 1)}>Refresh</Button>
-    </div>
-    <label>Search<input style={field} type="search" value={q} placeholder="Title, description or notes" onChange={(e) => { setQ(e.target.value); changed(); }} /></label>
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--sp-3)" }}>
-      <label>Collection<select style={field} value={collection} onChange={(e) => { setCollection(e.target.value); changed(); }}><option value="">All collections</option>{COLLECTIONS.map((key) => <option key={key} value={key}>{COLLECTION_LABELS[key]}</option>)}</select></label>
-      <label>Show<select style={field} value={archived} onChange={(e) => { setArchived(e.target.value); changed(); }}><option value="false">Saved</option><option value="true">Archived</option></select></label>
-    </div>
-    {result.status === "loading" ? <p>Reading collections…</p> : null}
-    {result.status === "error" ? <p role="alert">Could not read collections: {result.message}</p> : null}
-    {result.status === "ready" ? <>
-      <MonoLabel>{result.data.total} {result.data.total === 1 ? "item" : "items"}</MonoLabel>
-      {!result.data.items.length ? <p>{q || collection || archived === "true" ? "No items match these filters." : "Your next screenshot ingestion will save discoveries here. Historical Notion collections can be imported separately."}</p> : null}
-      {result.data.items.map((item) => <CollectionCard key={`${item.id}:${item.updatedAt}`} item={item} open={open === item.id} onOpen={() => setOpen(open === item.id ? null : item.id)} onSaved={() => setNonce((n) => n + 1)} />)}
-      <div style={{ display: "flex", gap: "var(--sp-3)" }}>
-        <Button size="sm" disabled={offset === 0} onClick={() => { setOffset(Math.max(0, offset - 30)); setOpen(null); }}>Previous</Button>
-        <Button size="sm" disabled={offset + 30 >= result.data.total} onClick={() => { setOffset(offset + 30); setOpen(null); }}>Next</Button>
+
+  const body = (
+    <>
+      {phone ? (
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "var(--sp-4)" }}>
+          <a
+            href="/api/collections/export"
+            download
+            style={{ font: "var(--text-mono-control)", letterSpacing: "var(--tracking-control)", textTransform: "uppercase" }}
+          >
+            Export all data
+          </a>
+          <Button size="sm" variant="quiet" onClick={() => setNonce((n) => n + 1)}>Refresh</Button>
+        </div>
+      ) : null}
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-4)", maxWidth: phone ? "none" : "var(--measure)" }}>
+        <label style={fieldLabel}>
+          <MonoLabel>Search</MonoLabel>
+          <input style={field} type="search" value={q} placeholder="Title, description or notes" onChange={(e) => { setQ(e.target.value); changed(); }} />
+        </label>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--sp-4)" }}>
+          <label style={fieldLabel}>
+            <MonoLabel>Collection</MonoLabel>
+            <select style={field} value={collection} onChange={(e) => { setCollection(e.target.value); changed(); }}>
+              <option value="">All collections</option>
+              {COLLECTIONS.map((key) => <option key={key} value={key}>{COLLECTION_LABELS[key]}</option>)}
+            </select>
+          </label>
+          <label style={fieldLabel}>
+            <MonoLabel>Show</MonoLabel>
+            <select style={field} value={archived} onChange={(e) => { setArchived(e.target.value); changed(); }}>
+              <option value="false">Saved</option>
+              <option value="true">Archived</option>
+            </select>
+          </label>
+        </div>
       </div>
-    </> : null}
-  </main>;
+      {result.status === "loading" ? <p style={{ margin: 0, color: "var(--text-3)" }}>Reading collections…</p> : null}
+      {result.status === "error" ? <p role="alert" style={{ margin: 0, color: "var(--danger-text)" }}>Could not read collections: {result.message}</p> : null}
+      {result.status === "ready" ? (
+        <>
+          <MonoLabel>{result.data.total} {result.data.total === 1 ? "item" : "items"}</MonoLabel>
+          {!result.data.items.length ? (
+            <p style={{ margin: 0, color: "var(--text-3)", maxWidth: "var(--measure)", textWrap: "pretty" }}>
+              {q || collection || archived === "true"
+                ? "No items match these filters."
+                : "Your next screenshot ingestion will save discoveries here. Historical Notion collections can be imported separately."}
+            </p>
+          ) : null}
+          {result.data.items.map((item) => (
+            <CollectionCard
+              key={`${item.id}:${item.updatedAt}`}
+              item={item}
+              open={open === item.id}
+              onOpen={() => setOpen(open === item.id ? null : item.id)}
+              onSaved={() => setNonce((n) => n + 1)}
+            />
+          ))}
+          <div style={{ display: "flex", gap: "var(--sp-3)" }}>
+            <Button size={phone ? "touch" : "sm"} disabled={offset === 0} onClick={() => { setOffset(Math.max(0, offset - 30)); setOpen(null); }}>Previous</Button>
+            <Button size={phone ? "touch" : "sm"} disabled={offset + 30 >= result.data.total} onClick={() => { setOffset(offset + 30); setOpen(null); }}>Next</Button>
+          </div>
+        </>
+      ) : null}
+    </>
+  );
+
+  if (phone) {
+    return (
+      <>
+        <PhoneTitle
+          title="Collections"
+          lede="Saved from screenshots — books, shows, music and other discoveries, with the sources they came from."
+        />
+        <PhoneBody
+          style={{
+            borderTop: "var(--border)",
+            background: "var(--surface-panel)",
+            paddingTop: "var(--sp-6)",
+            display: "flex",
+            flexDirection: "column",
+            gap: "var(--sp-5)",
+          }}
+        >
+          {body}
+        </PhoneBody>
+      </>
+    );
+  }
+
+  return (
+    <main style={{ gridColumn: "2 / span 2", display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <header
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+          gap: "var(--sp-9)",
+          padding: "var(--sp-9) var(--sp-10) 18px",
+          borderBottom: "var(--border)",
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2)", minWidth: 0 }}>
+          <h1 style={{ margin: 0, font: "var(--text-display)", letterSpacing: "var(--tracking-display)", color: "var(--text-1)" }}>
+            Collections
+          </h1>
+          <p style={{ margin: 0, font: "var(--text-body)", color: "var(--text-3)", maxWidth: "var(--measure)", textWrap: "pretty" }}>
+            Saved from screenshots — books, shows, music and other discoveries, with the sources they came from.
+          </p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-4)", flexShrink: 0 }}>
+          <a
+            href="/api/collections/export"
+            download
+            style={{ font: "var(--text-mono-control)", letterSpacing: "var(--tracking-control)", textTransform: "uppercase" }}
+          >
+            Export all data
+          </a>
+          <Button size="sm" variant="quiet" onClick={() => setNonce((n) => n + 1)}>Refresh</Button>
+        </div>
+      </header>
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflow: "auto",
+          padding: "var(--sp-8) var(--sp-10) var(--sp-10)",
+          display: "flex",
+          flexDirection: "column",
+          gap: "var(--sp-5)",
+        }}
+      >
+        {body}
+      </div>
+    </main>
+  );
 }
 export function CollectionCard({ item, open, onOpen, onSaved }: { item: CollectionItem; open: boolean; onOpen: () => void; onSaved: () => void }) {
   const [name, setName] = useState(item.name);

@@ -1,7 +1,12 @@
+import {
+  Agent,
+  type ChatMessage,
+  type ChatProvider,
+  type Reviewer,
+  type ThinkLevel,
+} from "@elicollinson/solenoid-engine";
 import { z } from "zod";
-import { extractJson, toOutputFormat } from "../core/rawAgent";
-import type { ChatMessage, ChatProvider, ThinkLevel } from "../core/providers";
-import type { Reviewer } from "../core/reviewer";
+import { createEngineLogger } from "../core/engine";
 import { graderPrompt, type PromptTemplate } from "../prompts";
 
 export interface GraderReviewerOptions {
@@ -25,7 +30,11 @@ export const gradeSchema = gradeScoresSchema.extend({
 });
 export type GradeResult = z.infer<typeof gradeSchema>;
 
-/** Build the rubric reviewer used by flows that opt into generate/grade/revise. */
+/**
+ * Build the rubric reviewer used by flows that opt into generate/grade/revise.
+ * Runs structured grading via `@elicollinson/solenoid-engine`'s `runStructured`
+ * (`submit_result` tool with automatic Zod repair feedback).
+ */
 export function createGraderReviewer(options: GraderReviewerOptions): Reviewer {
   const configuredPrompt = options.graderPrompt ?? graderPrompt;
 
@@ -43,29 +52,26 @@ export function createGraderReviewer(options: GraderReviewerOptions): Reviewer {
         typeof configuredPrompt === "function"
           ? configuredPrompt({ output, messages: promptMessages })
           : configuredPrompt;
-      const format = toOutputFormat("grade", gradeScoresSchema);
-      const response = await client.chat([{ role: "user", content: prompt }], {
-        model,
-        tools: [],
+
+      const grader = new Agent({
+        name: "grader-reviewer",
+        routes: [{ client, model }],
         think: options.thinkOnStructured ? (options.think ?? true) : false,
-        format,
-        signal,
+        logger: createEngineLogger("grader"),
       });
 
-      try {
-        const scores = gradeScoresSchema.parse(JSON.parse(extractJson(response.content)));
-        const averageScore =
-          (scores.accuracy + scores.specificity + scores.constraintAdherence) / 3;
-        return gradeSchema.parse({
-          ...scores,
-          averageScore,
-          passed: averageScore > 7,
-        });
-      } catch (error) {
-        throw new Error(
-          `Grade output failed validation: ${error instanceof Error ? error.message : String(error)}\nModel output: ${response.content}`,
-        );
-      }
+      const scores = await grader.runStructured(
+        prompt,
+        gradeScoresSchema,
+        signal ? { signal } : {},
+      );
+      const averageScore =
+        (scores.accuracy + scores.specificity + scores.constraintAdherence) / 3;
+      return gradeSchema.parse({
+        ...scores,
+        averageScore,
+        passed: averageScore > 7,
+      });
     },
   };
 }

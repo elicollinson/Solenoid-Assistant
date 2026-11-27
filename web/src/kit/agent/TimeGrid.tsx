@@ -101,7 +101,7 @@ export function TimeGrid<T extends TimeGridItem>({
           .map((h) => (
             <span
               key={h}
-              style={{ position: "absolute", top: top(h * 60) - 5, right: "var(--sp-4)", font: "var(--text-mono-label)", color: "var(--text-4)" }}
+              style={{ position: "absolute", top: Math.max(2, top(h * 60) - 5), right: "var(--sp-4)", font: "var(--text-mono-label)", color: "var(--text-4)" }}
             >
               {String(h).padStart(2, "0")}
             </span>
@@ -155,6 +155,9 @@ function DayHead({ d, onClick }: { d: TimeGridDay; onClick: (() => void) | null 
   const [hover, setHover] = useState(false);
   const style: CSSProperties = {
     all: "unset",
+    appearance: "none",
+    WebkitAppearance: "none",
+    border: "none",
     position: "sticky",
     top: 0,
     zIndex: 3,

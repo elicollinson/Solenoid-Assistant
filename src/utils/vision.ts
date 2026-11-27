@@ -1,53 +1,57 @@
 /**
  * Vision call: send an image to the configured vision model with a prompt and
- * an expected Zod response schema.
- *
- * Vision uses the same provider-normalized, deadline-aware Agent loop as text
- * tasks. Images are represented as normalized message parts and converted to
- * each provider's native shape by its adapter.
+ * an expected Zod response schema via `@elicollinson/solenoid-engine`'s
+ * multimodal `Agent` and `OpenAICompatibleProvider`.
  */
 
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
-import { z } from "zod";
-import pLimit from "p-limit";
-import { Ollama } from "ollama";
 import {
   Agent,
-  DEFAULT_AGENT_TIMEOUT_MS,
-  type ModelRouteInputChain,
-} from "../core/rawAgent";
-import { log } from "../core/logger";
-import { visionImage } from "./visionImage";
-import { createOllamaClient } from "../core/ollama";
-import { loadRuntimeConfig } from "../core/config";
+  OpenAICompatibleProvider,
+  setTraceFilter,
+  type ModelRoute,
+  type ModelRouteChain,
+} from "@elicollinson/solenoid-engine";
+import pLimit from "p-limit";
+import type { z } from "zod";
 import {
+  loadRuntimeConfig,
+  type ModelProviderName,
+  type RuntimeConfig,
+} from "../core/config";
+import { createEngineLogger } from "../core/engine";
+import { log } from "../core/logger";
+import { privateSourceContext } from "../core/privateSourceContext";
+import {
+  createLmStudioClient,
   createModelRoute,
+  createOmlxClient,
   createOpenAIClient,
   createOpenRouterClient,
 } from "../core/providerFactory";
-import { OllamaProvider, OpenAIProvider, OpenRouterProvider } from "../core/providers";
+import { createSecurityScreener } from "../safety/modelArmor";
+import { visionImage } from "./visionImage";
+
+// Ensure candidate screenshot spans are suppressed whenever privateSourceContext is active.
+setTraceFilter(() => !privateSourceContext.getStore());
 
 export interface VisionOptions {
   /** Override the complete ordered model route chain. */
-  routes?: ModelRouteInputChain;
+  routes?: ModelRouteChain;
   /** Provider override. Defaults to `LLM_PROVIDER`. */
-  provider?: "ollama" | "openai" | "openrouter";
+  provider?: ModelProviderName;
   /**
    * Model name. Defaults to `process.env.IMAGE_MODEL`, falling back to
-   * `process.env.MODEL` — set IMAGE_MODEL to a vision-capable cloud model.
+   * `process.env.MODEL`.
    */
   model?: string;
-  /** Ollama host override. */
-  host?: string;
   /** OpenAI-compatible base URL override. */
   baseURL?: string;
   /** Bearer token override for the selected provider. */
   apiKey?: string;
-  /** Override native vs. two-stage structured output behavior. */
-  structuredOutputStrategy?: "native" | "two-stage";
-  /** Per-provider-attempt timeout. Defaults to five minutes per image. */
-  timeoutMs?: number;
+  /** Optional cancellation signal. */
+  signal?: AbortSignal;
 }
 
 function imageMimeType(imagePath: string): string {
@@ -69,14 +73,71 @@ function imageMimeType(imagePath: string): string {
   }
 }
 
+function asEngineOpenAI(
+  client: ReturnType<typeof createOmlxClient>,
+): ConstructorParameters<typeof OpenAICompatibleProvider>[0] {
+  return client as unknown as ConstructorParameters<typeof OpenAICompatibleProvider>[0];
+}
+
+function buildPrimaryRoute(
+  provider: ModelProviderName,
+  model: string,
+  opts: VisionOptions,
+  config: RuntimeConfig,
+): ModelRoute {
+  if (provider === "openrouter") {
+    return {
+      client: new OpenAICompatibleProvider(
+        asEngineOpenAI(
+          createOpenRouterClient(
+            {
+              baseURL: opts.baseURL ?? config.openrouter.baseUrl,
+              apiKey: opts.apiKey ?? config.openrouter.apiKey,
+            },
+            config,
+          ),
+        ),
+        "openrouter",
+      ),
+      model,
+    };
+  }
+  if (provider === "lmstudio") {
+    return {
+      client: new OpenAICompatibleProvider(
+        asEngineOpenAI(
+          createLmStudioClient({ baseURL: opts.baseURL, apiKey: opts.apiKey }, config),
+        ),
+        "lmstudio",
+      ),
+      model,
+    };
+  }
+  if (provider === "openai") {
+    return {
+      client: new OpenAICompatibleProvider(
+        asEngineOpenAI(
+          createOpenAIClient({ baseURL: opts.baseURL, apiKey: opts.apiKey }, config),
+        ),
+        "lmstudio",
+      ),
+      model,
+    };
+  }
+  return {
+    client: new OpenAICompatibleProvider(
+      asEngineOpenAI(
+        createOmlxClient({ baseURL: opts.baseURL, apiKey: opts.apiKey }, config),
+      ),
+      "omlx",
+    ),
+    model,
+  };
+}
+
 /**
  * Send an image file to a vision model with a text prompt, returning a
- * structured response validated against `schema`.
- *
- * The image is shrunk (./visionImage.ts), base64-encoded and passed in the selected provider's native
- * image shape. The shared runner selects either native structured submission
- * (LM Studio/local backends) or a reasoning pass followed by a non-reasoning
- * serialization pass (Ollama Cloud by default).
+ * structured response validated against `schema` via `submit_result`.
  */
 export async function describeImage<S extends z.ZodType>(
   imagePath: string,
@@ -85,19 +146,14 @@ export async function describeImage<S extends z.ZodType>(
   opts: VisionOptions = {},
 ): Promise<z.infer<S>> {
   const config = loadRuntimeConfig();
-  const explicitClient = opts.routes?.[0].client;
-  const provider = explicitClient
-    ? explicitClient instanceof Ollama
-      ? "ollama"
-      : explicitClient.providerName ?? explicitClient.constructor.name
-    : opts.provider ?? config.llmProvider;
+  const provider = opts.routes?.[0].client.providerName ?? opts.provider ?? config.llmProvider;
   const model = opts.routes?.[0].model ?? opts.model ?? config.imageModel;
 
   const imageBuffer = await readFile(imagePath);
   const image = await visionImage(imageBuffer, imageMimeType(imagePath));
   const imageSize = imageBuffer.length;
 
-  log.debug(`vision: sending image to model`, {
+  log.debug("vision: sending image to model", {
     provider,
     model,
     imagePath,
@@ -106,51 +162,24 @@ export async function describeImage<S extends z.ZodType>(
   });
 
   try {
-    let routes: ModelRouteInputChain;
-    if (opts.routes) {
-      routes = opts.routes;
-    } else {
-      const structuredOutputStrategy =
-        opts.structuredOutputStrategy ?? config.structuredOutputStrategy;
-      const chatProvider = provider === "openai"
-        ? new OpenAIProvider(
-            createOpenAIClient(
-              { baseURL: opts.baseURL, apiKey: opts.apiKey },
-              config,
-            ),
-            { structuredOutputStrategy },
-          )
-        : provider === "openrouter"
-          ? new OpenRouterProvider(
-              createOpenRouterClient(
-                {
-                  baseURL: opts.baseURL ?? config.openrouter.baseUrl,
-                  apiKey: opts.apiKey ?? config.openrouter.apiKey,
-                },
-                config,
-              ),
-              { structuredOutputStrategy },
-            )
-          : new OllamaProvider(
-              createOllamaClient(
-                { host: opts.host, apiKey: opts.apiKey },
-                config,
-              ),
-              { structuredOutputStrategy },
-            );
-      routes = [
-        { client: chatProvider, model },
-        ...config.modelRoutes.slice(1).map((route) => createModelRoute(route, config)),
-      ];
-    }
+    const routes: ModelRouteChain = opts.routes
+      ? opts.routes
+      : [
+          buildPrimaryRoute(opts.provider ?? config.llmProvider, model, opts, config),
+          ...config.modelRoutes.slice(1).map((route) => createModelRoute(route, config)),
+        ];
+
     const agent = new Agent({
       name: "vision-description",
       routes,
       systemPrompt:
         "Analyze the supplied image carefully and complete the requested task.",
-      timeoutMs: opts.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS,
+      screen: createSecurityScreener(config),
+      shouldTrace: () => !privateSourceContext.getStore(),
+      logger: createEngineLogger("vision"),
     });
-    return await agent.runMessages(
+
+    const result = await agent.runMessages(
       [
         {
           role: "user",
@@ -158,11 +187,15 @@ export async function describeImage<S extends z.ZodType>(
           images: [image],
         },
       ],
-      schema,
+      {
+        schema,
+        ...(opts.signal ? { signal: opts.signal } : {}),
+      },
     );
+    return result.output;
   } catch (err) {
     const e = err as Error & { status?: number; statusCode?: number };
-    log.error(`vision: run failed`, {
+    log.error("vision: run failed", {
       provider,
       model,
       imagePath,
@@ -176,8 +209,7 @@ export async function describeImage<S extends z.ZodType>(
 }
 
 /**
- * Run `tasks` with at most `limit` in flight, preserving input order in the
- * output. Kept dependency-free; swap in p-limit if you'd rather.
+ * Run `tasks` with at most `limit` in flight, preserving input order in the output.
  */
 export async function mapWithConcurrency<T, R>(
   items: T[],

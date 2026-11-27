@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { AuthoredTextRegistry, MIN_AUTHORED_LENGTH, authoredText } from "./authoredText";
+import {
+  AuthoredTextRegistry,
+  MIN_AUTHORED_LENGTH,
+  authoredText,
+} from "@elicollinson/solenoid-security";
 
 const LONG = "List the standing suggestions you have formed, newest movement first.";
 const LONGER =

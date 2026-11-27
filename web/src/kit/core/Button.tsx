@@ -5,6 +5,10 @@ export type ButtonSize = "sm" | "md" | "touch";
 
 const BASE: CSSProperties = {
   all: "unset",
+  appearance: "none",
+  WebkitAppearance: "none",
+  background: "transparent",
+  border: "none",
   boxSizing: "border-box",
   cursor: "pointer",
   display: "inline-flex",
@@ -14,7 +18,7 @@ const BASE: CSSProperties = {
   whiteSpace: "nowrap",
   borderRadius: "var(--radius-control)",
   font: "var(--text-ui-sm)",
-  transition: "background var(--dur) var(--ease), color var(--dur) var(--ease)",
+  transition: "background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease)",
 };
 
 /* Buttons are the agent's words, not labels: "Send it", "Read the draft",
@@ -23,6 +27,7 @@ const BASE: CSSProperties = {
 export function Button({
   variant = "quiet",
   size = "md",
+  type = "button",
   disabled,
   title,
   children,
@@ -31,6 +36,7 @@ export function Button({
 }: {
   variant?: ButtonVariant;
   size?: ButtonSize;
+  type?: "button" | "submit";
   disabled?: boolean;
   title?: string;
   children?: ReactNode;
@@ -51,7 +57,7 @@ export function Button({
       background: hover ? "var(--surface-hover)" : "transparent",
       color: "var(--text-2)",
     },
-    bare: { color: hover ? "var(--text-1)" : "var(--text-3)" },
+    bare: { background: "transparent", color: hover ? "var(--text-1)" : "var(--text-3)" },
     danger: {
       border: "1px solid var(--danger)",
       background: hover ? "var(--danger)" : "transparent",
@@ -64,7 +70,7 @@ export function Button({
 
   return (
     <button
-      type="button"
+      type={type}
       disabled={disabled}
       title={title}
       onClick={onClick}

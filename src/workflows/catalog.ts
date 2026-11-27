@@ -98,6 +98,12 @@ export const KNOWN_WRITE_CAPABILITIES: readonly WriteCapabilityInfo[] = [
     description: "Execute web search queries",
     tools: ["tavily-search"],
   },
+  {
+    capability: "skills.write",
+    label: "Reusable Skills",
+    description: "Create, update, or remove reusable skills and slash commands",
+    tools: ["skills_create", "skills_update", "skills_delete"],
+  },
 ];
 
 const CAPABILITIES_BY_NAME = new Map(KNOWN_WRITE_CAPABILITIES.map((c) => [c.capability, c]));

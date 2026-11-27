@@ -38,7 +38,7 @@
 // JSON Schema — the real schemas arrive with the definitions the moment the
 // group opens, and printing them twice doubles the price of the whole idea.
 import { z } from "zod";
-import { authoredText } from "../safety/authoredText";
+import { authoredText } from "@elicollinson/solenoid-security";
 import type { AgentTool, FunctionToolDefinition } from "./tools";
 
 // ---------------------------------------------------------------------------

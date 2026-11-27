@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // Apply every pending migration to the database named by DATABASE_URL.
 import { DEFAULT_DB_PATH, createDb, runMigrations } from "../src/db";
+import { ensureBuiltinSkills } from "../src/db/skills";
 import { configureLogging, flushLogs, log, shutdownLogging } from "../src/core/logger";
 
 // A one-shot compose service is still a service, and the run that failed to
@@ -12,6 +13,7 @@ const path = process.argv[2] ?? DEFAULT_DB_PATH;
 const db = createDb(path);
 
 runMigrations(db);
+const seededSkills = ensureBuiltinSkills(db);
 
 const tables = db.$client
   .query<{ n: number }, []>(
@@ -29,6 +31,7 @@ migrations.ok(`migrated ${path} - ${tables?.n ?? 0} tables, ${views?.n ?? 0} vie
   database: path,
   tables: tables?.n ?? 0,
   views: views?.n ?? 0,
+  seededSkills: seededSkills.added,
 });
 db.$client.close();
 

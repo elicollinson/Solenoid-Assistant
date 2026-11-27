@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Agent } from "../core/rawAgent";
+import type { Agent } from "../core/engine";
 import { agentResource } from "./resource";
 
 describe("agentResource", () => {

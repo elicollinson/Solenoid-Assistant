@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { createSecurity } from "@elicollinson/solenoid-security";
 import { z } from "zod";
-import { Agent } from "../core/rawAgent";
+import { AgentAbortedError, AssistantAgent, type Screener } from "../core/engine";
 import { defineTool } from "../core/tools";
 import type { ChatMessage, ChatProvider } from "../core/providers";
 import type { TrustedMessageView } from "../tools/imessage";
@@ -8,7 +9,6 @@ import { extractMessages } from "./messageExtraction";
 
 class PromptProvider implements ChatProvider {
   readonly providerName = "message-test";
-  readonly traced = true;
   readonly prompts: string[] = [];
 
   constructor(private readonly reply: (prompt: string) => unknown) {}
@@ -22,13 +22,35 @@ class PromptProvider implements ChatProvider {
   }
 }
 
+type ScreeningFn = (
+  parts: readonly [string, ...string[]],
+) => Promise<{ flagged: boolean; blocked?: boolean; matchedFilters?: string[] }>;
+
+function toScreener(fn: ScreeningFn): Screener {
+  return createSecurity({
+    provider: {
+      async assess(parts) {
+        const res = await fn(parts);
+        const blocked = res.blocked ?? res.flagged;
+        return {
+          flagged: res.flagged,
+          blocked,
+          label: res.flagged ? "MALICIOUS" : blocked ? "CONTENT_BLOCKED" : "BENIGN",
+          score: res.flagged ? 1 : 0,
+          ...(res.matchedFilters ? { matchedFilters: res.matchedFilters } : {}),
+        };
+      },
+    },
+  }).screen;
+}
+
 function agent(
   provider: ChatProvider,
-  screening: false | ((parts: readonly [string, ...string[]]) => Promise<{ flagged: boolean }>) = false,
-): Agent {
-  return new Agent({
+  screening: false | ScreeningFn = false,
+): AssistantAgent {
+  return new AssistantAgent({
     routes: [{ client: provider, model: "test" }],
-    promptInjectionScreening: screening,
+    ...(screening ? { screen: toScreener(screening) } : {}),
   });
 }
 
@@ -263,7 +285,6 @@ describe("message extraction isolation", () => {
     const calls: ChatMessage[][] = [];
     const scriptedOkfClient: ChatProvider = {
       providerName: "scripted",
-      traced: true,
       async chat(messages) {
         calls.push(messages.map((m) => ({ ...m })));
         if (calls.length === 1) {
@@ -285,12 +306,12 @@ describe("message extraction isolation", () => {
       },
     };
 
-    const toolOkfAgent = new Agent({
+    const toolOkfAgent = new AssistantAgent({
       routes: [{ client: scriptedOkfClient, model: "test" }],
       tools: [unsafeTool],
-      promptInjectionScreening: async ([text]) => ({
+      screen: toScreener(async ([text]) => ({
         flagged: text.includes("flagged snippet"),
-      }),
+      })),
     });
 
     const intakeProvider = new PromptProvider(() => ({
@@ -333,7 +354,6 @@ describe("message extraction chunks", () => {
     let fallbackCalls = 0;
     const primary: ChatProvider = {
       providerName: "held-primary",
-      traced: true,
       chat: async () => {
         primaryCalls++;
         entered();
@@ -342,18 +362,16 @@ describe("message extraction chunks", () => {
     };
     const fallback: ChatProvider = {
       providerName: "forbidden-fallback",
-      traced: true,
       chat: async () => {
         fallbackCalls++;
         return { role: "assistant", content: "must not run" };
       },
     };
-    const intake = new Agent({
+    const intake = new AssistantAgent({
       routes: [
         { client: primary, model: "primary" },
         { client: fallback, model: "fallback" },
       ],
-      promptInjectionScreening: false,
     });
     const grader = new PromptProvider(() => ({ memoryRelevance: 10, memoryActionability: 10 }));
     const writer = new PromptProvider(() => ({ actionsTaken: ["write"], resultSummary: "write" }));
@@ -370,7 +388,7 @@ describe("message extraction chunks", () => {
     });
     await started;
     controller.abort(new Error("stopped by user"));
-    await expect(pending).rejects.toThrow("stopped by user");
+    await expect(pending).rejects.toBeInstanceOf(AgentAbortedError);
     release({
       role: "assistant",
       content: JSON.stringify({
@@ -605,20 +623,23 @@ describe("message memory write isolation", () => {
         memoryContext: [prompt.includes("blocked-source") ? "blocked-memory" : "safe-memory"],
       }))),
       grader: passGrader(),
-      okfManager: agent(writes, async (parts) => ({
-        flagged: false,
-        blocked: parts.some((part) => part.includes("blocked-result")),
-        matchedFilters: ["rai"],
-      })),
+      okfManager: agent(writes, async (parts) => {
+        const isBlocked = parts.some((part) => part.includes("blocked-memory"));
+        return {
+          flagged: false,
+          blocked: isBlocked,
+          ...(isBlocked ? { matchedFilters: ["rai"] } : {}),
+        };
+      }),
     });
 
     expect(result.okfUpdate).toEqual({ actionsTaken: ["safe-write"], resultSummary: "done" });
     expect(result.memoryContext).toEqual(["safe-memory"]);
     expect(result.screening.quarantinedMemoryUpdates).toBe(1);
-    expect(writes.prompts).toHaveLength(2);
+    expect(writes.prompts).toHaveLength(1);
   });
 
-  test("a model-output detection stops only its conversation and later writes and batches remain sequential", async () => {
+  test("a write-tool output detection stops only its conversation and later writes and batches remain sequential", async () => {
     const messages = [25, 25, 50].flatMap((size, conversation) =>
       Array.from({ length: size }, (_, index) => message(`chat-${conversation}`, `source-${conversation}-${index}`, "2026-08-01T00:00:00.000Z"))
     );
@@ -630,23 +651,57 @@ describe("message memory write isolation", () => {
     let entered!: () => void;
     const blocked = new Promise<void>((resolve) => { release = resolve; });
     const started = new Promise<void>((resolve) => { entered = resolve; });
-    const writes = new PromptProvider(async (prompt) => {
-      if (prompt.includes("memory-0")) return { actionsTaken: ["blocked-output"], resultSummary: "blocked-output" };
-      if (prompt.includes("memory-1")) { entered(); await blocked; }
-      return { actionsTaken: [prompt.includes("memory-1") ? "write-1" : "write-2"], resultSummary: "safe" };
+    const writeTool = defineTool({
+      name: "record_memory",
+      kind: "write",
+      description: "record memory",
+      schema: z.object({ payload: z.string() }),
+      execute: ({ payload }) => ({ ok: true, echo: payload }),
     });
+    const writePrompts: string[] = [];
+    const writes: ChatProvider = {
+      providerName: "sequenced-writes",
+      async chat(chatMessages) {
+        const prompt = [...chatMessages].reverse().find(({ role }) => role === "user")?.content ?? "";
+        writePrompts.push(prompt);
+        if (prompt.includes("memory-0")) {
+          return {
+            role: "assistant",
+            content: "",
+            finishReason: "tool_calls",
+            toolCalls: [{ id: "w-0", name: "record_memory", arguments: { payload: "blocked-output" } }],
+          };
+        }
+        if (prompt.includes("memory-1")) {
+          entered();
+          await blocked;
+        }
+        return {
+          role: "assistant",
+          content: JSON.stringify({
+            actionsTaken: [prompt.includes("memory-1") ? "write-1" : "write-2"],
+            resultSummary: "safe",
+          }),
+          finishReason: "stop",
+        };
+      },
+    };
     const pending = extractMessages({}, {
       retrieveMessages: retrieval(messages), intake: agent(intake), grader: passGrader(),
-      okfManager: agent(writes, async (parts) => ({ flagged: parts.some((part) => part.includes("blocked-output")) })),
+      okfManager: new AssistantAgent({
+        routes: [{ client: writes, model: "test" }],
+        tools: [writeTool],
+        screen: toScreener(async (parts) => ({ flagged: parts.some((part) => part.includes("blocked-output")) })),
+      }),
     });
     try {
       await started;
       expect(intake.prompts).toHaveLength(2);
-      expect(writes.prompts).toHaveLength(2);
+      expect(writePrompts).toHaveLength(2);
     } finally { release(); }
     const result = await pending;
-    expect(writes.prompts).toHaveLength(3);
-    for (const [index, prompt] of writes.prompts.entries()) {
+    expect(writePrompts).toHaveLength(3);
+    for (const [index, prompt] of writePrompts.entries()) {
       expect(prompt).toContain(`memory-${index}`);
       for (let other = 0; other < 3; other++) if (other !== index) expect(prompt).not.toContain(`memory-${other}`);
     }
@@ -656,14 +711,14 @@ describe("message memory write isolation", () => {
     expect(result.conversationSummaries).toEqual(["summary-0", "summary-1", "summary-2"]);
   });
 
-  test("a late model-output detection does not retry an already completed tool write", async () => {
+  test("a late write-tool output detection does not retry an already completed tool write", async () => {
     let toolWrites = 0;
     const writeTool = defineTool({
       name: "record_memory", kind: "write", description: "record memory",
-      schema: z.object({}), execute: () => { toolWrites++; return { ok: true }; },
+      schema: z.object({}), execute: () => { toolWrites++; return { ok: true, echo: "blocked-output" }; },
     });
     const provider: ChatProvider = {
-      providerName: "late-detection", traced: true,
+      providerName: "late-detection",
       async chat(messages) {
         const input = messages.find((m) => m.role === "user")?.content ?? "";
         if (input.includes("late-memory")) {
@@ -671,7 +726,7 @@ describe("message memory write isolation", () => {
             role: "assistant", content: "", finishReason: "tool_calls",
             toolCalls: [{ id: "write-once", name: "record_memory", arguments: {} }],
           };
-          return { role: "assistant", content: JSON.stringify({ actionsTaken: ["blocked-output"], resultSummary: "blocked-output" }), finishReason: "stop" };
+          return { role: "assistant", content: JSON.stringify({ actionsTaken: ["should-not-reach"], resultSummary: "should-not-reach" }), finishReason: "stop" };
         }
         return { role: "assistant", content: JSON.stringify({ actionsTaken: ["safe update"], resultSummary: "safe" }), finishReason: "stop" };
       },
@@ -680,8 +735,10 @@ describe("message memory write isolation", () => {
       retrieveMessages: retrieval([message("late", "late-source", "2026-08-01T00:00:00.000Z"), message("safe", "safe-source", "2026-08-01T00:01:00.000Z")]),
       intake: agent(new PromptProvider((prompt) => ({ actionItems: [], conversationSummaries: [], memoryContext: [prompt.includes("late-source") ? "late-memory" : "safe-memory"] }))),
       grader: passGrader(),
-      okfManager: new Agent({ routes: [{ client: provider, model: "test" }], tools: [writeTool],
-        promptInjectionScreening: async (parts) => ({ flagged: parts.some((part) => part.includes("blocked-output")) }),
+      okfManager: new AssistantAgent({
+        routes: [{ client: provider, model: "test" }],
+        tools: [writeTool],
+        screen: toScreener(async (parts) => ({ flagged: parts.some((part) => part.includes("blocked-output")) })),
       }),
     });
     expect(toolWrites).toBe(1);

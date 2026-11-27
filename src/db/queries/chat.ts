@@ -1,17 +1,21 @@
 // The Chat surface: the transcript, and what is still waiting in it.
 //
-// Four tables and no domain of its own — a chat is a `conversations` row, its
-// turns are `messages`, the sparse half of an agent turn is `agent_turns`, and
-// an approval is a `decisions` row with its `actions` and its `attributes`.
-// ../mutations/chat.ts argues why at the top; this is the reading side of the
-// same claim, and its shape is the evidence: nothing below special-cases a chat
-// against a text thread except the two joins a text thread has no rows for.
+// Checkpoint-backed chats hydrate their full turns (including completed tool
+// calls, ×N toolSummary collapse, opened-group notes, voice/subagent provenance,
+// and blocking + deferred approvals) directly from the latest AG-UI thread
+// checkpoint in `chat_checkpoints`, joined with relational `decisions`/`actions`.
+// Legacy conversations without checkpoints fall back cleanly to `messages` +
+// `agent_turns`.
 //
 // The stamp is derived, like every other stamp in this directory. A stored
 // "09:39" is right until midnight and then reads as this morning.
-import { and, asc, desc, eq, inArray, isNotNull, notInArray } from "drizzle-orm";
+import type { Message } from "@ag-ui/core";
+import type { ChatMessage, PendingInterrupt } from "@elicollinson/solenoid-engine";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, notInArray } from "drizzle-orm";
 import type { Db } from "../index";
 import * as s from "../schema";
+import { APPROVAL_META_LABEL, parseApprovalMeta } from "../chatCheckpoints";
+import { hydrateTurnsFromThread } from "../../chat/translator";
 import type { Surface } from "../../shared/surface";
 import type {
   ChatApproval,
@@ -82,13 +86,39 @@ function settledLine(
   return chosen.approves ? `You said "${chosen.label}".` : `You said "${chosen.label}" — nothing was written.`;
 }
 
+function tailFromCheckpoint(
+  transcript: readonly ChatMessage[] | null | undefined,
+  thread: readonly Message[] | null | undefined,
+): { body: string; by: string | null } | undefined {
+  if (transcript?.length) {
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      const m = transcript[i];
+      if (!m) continue;
+      if ((m.role === "assistant" || m.role === "user") && typeof m.content === "string" && m.content.trim()) {
+        return { body: m.content, by: m.role === "user" ? "user" : "agent" };
+      }
+    }
+  }
+  if (thread?.length) {
+    for (let i = thread.length - 1; i >= 0; i--) {
+      const m = thread[i];
+      if (!m) continue;
+      if ((m.role === "assistant" || m.role === "user") && typeof m.content === "string" && m.content.trim()) {
+        return { body: m.content, by: m.role === "user" ? "user" : "agent" };
+      }
+    }
+  }
+  return undefined;
+}
+
 /**
  * The conversation list — the desktop's aside, the phone's own screen.
  *
  * Three of the four columns are derived and none of them could be stored. The
  * stamp is a reading of the clock; the state is "is anything in it waiting on
- * you"; and the lede is the last thing the agent said in it, first sentence
- * only, because a list row is one line and the turn it comes from is four.
+ * you" (blocking OR deferred subagent approvals, or a running checkpoint); and
+ * the lede is the last thing the agent said in it, first sentence only,
+ * because a list row is one line and the turn it comes from is four.
  */
 export function loadConversations(
   db: Db,
@@ -120,47 +150,86 @@ export function loadConversations(
 
   const ids = rows.map((row) => row.id);
 
-  // Which conversations have a blocking question open. One query for the lot
-  // rather than one per row, because this list is drawn on every chat load.
+  // Conversations with ANY open approval — blocking turn gates OR deferred
+  // subagent approvals — need the user's attention.
   const waiting = new Set(
     db
       .select({ subjectId: s.decisions.subjectId })
       .from(s.decisions)
-      .where(and(
-        inArray(s.decisions.subjectId, ids),
-        eq(s.decisions.state, "open"),
-        eq(s.decisions.blocking, true),
-      ))
+      .where(and(inArray(s.decisions.subjectId, ids), eq(s.decisions.state, "open")))
       .all()
       .map((row) => row.subjectId)
       .filter((id): id is string => Boolean(id)),
   );
 
-  // The last thing said in each, and by whom. `sentBy` matters: a conversation
-  // whose final turn is yours is one the agent has not answered yet.
-  const last = new Map<string, { body: string; by: string | null }>();
-  for (const row of db
+  // Join top-level `chat_sessions` with their latest `chat_checkpoints` row in one pass.
+  const checkpointRows = db
     .select({
-      conversationId: s.messages.conversationId,
-      body: s.messages.body,
-      sentBy: s.messages.sentBy,
-      seq: s.messages.seq,
+      sessionId: s.chatSessions.id,
+      title: s.chatSessions.title,
+      status: s.chatSessions.status,
+      updatedAt: s.chatSessions.updatedAt,
+      transcript: s.chatCheckpoints.transcript,
+      thread: s.chatCheckpoints.thread,
     })
-    .from(s.messages)
-    .where(inArray(s.messages.conversationId, ids))
-    .orderBy(asc(s.messages.seq))
-    .all()) {
-    last.set(row.conversationId, { body: row.body, by: row.sentBy });
+    .from(s.chatSessions)
+    .leftJoin(
+      s.chatCheckpoints,
+      and(
+        eq(s.chatCheckpoints.sessionId, s.chatSessions.id),
+        eq(s.chatCheckpoints.seq, s.chatSessions.lastSeq),
+      ),
+    )
+    .where(and(inArray(s.chatSessions.id, ids), isNull(s.chatSessions.parentId)))
+    .all();
+  const checkpointById = new Map(checkpointRows.map((row) => [row.sessionId, row]));
+
+  // Fallback to legacy `messages` only for conversations without a checkpoint.
+  const legacyIds = ids.filter((id) => !checkpointById.has(id));
+  const last = new Map<string, { body: string; by: string | null }>();
+  if (legacyIds.length) {
+    for (const row of db
+      .select({
+        conversationId: s.messages.conversationId,
+        body: s.messages.body,
+        sentBy: s.messages.sentBy,
+        seq: s.messages.seq,
+      })
+      .from(s.messages)
+      .where(inArray(s.messages.conversationId, legacyIds))
+      .orderBy(asc(s.messages.seq))
+      .all()) {
+      last.set(row.conversationId, { body: row.body, by: row.sentBy });
+    }
   }
 
   const conversations: ChatConversationRow[] = rows.map((row): ChatConversationRow => {
-    const tail = last.get(row.id);
+    const cp = checkpointById.get(row.id);
+    const tail = cp ? tailFromCheckpoint(cp.transcript, cp.thread) : last.get(row.id);
+    const cpTitle = cp?.title && cp.title !== "Untitled session" ? cp.title : null;
+    const stampAt =
+      row.lastMessageAt ?? (cp?.updatedAt ? new Date(cp.updatedAt) : null) ?? row.startedAt ?? now;
+    const isWaiting = waiting.has(row.id) || cp?.status === "waiting_approval";
+
+    let state: ChatConversationRow["state"];
+    if (isWaiting) {
+      state = "attention";
+    } else if (cp?.status === "running") {
+      state = "running";
+    } else if (cp?.status === "failed") {
+      state = "failed";
+    } else if (tail) {
+      state = "done";
+    } else {
+      state = "idle";
+    }
+
     return {
       id: row.id,
-      title: row.title,
+      title: row.title ?? cpTitle,
       lede: ledeFor(tail),
-      when: listStamp(row.lastMessageAt ?? row.startedAt ?? now, now),
-      state: waiting.has(row.id) ? "attention" : tail ? "done" : "idle",
+      when: listStamp(stampAt, now),
+      state,
       model: row.model ?? null,
       voiceInvoked: Boolean(row.voiceInvoked),
     };
@@ -170,7 +239,7 @@ export function loadConversations(
     conversations,
     lede: surfaceNote(db, "chat", "line", surface),
     restraint: surfaceNote(db, "chat", "restraint", surface) || null,
-    waiting: waiting.size,
+    waiting: conversations.filter((c) => c.state === "attention").length,
   };
 }
 
@@ -188,6 +257,16 @@ function ledeFor(tail: { body: string; by: string | null } | undefined): string 
   return tail.by === "user" ? `You: ${line}` : line;
 }
 
+function extractPendingInterrupts(pending: unknown): PendingInterrupt[] {
+  if (!pending || typeof pending !== "object") return [];
+  const list = (pending as { interrupts?: unknown }).interrupts;
+  if (!Array.isArray(list)) return [];
+  return list.filter(
+    (item): item is PendingInterrupt =>
+      Boolean(item) && typeof item === "object" && typeof (item as { toolCallId?: unknown }).toolCallId === "string",
+  );
+}
+
 /** Everything one conversation draws. */
 export function loadChat(
   db: Db,
@@ -195,6 +274,111 @@ export function loadChat(
   now = new Date(),
   surface: Surface = "desktop",
 ): ChatPayload {
+  const conversation = db
+    .select({
+      title: s.conversations.title,
+      model: s.conversations.model,
+      voiceInvoked: s.conversations.voiceInvoked,
+    })
+    .from(s.conversations)
+    .where(eq(s.conversations.id, conversationId))
+    .get();
+
+  const latestCheckpoint = db
+    .select({
+      thread: s.chatCheckpoints.thread,
+      pending: s.chatCheckpoints.pending,
+    })
+    .from(s.chatCheckpoints)
+    .where(eq(s.chatCheckpoints.sessionId, conversationId))
+    .orderBy(desc(s.chatCheckpoints.seq))
+    .limit(1)
+    .get();
+
+  if (latestCheckpoint) {
+    const sessionRow = db
+      .select({ title: s.chatSessions.title })
+      .from(s.chatSessions)
+      .where(eq(s.chatSessions.id, conversationId))
+      .get();
+
+    const conversationDecisions = db
+      .select({ id: s.decisions.id })
+      .from(s.decisions)
+      .where(eq(s.decisions.subjectId, conversationId))
+      .orderBy(asc(s.decisions.openedAt))
+      .all();
+
+    const pendingInterrupts = extractPendingInterrupts(latestCheckpoint.pending);
+    const interruptToolCallByApprovalId = new Map<string, string>();
+    const allDecisionIds: string[] = [];
+    const seenIds = new Set<string>();
+
+    for (const row of conversationDecisions) {
+      seenIds.add(row.id);
+      allDecisionIds.push(row.id);
+    }
+    for (const interrupt of pendingInterrupts) {
+      if (interrupt.approvalId) {
+        interruptToolCallByApprovalId.set(interrupt.approvalId, interrupt.toolCallId);
+        if (!seenIds.has(interrupt.approvalId)) {
+          seenIds.add(interrupt.approvalId);
+          allDecisionIds.push(interrupt.approvalId);
+        }
+      }
+    }
+
+    const loadedApprovals = loadApprovalsWithMeta(db, allDecisionIds);
+    const approvalsByToolCallId = new Map<string, ChatApproval>();
+    const deferredApprovals: ChatApproval[] = [];
+
+    for (const id of allDecisionIds) {
+      const entry = loadedApprovals.get(id);
+      if (!entry) continue;
+      if (entry.blocking) {
+        const toolCallId = entry.toolCallId ?? interruptToolCallByApprovalId.get(id);
+        if (toolCallId) {
+          approvalsByToolCallId.set(toolCallId, entry.approval);
+        }
+      } else {
+        deferredApprovals.push(entry.approval);
+      }
+    }
+    for (const interrupt of pendingInterrupts) {
+      if (!interrupt.approvalId) continue;
+      const entry = loadedApprovals.get(interrupt.approvalId);
+      if (entry && !approvalsByToolCallId.has(interrupt.toolCallId)) {
+        approvalsByToolCallId.set(interrupt.toolCallId, entry.approval);
+      }
+    }
+
+    const turns = hydrateTurnsFromThread(latestCheckpoint.thread, {
+      now,
+      approvalsByToolCallId,
+      deferredApprovals,
+    });
+
+    const waiting = [...loadedApprovals.values()].filter(
+      (entry) => entry.approval.state === "open",
+    ).length;
+
+    const sessionTitle =
+      sessionRow?.title && sessionRow.title !== "Untitled session" ? sessionRow.title : null;
+
+    return {
+      conversationId,
+      title: conversation?.title ?? sessionTitle,
+      model: conversation?.model ?? null,
+      voiceInvoked:
+        Boolean(conversation?.voiceInvoked) || turns.some((turn) => turn.source === "voice"),
+      lede: surfaceNote(db, "chat", "line", surface),
+      restraint: surfaceNote(db, "chat", "restraint", surface) || null,
+      turns,
+      waiting,
+    };
+  }
+
+  // Legacy path for conversations without checkpoints (direct `messages` + `agent_turns`).
   const rows = db
     .select({
       id: s.messages.id,
@@ -212,10 +396,10 @@ export function loadChat(
     .orderBy(asc(s.messages.seq))
     .all();
 
-  const approvals = loadApprovals(
-    db,
-    rows.map((row) => row.decisionId).filter((id): id is string => Boolean(id)),
-  );
+  const turnDecisionIds = rows
+    .map((row) => row.decisionId)
+    .filter((id): id is string => Boolean(id));
+  const approvals = loadApprovals(db, turnDecisionIds);
 
   const turns: ChatTurnRow[] = rows.map((row) => ({
     id: row.id,
@@ -233,15 +417,13 @@ export function loadChat(
     approval: row.decisionId ? approvals.get(row.decisionId) ?? null : null,
   }));
 
-  const conversation = db
-    .select({
-      title: s.conversations.title,
-      model: s.conversations.model,
-      voiceInvoked: s.conversations.voiceInvoked,
-    })
-    .from(s.conversations)
-    .where(eq(s.conversations.id, conversationId))
-    .get();
+  const turnDecisionSet = new Set(turnDecisionIds);
+  const extraOpenDecisions = db
+    .select({ id: s.decisions.id })
+    .from(s.decisions)
+    .where(and(eq(s.decisions.subjectId, conversationId), eq(s.decisions.state, "open")))
+    .all()
+    .filter((row) => !turnDecisionSet.has(row.id));
 
   return {
     conversationId,
@@ -251,7 +433,7 @@ export function loadChat(
     lede: surfaceNote(db, "chat", "line", surface),
     restraint: surfaceNote(db, "chat", "restraint", surface) || null,
     turns,
-    waiting: turns.filter((turn) => turn.approval?.state === "open").length,
+    waiting: turns.filter((turn) => turn.approval?.state === "open").length + extraOpenDecisions.length,
   };
 }
 
@@ -280,9 +462,18 @@ function listStamp(at: Date, now: Date): string {
   return sameDay(at, now) ? clock(at) : dayName(at, now);
 }
 
-/** Every approval named by the transcript, in one pass rather than one per turn. */
-function loadApprovals(db: Db, ids: readonly string[]): Map<string, ChatApproval> {
-  const found = new Map<string, ChatApproval>();
+interface LoadedApprovalEntry {
+  approval: ChatApproval;
+  blocking: boolean;
+  toolCallId?: string;
+}
+
+/** Every approval named by a conversation/transcript, in one pass with metadata. */
+function loadApprovalsWithMeta(
+  db: Db,
+  ids: readonly string[],
+): Map<string, LoadedApprovalEntry> {
+  const found = new Map<string, LoadedApprovalEntry>();
   if (!ids.length) return found;
 
   const decisions = db
@@ -291,6 +482,7 @@ function loadApprovals(db: Db, ids: readonly string[]): Map<string, ChatApproval
       title: s.decisions.title,
       body: s.decisions.body,
       state: s.decisions.state,
+      blocking: s.decisions.blocking,
       chosenActionId: s.decisions.chosenActionId,
     })
     .from(s.decisions)
@@ -303,6 +495,7 @@ function loadApprovals(db: Db, ids: readonly string[]): Map<string, ChatApproval
       decisionId: s.actions.decisionId,
       label: s.actions.label,
       stance: s.actions.stance,
+      effectKind: s.actions.effectKind,
       effect: s.actions.effect,
     })
     .from(s.actions)
@@ -321,16 +514,20 @@ function loadApprovals(db: Db, ids: readonly string[]): Map<string, ChatApproval
     .orderBy(asc(s.attributes.ordinal))
     .all();
 
-  // The short reference the bubble prints, and the two prose slots either side
-  // of the buttons: what it has not done while waiting, and what followed.
-  const refs = db
-    .select({ subjectId: s.attributes.subjectId, value: s.attributes.value })
+  const metaAttrs = db
+    .select({
+      subjectId: s.attributes.subjectId,
+      label: s.attributes.label,
+      value: s.attributes.value,
+    })
     .from(s.attributes)
-    .where(and(
-      inArray(s.attributes.subjectId, [...ids]),
-      eq(s.attributes.groupSlot, "meta"),
-      eq(s.attributes.label, "ref"),
-    ))
+    .where(
+      and(
+        inArray(s.attributes.subjectId, [...ids]),
+        eq(s.attributes.groupSlot, "meta"),
+        inArray(s.attributes.label, ["ref", APPROVAL_META_LABEL]),
+      ),
+    )
     .all();
 
   const prose = db
@@ -352,13 +549,31 @@ function loadApprovals(db: Db, ids: readonly string[]): Map<string, ChatApproval
     const mine = buttons.filter((button) => button.decisionId === decision.id);
     const chosenRow = mine.find((button) => button.id === decision.chosenActionId);
     const chosen = chosenRow
-      ? { label: chosenRow.label, approves: (chosenRow.effect as { approves?: unknown }).approves === true }
+      ? {
+          label: chosenRow.label,
+          approves:
+            (chosenRow.effect as { approves?: unknown }).approves === true ||
+            chosenRow.effectKind === "tool_call",
+        }
       : undefined;
     const mineProse = (slot: string) =>
       prose.filter((line) => line.subjectId === decision.id && line.slot === slot).map((line) => line.text);
-    found.set(decision.id, {
+
+    const ref =
+      metaAttrs.find((row) => row.subjectId === decision.id && row.label === "ref")?.value ?? "";
+    const meta = parseApprovalMeta(
+      metaAttrs.find((row) => row.subjectId === decision.id && row.label === APPROVAL_META_LABEL)
+        ?.value,
+    );
+    const isDeferred = meta?.mode === "deferred" || !decision.blocking;
+    const subagentName =
+      typeof meta?.scope?.subagentName === "string" ? meta.scope.subagentName : null;
+    const toolCallId =
+      typeof meta?.scope?.toolCallId === "string" ? meta.scope.toolCallId : undefined;
+
+    const approval: ChatApproval = {
       decisionId: decision.id,
-      ref: refs.find((row) => row.subjectId === decision.id)?.value ?? "",
+      ref,
       title: decision.title,
       why: decision.body ?? null,
       hold: mineProse("restraint").join(" ") || null,
@@ -373,7 +588,24 @@ function loadApprovals(db: Db, ids: readonly string[]): Map<string, ChatApproval
       state: decision.state,
       chosenId: decision.chosenActionId ?? null,
       settled: settledLine(decision.state, mineProse("outcome"), chosen),
+      ...(isDeferred ? { deferred: true, subagentName } : {}),
+    };
+
+    found.set(decision.id, {
+      approval,
+      blocking: !isDeferred,
+      ...(toolCallId ? { toolCallId } : {}),
     });
   }
   return found;
+}
+
+/** Every approval named by the transcript, in one pass rather than one per turn. */
+function loadApprovals(db: Db, ids: readonly string[]): Map<string, ChatApproval> {
+  const withMeta = loadApprovalsWithMeta(db, ids);
+  const plain = new Map<string, ChatApproval>();
+  for (const [id, entry] of withMeta) {
+    plain.set(id, entry.approval);
+  }
+  return plain;
 }

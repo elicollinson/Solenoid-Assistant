@@ -6,7 +6,7 @@ import {
   PromptInjectionDetectedError,
   PromptInjectionScreeningError,
   type Agent,
-} from "../core/rawAgent";
+} from "../core/engine";
 import { readOnly, renderBriefing, type ToolGroup } from "../core/toolGroups";
 import { createDb, runMigrations, type Db } from "../db";
 import * as s from "../db/schema";

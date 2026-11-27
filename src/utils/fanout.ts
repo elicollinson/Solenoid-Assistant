@@ -1,15 +1,15 @@
-import { z } from "zod";
 import {
-  PromptInjectionDetectedError,
   ContentSafetyDetectedError,
-  isGuardrailDetectedError,
+  PromptInjectionDetectedError,
+  isContentSafetyDetectedError,
   isPromptInjectionDetectedError,
   isPromptInjectionScreeningError,
   type Agent,
-  type PromptInjectionBoundary,
-} from "../core/rawAgent";
+  type ScreeningBoundary,
+} from "@elicollinson/solenoid-engine";
+import type { z } from "zod";
 import { SpanStatusCode, withSpanKind } from "../core/tracing";
-import { type PromptTemplate } from "../prompts";
+import type { PromptTemplate } from "../prompts";
 
 export type IsolationKey = string | number | bigint | symbol;
 
@@ -20,7 +20,7 @@ export type IsolatedItemResult<K, R> =
       key: K;
       index: number;
       reason: "prompt_injection" | "content_safety";
-      boundary: PromptInjectionBoundary;
+      boundary: ScreeningBoundary;
     }
   | { status: "rejected"; key: K; index: number; reason: Error };
 
@@ -42,6 +42,12 @@ export interface RunIsolatedOptions<T, K extends IsolationKey, R> {
 
 function normalizeError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function isGuardrailDetected(
+  error: unknown,
+): error is PromptInjectionDetectedError | ContentSafetyDetectedError {
+  return isPromptInjectionDetectedError(error) || isContentSafetyDetectedError(error);
 }
 
 function validateKeys<T, K extends IsolationKey>(
@@ -68,7 +74,7 @@ function validateKeys<T, K extends IsolationKey>(
 /**
  * Execute one callback invocation per declared isolation unit.
  *
- * Collections are partitioned before entering an agent; one Agent.run()
+ * Collections are partitioned before entering an agent; one Agent run
  * processes one unit; aggregators consume fulfilled results only; quarantine
  * remains distinct from ordinary failure; side effects follow successful item
  * processing; nested batches contain detection at the nearest iterator; and a
@@ -123,7 +129,7 @@ export async function runIsolated<T, K extends IsolationKey, R>(
                   );
                   return;
                 }
-                if (isGuardrailDetectedError(error)) {
+                if (isGuardrailDetected(error)) {
                   results[index] = {
                     status: "quarantined",
                     key,
@@ -197,7 +203,7 @@ export async function fanout<T, S extends z.ZodType>(
     key: (_item, index) => index,
     concurrency: maxConcurrent,
     name: "agent-fanout",
-    execute: (item) => agent.run(prompt, item, schema),
+    execute: (item) => agent.runStructured(prompt(item), schema),
   });
   return batch.results.map((result) => {
     if (result.status === "fulfilled") {
@@ -206,9 +212,10 @@ export async function fanout<T, S extends z.ZodType>(
     if (result.status === "quarantined") {
       return {
         status: "rejected",
-        reason: result.reason === "prompt_injection"
-          ? new PromptInjectionDetectedError(result.boundary)
-          : new ContentSafetyDetectedError(result.boundary, ["unknown"], "agent-fanout"),
+        reason:
+          result.reason === "prompt_injection"
+            ? new PromptInjectionDetectedError(result.boundary)
+            : new ContentSafetyDetectedError(result.boundary, ["unknown"], "agent-fanout"),
       };
     }
     return { status: "rejected", reason: result.reason };
@@ -219,13 +226,13 @@ export async function fanout<T, S extends z.ZodType>(
 // use this when items are independent and gaps don't matter.
 export function fulfilled<R>(results: FanoutResult<R>[]): R[] {
   return results.flatMap((result) =>
-    result.status === "fulfilled" ? [result.value] : []
+    result.status === "fulfilled" ? [result.value] : [],
   );
 }
 
 // Failure reasons only, for logging or for deciding that too much was lost.
 export function rejected<R>(results: FanoutResult<R>[]): Error[] {
   return results.flatMap((result) =>
-    result.status === "rejected" ? [result.reason] : []
+    result.status === "rejected" ? [result.reason] : [],
   );
 }

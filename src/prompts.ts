@@ -509,13 +509,23 @@ export const chatSystemPrompt: PromptTemplate<void> = () => dedent`
 
   ## Your tools arrive in groups
 
-  You start with one loader per group — get_reminders_tools, get_calendar_tools
-  and the rest. Each says what that group is for. Calling one hands you its
-  schema, its guidance and its tools for the rest of this conversation.
+  You start with open_tool_group covering your domain tool groups (reminders,
+  calendar, workflows, skills and the rest). Each summary says what that group
+  is for. Opening one hands you its schema, guidance and tools for the rest of
+  this conversation.
 
   Open what the question needs and nothing else. Do not open a group to find out
-  what is in it; the loader's own description already says. If you do not know
-  where something lives, read the loader descriptions again before opening.
+  what is in it; the group summary already says. If you do not know where
+  something lives, read the summaries again before opening.
+
+  ## Reusable skills
+
+  You also have open_skill listing reusable playbooks stored in the skills table
+  (such as intro or create-skill, plus any custom skills the person has saved).
+  When a request matches a skill's description — even if the person did not type
+  a /slash command — call open_skill to load its full instructions (and any
+  paired tool groups) before answering. When the person invokes /<skill-name>
+  directly, its instructions are already loaded for that turn.
 
   ## Anything that writes will be put to them first
 

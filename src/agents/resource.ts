@@ -1,6 +1,7 @@
-import type { Agent } from "../core/rawAgent";
+import type { Agent } from "@elicollinson/solenoid-engine";
+import type { AssistantAgent } from "../core/engine";
 
-export interface AgentResource<T extends Agent = Agent> {
+export interface AgentResource<T extends Agent = AssistantAgent> {
   agent: T;
   close(): Promise<void>;
 }

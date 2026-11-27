@@ -9,8 +9,11 @@
 // agent's as prose, approvals as one standard bubble — but the bubble goes full
 // width and its buttons stack, because at this width a row of two buttons is
 // two half-buttons.
-import { ApprovalBubble, Button, ChatTurn, ConversationRow, RetroWigglyLine } from "../../kit";
-import { echoed, modelLabel, spoken, useFollowBottom, type ChatState } from "../chat";
+import { useId, useRef, useState, type KeyboardEvent } from "react";
+import { Button, ConversationRow, MonoLabel, RetroWigglyLine, type ComposerCommand } from "../../kit";
+import { filterSlashCommands } from "../../kit/agent/Composer";
+import { hasActiveTurn, modelLabel, useFollowBottom, type ChatState } from "../chat";
+import { LiveSection, StoredTurn } from "../ChatBlocks";
 import type { VoiceModeState } from "../useVoiceMode";
 import { PhoneScreen, type PhoneTab } from "./chrome";
 
@@ -114,6 +117,7 @@ function List({ chat, chrome }: { chat: ChatState; chrome: Partial<Chrome> }) {
 function Thread({ chat, voice, chrome }: { chat: ChatState; voice: VoiceModeState; chrome: Partial<Chrome> }) {
   const { box, content } = useFollowBottom();
   const live = chat.live;
+  const busy = hasActiveTurn(live);
   const waiting = Boolean(live?.pending);
 
   return (
@@ -133,10 +137,17 @@ function Thread({ chat, voice, chrome }: { chat: ChatState; voice: VoiceModeStat
             onClick={() => chat.open(null)}
             style={{
               all: "unset",
+              appearance: "none",
+              WebkitAppearance: "none",
+              background: "transparent",
+              border: "none",
               cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              minHeight: "var(--touch)",
               alignSelf: "flex-start",
-              padding: "var(--sp-3) var(--sp-4)",
-              margin: "calc(var(--sp-3) * -1) calc(var(--sp-4) * -1)",
+              padding: "0 var(--sp-4)",
+              margin: "0 calc(var(--sp-4) * -1)",
               ...CONTROL,
               color: "var(--text-3)",
             }}
@@ -146,14 +157,15 @@ function Thread({ chat, voice, chrome }: { chat: ChatState; voice: VoiceModeStat
           <span
             style={{
               font: "var(--text-mono-meta)",
-              padding: "2px 6px",
+              padding: "2px 7px",
               borderRadius: "var(--radius-control)",
               background: "var(--surface-raised)",
-              border: "1px solid var(--border)",
+              border: "var(--border)",
               color: chat.voiceInvoked || voice.active ? "var(--text-1)" : "var(--text-3)",
               display: "inline-flex",
               alignItems: "center",
               gap: "5px",
+              whiteSpace: "nowrap",
               fontSize: "10px",
               textTransform: "uppercase",
               letterSpacing: "0.06em",
@@ -202,73 +214,10 @@ function Thread({ chat, voice, chrome }: { chat: ChatState; voice: VoiceModeStat
           ) : null}
 
           {chat.stored.map((turn) => (
-            <ChatTurn
-              key={turn.id}
-              touch
-              by={turn.by}
-              at={turn.at}
-              calls={turn.calls}
-              toolSummary={turn.toolSummary}
-              note={turn.note}
-              approval={
-                turn.approval ? (
-                  <ApprovalBubble
-                    touch
-                    reference={turn.approval.ref}
-                    title={turn.approval.title}
-                    why={turn.approval.why}
-                    hold={turn.approval.hold}
-                    facts={turn.approval.facts}
-                    choices={turn.approval.choices}
-                    settled={turn.approval.settled}
-                    onChoose={chat.answer}
-                  />
-                ) : null
-              }
-            >
-              {turn.approval ? null : turn.body}
-            </ChatTurn>
+            <StoredTurn key={turn.id} touch turn={turn} onAnswer={chat.answer} />
           ))}
 
-          {live ? (
-            <>
-              {echoed(chat) ? null : (
-                <ChatTurn touch by="user" at="now">
-                  {live.asked}
-                </ChatTurn>
-              )}
-              <ChatTurn
-                touch
-                by="agent"
-                at="now"
-                calls={live.calls}
-                callsOpen
-                note={live.opened.length ? `opened ${live.opened.join(", ")}` : null}
-                pending={!live.error}
-                approval={
-                  live.pending ? (
-                    <ApprovalBubble
-                      touch
-                      reference={live.pending.ref}
-                      title={live.pending.title}
-                      why={live.pending.why}
-                      hold={live.pending.hold}
-                      facts={live.pending.facts}
-                      choices={live.pending.actions}
-                      onChoose={chat.answer}
-                    />
-                  ) : null
-                }
-              >
-                {spoken(live)}
-                {live.error ? (
-                  <span style={{ font: "var(--text-phone-note)", color: "var(--danger-text)" }}>
-                    That turn didn't finish — {live.error}
-                  </span>
-                ) : null}
-              </ChatTurn>
-            </>
-          ) : null}
+          {live ? <LiveSection chat={chat} touch /> : null}
         </div>
       </div>
 
@@ -297,8 +246,9 @@ function Thread({ chat, voice, chrome }: { chat: ChatState; voice: VoiceModeStat
       <ThreadComposer
         chat={chat}
         // A turn that ended in an error is still on screen, but it is over —
-        // nothing is running, and the next thing you say has to be sendable.
-        busy={Boolean(live && !live.error)}
+        // and idle deferred approvals or background subagents leave the
+        // composer open for the next thing you want to say.
+        busy={busy}
         waiting={waiting}
         voiceActive={voice.active}
         onToggleVoice={voice.active ? voice.stopVoice : voice.startVoice}
@@ -345,16 +295,44 @@ function ThreadComposer({
         busy={busy}
         voiceActive={voiceActive}
         onToggleVoice={onToggleVoice}
+        commands={chat.skills}
       />
-      <span style={{ font: "var(--text-mono)", color: "var(--text-4)" }}>
-        {waiting
-          ? "Answer above first."
-          : busy
-            ? "Working."
-            : voiceActive
-              ? "Voice stream open · speak or type"
-              : "Enter sends."}
-      </span>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--sp-3)" }}>
+        <span style={{ font: "var(--text-mono)", color: "var(--text-4)" }}>
+          {waiting
+            ? "Answer above first."
+            : busy
+              ? "Working."
+              : voiceActive
+                ? "Voice stream open · speak or type"
+                : chat.skills?.length
+                  ? "Enter sends · / for skills."
+                  : "Enter sends."}
+        </span>
+        {busy && chat.cancel ? (
+          <button
+            type="button"
+            onClick={chat.cancel}
+            style={{
+              all: "unset",
+              appearance: "none",
+              WebkitAppearance: "none",
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              minHeight: "var(--touch)",
+              padding: "0 var(--sp-3)",
+              margin: "calc(var(--sp-2) * -1) calc(var(--sp-3) * -1)",
+              ...CONTROL,
+              color: "var(--danger-text)",
+            }}
+          >
+            Stop
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -365,37 +343,202 @@ function Bar({
   busy,
   voiceActive,
   onToggleVoice,
+  commands = [],
 }: {
   onSend: (text: string) => void;
   disabled: boolean;
   busy: boolean;
   voiceActive?: boolean;
   onToggleVoice?: () => void;
+  commands?: readonly ComposerCommand[];
 }) {
+  const [text, setText] = useState("");
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [dismissed, setDismissed] = useState(false);
+  const fieldRef = useRef<HTMLInputElement>(null);
+  const inputId = useId();
+  const listId = useId();
+  const canSend = !disabled && !busy && Boolean(text.trim());
+
+  const slash = !disabled && !dismissed ? filterSlashCommands(text, commands) : null;
+  const matches = slash?.matches ?? [];
+  const showPicker = Boolean(slash && matches.length > 0);
+  const activeIndex = showPicker ? Math.min(selectedIndex, matches.length - 1) : 0;
+  const activeCommand = showPicker ? matches[activeIndex] : undefined;
+  const activeOptionId = showPicker ? `${listId}-opt-${activeIndex}` : undefined;
+
+  const pickCommand = (name: string) => {
+    setText(`/${name} `);
+    setSelectedIndex(0);
+    setDismissed(false);
+    fieldRef.current?.focus();
+  };
+
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) {
+      if (event.key === "Enter") event.preventDefault();
+      return;
+    }
+    if (showPicker && activeCommand) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSelectedIndex((i) => (i + 1) % matches.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSelectedIndex((i) => (i - 1 + matches.length) % matches.length);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setDismissed(true);
+        return;
+      }
+      if (event.key === "Tab") {
+        event.preventDefault();
+        pickCommand(activeCommand.name);
+        return;
+      }
+      if (
+        event.key === "Enter" &&
+        text.trim().toLowerCase() !== `/${activeCommand.name.toLowerCase()}`
+      ) {
+        event.preventDefault();
+        pickCommand(activeCommand.name);
+      }
+    }
+  };
+
   return (
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        const field = event.currentTarget.elements.namedItem("say");
-        if (!(field instanceof HTMLInputElement)) return;
-        const said = field.value.trim();
+        const said = text.trim();
         if (!said || disabled || busy) return;
-        field.value = "";
+        setText("");
+        setSelectedIndex(0);
+        setDismissed(false);
         onSend(said);
       }}
       style={{
+        position: "relative",
         display: "flex",
         alignItems: "center",
-        gap: "var(--sp-3)",
+        gap: "var(--sp-2)",
         minHeight: "var(--touch)",
-        padding: "0 var(--sp-3) 0 var(--sp-5)",
+        padding: "3px 3px 3px var(--sp-5)",
         borderRadius: "var(--radius-card)",
         border: "var(--border-strong)",
         background: "var(--surface-raised)",
       }}
     >
+      {showPicker ? (
+        <div
+          id={listId}
+          role="listbox"
+          aria-label="Skills"
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: "calc(100% + var(--sp-2))",
+            zIndex: 20,
+            maxHeight: 240,
+            overflowY: "auto",
+            borderRadius: "var(--radius-card)",
+            border: "var(--border-strong)",
+            background: "var(--surface-raised)",
+            boxShadow: "var(--shadow-float)",
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          <div
+            style={{
+              padding: "var(--sp-2) var(--sp-5)",
+              borderBottom: "var(--border)",
+              background: "var(--surface-panel)",
+            }}
+          >
+            <MonoLabel>Skills</MonoLabel>
+          </div>
+          {matches.map((cmd, index) => {
+            const selected = index === activeIndex;
+            return (
+              <button
+                key={cmd.name}
+                id={`${listId}-opt-${index}`}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  pickCommand(cmd.name);
+                }}
+                style={{
+                  all: "unset",
+                  appearance: "none",
+                  WebkitAppearance: "none",
+                  boxSizing: "border-box",
+                  cursor: "pointer",
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "center",
+                  gap: 2,
+                  width: "100%",
+                  minHeight: "var(--touch)",
+                  padding: "var(--sp-3) var(--sp-5)",
+                  borderTop: index === 0 ? "none" : "var(--border)",
+                  background: selected ? "var(--surface-selected)" : "transparent",
+                }}
+              >
+                <span style={{ display: "flex", alignItems: "baseline", gap: "var(--sp-3)" }}>
+                  <span style={{ font: "var(--text-mono-control)", color: "var(--accent-quiet)" }}>
+                    /{cmd.name}
+                  </span>
+                  {cmd.title ? (
+                    <span style={{ font: "var(--text-ui-sm)", color: "var(--text-1)" }}>
+                      {cmd.title}
+                    </span>
+                  ) : null}
+                </span>
+                <span
+                  style={{
+                    font: "var(--text-phone-note)",
+                    color: "var(--text-3)",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {cmd.description}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
+      <label htmlFor={inputId} className="sr-only">
+        Message Solenoid
+      </label>
       <input
+        ref={fieldRef}
+        id={inputId}
         name="say"
+        value={text}
+        role={commands.length ? "combobox" : undefined}
+        aria-expanded={commands.length ? showPicker : undefined}
+        aria-controls={showPicker ? listId : undefined}
+        aria-activedescendant={activeOptionId}
+        aria-autocomplete={commands.length ? "list" : undefined}
+        onChange={(event) => {
+          setText(event.target.value);
+          setSelectedIndex(0);
+          setDismissed(false);
+        }}
+        onKeyDown={onKeyDown}
         disabled={disabled}
         placeholder={disabled ? "Answer above first" : voiceActive ? "Voice active — speak or type" : "Tell me what to do"}
         style={{
@@ -414,25 +557,29 @@ function Bar({
           onClick={onToggleVoice}
           style={{
             all: "unset",
+            appearance: "none",
+            WebkitAppearance: "none",
+            boxSizing: "border-box",
             cursor: "pointer",
             display: "inline-flex",
             alignItems: "center",
+            justifyContent: "center",
             gap: "5px",
-            minHeight: 34,
-            padding: "0 var(--sp-3)",
+            minHeight: "var(--touch)",
+            padding: "0 var(--sp-4)",
             borderRadius: "var(--radius-control)",
-            background: voiceActive ? "var(--surface-hover)" : "transparent",
-            border: "1px solid",
-            borderColor: voiceActive ? "var(--line-strong)" : "var(--border)",
+            background: voiceActive ? "var(--surface-selected)" : "var(--surface-panel)",
+            border: voiceActive ? "1px solid var(--accent)" : "1px solid var(--line-strong)",
             color: voiceActive ? "var(--text-1)" : "var(--text-2)",
-            font: "var(--text-mono-meta)",
-            fontSize: "11px",
+            font: "var(--text-mono-control)",
+            letterSpacing: "var(--tracking-control)",
             textTransform: "uppercase",
-            letterSpacing: "0.06em",
+            flexShrink: 0,
           }}
           title={voiceActive ? "End voice session" : "Start voice mode with Gemini Live"}
         >
           <span
+            aria-hidden="true"
             style={{
               width: "6px",
               height: "6px",
@@ -445,19 +592,24 @@ function Bar({
       ) : null}
       <button
         type="submit"
-        disabled={disabled || busy}
+        disabled={!canSend}
         style={{
           all: "unset",
-          cursor: disabled || busy ? "default" : "pointer",
+          appearance: "none",
+          WebkitAppearance: "none",
+          boxSizing: "border-box",
+          cursor: canSend ? "pointer" : "default",
           display: "inline-flex",
           alignItems: "center",
-          minHeight: 34,
-          padding: "0 var(--sp-4)",
+          justifyContent: "center",
+          minHeight: "var(--touch)",
+          padding: "0 var(--sp-5)",
           borderRadius: "var(--radius-control)",
           background: "var(--affirm)",
           color: "var(--text-on-accent)",
           font: "var(--text-ui-sm)",
-          opacity: disabled || busy ? 0.45 : 1,
+          opacity: canSend ? 1 : 0.45,
+          flexShrink: 0,
         }}
       >
         Send

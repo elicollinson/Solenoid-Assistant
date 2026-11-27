@@ -1,27 +1,16 @@
-// The Chat surface's routes: list conversations, read one, say something into
-// it, and answer a gate.
-//
-// An ordinary collection, except for one route that is unlike anything else in
-// this directory. A chat turn is not request/response — it is a run that talks
-// while it works and then STOPS to ask you something — so
-// `POST /api/chat/:id/messages` answers with an event stream and holds it open,
-// possibly for minutes, while a person decides.
-//
-// Which means the answer to that question cannot arrive on the same connection:
-// it comes in on `POST /api/chat/decisions`, a second request, and finds the
-// suspended run through the map in ../../chat/session.ts. The two are halves of
-// one thing and neither reads correctly alone. `decisions` is not under a
-// conversation because a decision knows its own conversation and the client
-// answering one has an action id and nothing else.
+// The Chat surface's routes: list conversations, read one, subscribe to its
+// persistent event stream, enqueue turns, cancel in-flight work, answer gates,
+// and connect Gemini Live voice.
 //
 // `:id` accepts the literal "latest", which is what a client with nowhere
 // particular to be asks for — the phone opening Chat cold. It starts one if
 // there is none, so the screen always has something to draw.
 //
-// Everything is injected — the database and the agent both — because the
-// alternative is a test that needs a model.
+// Everything is injected — the database, agent, model, and coordinator — so
+// route tests stay 100% deterministic and offline without live LLM calls.
 import { Elysia, t } from "elysia";
 import { and, eq } from "drizzle-orm";
+import { AlreadySettledError, ApprovalNotFoundError } from "@elicollinson/solenoid-security";
 import * as schema from "../../db/schema";
 import { isSurface, type Surface } from "../../shared/surface";
 import { getDb, type Db } from "../../db";
@@ -29,21 +18,19 @@ import { log } from "../../core/logger";
 import { loadRuntimeConfig } from "../../core/config";
 import { createChatAgent, type ChatAgent } from "../../agents/chat";
 import { loadChat, loadConversations } from "../../db/queries/chat";
+import { DrizzleSkillStore } from "../../db/skills";
 import {
   NoSuchDecisionError,
+  blankConversation,
   latestConversation,
-  startConversation,
 } from "../../db/mutations/chat";
 import { NotWaitingError, answerApproval, runChatTurn } from "../../chat/session";
+import { getDefaultCoordinator, type SessionCoordinator } from "../../chat/coordinator";
 import type { ChatEvent } from "../../chat/turn";
 import { GeminiLiveSession } from "../../chat/geminiLive";
 
 /**
- * The agent, built once and only if somebody talks to it.
- *
- * Lazy because building it reads the runtime config and opens provider clients,
- * and importing this module must not do either — ../../index.ts is imported by
- * every route test in the repository.
+ * Legacy agent, built lazily only when a caller explicitly uses the legacy path.
  */
 function lazyAgent(resolveDb: () => Db): () => ChatAgent {
   let agent: ChatAgent | undefined;
@@ -66,7 +53,8 @@ function configuredChatModel(): string | null {
 /** Whether an id names a chat at all — a 404 rather than an empty transcript. */
 function exists(db: Db, id: string): boolean {
   return Boolean(
-    db.select({ id: schema.conversations.id })
+    db
+      .select({ id: schema.conversations.id })
       .from(schema.conversations)
       .where(and(eq(schema.conversations.id, id), eq(schema.conversations.channel, "agent_chat")))
       .get(),
@@ -82,8 +70,12 @@ export function createChatRoutes(
   resolveDb: () => Db = getDb,
   resolveAgent?: () => ChatAgent,
   resolveModel: () => string | null = configuredChatModel,
+  resolveCoordinator?: () => SessionCoordinator,
 ) {
+  const useCoordinator = Boolean(resolveCoordinator) || !resolveAgent;
+  const coordinatorFor = resolveCoordinator ?? (() => getDefaultCoordinator(resolveDb));
   const agentFor = resolveAgent ?? lazyAgent(resolveDb);
+
   const asked = (query: { surface?: string }): Surface =>
     isSurface(query.surface) ? query.surface : "desktop";
   const surfaceQuery = t.Object({
@@ -103,7 +95,7 @@ export function createChatRoutes(
       "/api/chat",
       ({ set }) => {
         set.status = 201;
-        return { conversationId: startConversation(resolveDb()) };
+        return { conversationId: blankConversation(resolveDb()) };
       },
       {
         detail: { summary: "Start a conversation. It names itself from the first thing you say." },
@@ -111,21 +103,24 @@ export function createChatRoutes(
       },
     )
     .get(
+      "/api/chat/skills",
+      () => ({
+        skills: new DrizzleSkillStore(resolveDb()).listSlashCommands(),
+      }),
+      {
+        detail: { summary: "Enabled reusable skills invocable as /<slug> commands in chat" },
+      },
+    )
+    .get(
       "/api/chat/:id",
       ({ params, query, set }) => {
         const db = resolveDb();
-        // "latest" rather than an id is what a client with nowhere particular
-        // to be asks for — the phone opening Chat cold, a deep link with
-        // nothing after it. It starts one if there is none, so the screen
-        // always has something to draw.
         const id = params.id === "latest" ? latestConversation(db) : params.id;
         const chat = loadChat(db, id, new Date(), asked(query));
         if (!chat.turns.length && !exists(db, id)) {
           set.status = 404;
           return { error: `No conversation with id ${id}` };
         }
-        // A conversation records its model only once voice has pinned one;
-        // until then it is whichever model typed chat is routed to now.
         return { ...chat, model: chat.model ?? resolveModel() };
       },
       {
@@ -134,22 +129,112 @@ export function createChatRoutes(
         detail: { summary: "One conversation, and what in it is still waiting on you" },
       },
     )
-    .post(
-      "/api/chat/:id/messages",
-      ({ params, body, set }) => {
+    .get(
+      "/api/chat/:id/stream",
+      ({ params, request, set }) => {
         const db = resolveDb();
         const conversationId = params.id === "latest" ? latestConversation(db) : params.id;
         if (!exists(db, conversationId)) {
           set.status = 404;
           return { error: `No conversation with id ${conversationId}` };
         }
-        const events = runChatTurn(db, agentFor(), conversationId, body.text);
 
-        // Built by hand rather than returned as a generator: this needs to be a
-        // 200 with the stream headers the moment it is called, before the model
-        // has said anything. A client that waited for the first token to learn
-        // whether it was talking to an event stream would show nothing at all
-        // for however long the first tool call takes.
+        const coordinator = coordinatorFor();
+        const encoder = new TextEncoder();
+        let unsubscribe: (() => void) | undefined;
+        let heartbeat: ReturnType<typeof setInterval> | undefined;
+        let closed = false;
+
+        const cleanup = () => {
+          if (closed) return;
+          closed = true;
+          if (heartbeat) {
+            clearInterval(heartbeat);
+            heartbeat = undefined;
+          }
+          unsubscribe?.();
+          unsubscribe = undefined;
+        };
+
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            const push = (event: ChatEvent) => {
+              if (closed) return;
+              try {
+                controller.enqueue(encoder.encode(frame(event)));
+              } catch {
+                cleanup();
+              }
+            };
+
+            unsubscribe = coordinator.subscribe(conversationId, push);
+
+            heartbeat = setInterval(() => {
+              if (closed) return;
+              try {
+                controller.enqueue(encoder.encode(": keepalive\n\n"));
+              } catch {
+                cleanup();
+              }
+            }, 25_000);
+            heartbeat.unref?.();
+
+            const onAbort = () => {
+              cleanup();
+              try {
+                controller.close();
+              } catch {
+                // Already closed.
+              }
+            };
+            if (request.signal.aborted) {
+              onAbort();
+            } else {
+              request.signal.addEventListener("abort", onAbort, { once: true });
+            }
+          },
+          cancel() {
+            cleanup();
+          },
+        });
+
+        return new Response(stream, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            "cache-control": "no-store",
+            connection: "keep-alive",
+            "x-accel-buffering": "no",
+          },
+        });
+      },
+      {
+        params: t.Object({ id: t.String() }),
+        detail: {
+          summary:
+            "Subscribe to the persistent SSE stream for a conversation. Immediately pushes a " +
+            "snapshot frame and fans out live turns, approvals, and async subagent completions.",
+        },
+      },
+    )
+    .post(
+      "/api/chat/:id/messages",
+      async ({ params, body, set }) => {
+        const db = resolveDb();
+        const conversationId = params.id === "latest" ? latestConversation(db) : params.id;
+        if (!exists(db, conversationId)) {
+          set.status = 404;
+          return { error: `No conversation with id ${conversationId}` };
+        }
+
+        if (useCoordinator) {
+          const { turnId } = await coordinatorFor().send(conversationId, body.text);
+          set.status = 202;
+          return { turnId };
+        }
+
+        // Legacy fallback when an explicit `resolveAgent` was injected without a coordinator.
+        const events = runChatTurn(db, agentFor(), conversationId, body.text);
         const stream = new ReadableStream<Uint8Array>({
           async start(controller) {
             const encoder = new TextEncoder();
@@ -158,10 +243,6 @@ export function createChatRoutes(
                 controller.enqueue(encoder.encode(frame(event)));
               }
             } catch (error) {
-              // runChatTurn turns a failed run into an `error` event, so
-              // reaching here means the stream itself broke — the client went
-              // away mid-turn, most often. Not worth an error frame nobody can
-              // receive; worth a line saying the turn was orphaned.
               log.warn("chat stream ended early", {
                 conversationId,
                 error: error instanceof Error ? error.message : String(error),
@@ -177,7 +258,6 @@ export function createChatRoutes(
             "content-type": "text/event-stream",
             "cache-control": "no-store",
             connection: "keep-alive",
-            // Nginx and friends buffer an event stream into uselessness.
             "x-accel-buffering": "no",
           },
         });
@@ -187,27 +267,45 @@ export function createChatRoutes(
         body: t.Object({ text: t.String({ minLength: 1 }) }),
         detail: {
           summary:
-            "Say something to the agent. Answers with an event stream: tool calls as they " +
-            "happen, an approval when one is needed, and the reply at the end.",
+            "Enqueue a message into the conversation's serialized session queue (202 Accepted).",
         },
       },
     )
     .post(
+      "/api/chat/:id/cancel",
+      async ({ params, set }) => {
+        const db = resolveDb();
+        const conversationId = params.id === "latest" ? latestConversation(db) : params.id;
+        if (!exists(db, conversationId)) {
+          set.status = 404;
+          return { error: `No conversation with id ${conversationId}` };
+        }
+        const cancelled = await coordinatorFor().cancel(conversationId);
+        return { cancelled };
+      },
+      {
+        params: t.Object({ id: t.String() }),
+        detail: { summary: "Cancel the currently running turn for a conversation, if any" },
+      },
+    )
+    .post(
       "/api/chat/decisions",
-      ({ body, set }) => {
+      async ({ body, set }) => {
         try {
+          if (useCoordinator) {
+            return await coordinatorFor().answerDecision(body.actionId);
+          }
           return answerApproval(resolveDb(), body.actionId);
         } catch (error) {
-          if (error instanceof NoSuchDecisionError) {
-            // Already answered, in another tab or a moment ago. Not a failure
-            // on this end: re-read and the transcript says what was chosen.
+          if (
+            error instanceof NoSuchDecisionError ||
+            error instanceof ApprovalNotFoundError ||
+            error instanceof AlreadySettledError
+          ) {
             set.status = 409;
             return { error: error.message };
           }
           if (error instanceof NotWaitingError) {
-            // The settlement is written; only the run is gone. Said apart from
-            // the 409 because the screen's honest words differ — one is "you
-            // already answered that", the other is "I am no longer holding it".
             set.status = 410;
             return { error: error.message };
           }
@@ -232,6 +330,8 @@ export function createChatRoutes(
               t.Literal("declined"),
               t.Literal("expired"),
             ]),
+            resumed: t.Optional(t.Boolean()),
+            deferred: t.Optional(t.Boolean()),
           }),
           409: t.Object({ error: t.String() }),
           410: t.Object({ error: t.String() }),
@@ -242,9 +342,12 @@ export function createChatRoutes(
       params: t.Object({ id: t.String() }),
       async open(ws) {
         const db = resolveDb();
-        const conversationId = ws.data.params.id === "latest" ? latestConversation(db) : ws.data.params.id;
+        const conversationId =
+          ws.data.params.id === "latest" ? latestConversation(db) : ws.data.params.id;
         if (!exists(db, conversationId)) {
-          ws.send(JSON.stringify({ type: "error", message: `No conversation with id ${conversationId}` }));
+          ws.send(
+            JSON.stringify({ type: "error", message: `No conversation with id ${conversationId}` }),
+          );
           ws.close();
           return;
         }
@@ -252,6 +355,7 @@ export function createChatRoutes(
         const liveSession = new GeminiLiveSession({
           db,
           conversationId,
+          ...(useCoordinator ? { coordinator: coordinatorFor() } : {}),
           onEvent: (event) => {
             try {
               ws.send(JSON.stringify(event));
@@ -282,7 +386,12 @@ export function createChatRoutes(
         try {
           const payload = typeof msg === "string" ? JSON.parse(msg) : msg;
           if (payload && typeof payload === "object") {
-            const data = payload as { type?: string; data?: string; text?: string; enabled?: boolean };
+            const data = payload as {
+              type?: string;
+              data?: string;
+              text?: string;
+              enabled?: boolean;
+            };
             if (data.type === "audio" && typeof data.data === "string") {
               liveSession.sendAudio(data.data);
             } else if (data.type === "text" && typeof data.text === "string") {

@@ -30,7 +30,8 @@ export type ToolGroupName =
   | "imessage"
   | "photos"
   | "contacts"
-  | "pushover";
+  | "pushover"
+  | "skills";
 
 export interface CompileToolGroupOptions {
   /** When true, strips write tools and omits write descriptions from the compiled briefing. */

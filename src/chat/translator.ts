@@ -9,6 +9,7 @@ import {
 } from "@ag-ui/core";
 import {
   CUSTOM_EVENTS,
+  OPEN_SKILL,
   OPEN_TOOL_GROUP,
   SOLENOID_METADATA_KEY,
   applyEvent,
@@ -92,7 +93,11 @@ function defaultFormatDuration(ms: number): string {
 }
 
 function noteFor(opened: readonly string[]): string | null {
-  return opened.length ? `opened ${opened.join(", ")}` : null;
+  if (!opened.length) return null;
+  const formatted = opened.map((item) =>
+    item.startsWith("skill:") ? `skill ${item.slice(6)}` : item,
+  );
+  return `opened ${formatted.join(", ")}`;
 }
 
 /**
@@ -160,6 +165,11 @@ function extractOpenGroupName(args: Record<string, unknown> | null): string | nu
   return group || null;
 }
 
+function extractOpenSkillLabel(args: Record<string, unknown> | null): string | null {
+  const skill = typeof args?.skill === "string" ? args.skill.trim().toLowerCase() : "";
+  return skill ? `skill:${skill}` : null;
+}
+
 function isToolOutcomeOk(
   toolError: string | undefined,
   meta: ReturnType<typeof resultMetadata>,
@@ -176,6 +186,7 @@ interface PendingToolCallBuffer {
   rawName: string;
   argsBuf: string;
   isOpenGroup: boolean;
+  isOpenSkill: boolean;
 }
 
 interface StartedToolCallInfo {
@@ -418,6 +429,7 @@ export class AgUiToChatEventTranslator {
           rawName: event.toolCallName,
           argsBuf: "",
           isOpenGroup: event.toolCallName === OPEN_TOOL_GROUP,
+          isOpenSkill: event.toolCallName === OPEN_SKILL,
         });
         return out;
       }
@@ -436,9 +448,11 @@ export class AgUiToChatEventTranslator {
         if (!pending) return [];
 
         const parsedArgs = parseJsonObject(pending.argsBuf);
-        if (pending.isOpenGroup) {
+        if (pending.isOpenGroup || pending.isOpenSkill) {
           this.openGroupCallIds.add(pending.id);
-          const group = extractOpenGroupName(parsedArgs);
+          const group = pending.isOpenSkill
+            ? extractOpenSkillLabel(parsedArgs)
+            : extractOpenGroupName(parsedArgs);
           if (!group || this.live?.opened.includes(group)) return [];
           const openedEvent: ChatEvent = { type: "opened", group };
           this.applyLiveEvent(openedEvent);
@@ -474,6 +488,7 @@ export class AgUiToChatEventTranslator {
               rawName: event.toolCallName,
               argsBuf: "",
               isOpenGroup: event.toolCallName === OPEN_TOOL_GROUP,
+              isOpenSkill: event.toolCallName === OPEN_SKILL,
             };
             this.pendingCalls.set(event.toolCallId, pending);
           }
@@ -487,7 +502,10 @@ export class AgUiToChatEventTranslator {
       case EventType.TOOL_CALL_RESULT: {
         if (this.openGroupCallIds.has(event.toolCallId)) return [];
         const threadCall = findToolCall(this.thread, event.toolCallId);
-        if (threadCall?.function.name === OPEN_TOOL_GROUP) {
+        if (
+          threadCall?.function.name === OPEN_TOOL_GROUP ||
+          threadCall?.function.name === OPEN_SKILL
+        ) {
           this.openGroupCallIds.add(event.toolCallId);
           return [];
         }
@@ -836,9 +854,12 @@ export class AgUiToChatEventTranslator {
 
       for (const tc of msg.toolCalls) {
         const parsedArgs = parseJsonObject(tc.function.arguments);
-        if (tc.function.name === OPEN_TOOL_GROUP) {
+        if (tc.function.name === OPEN_TOOL_GROUP || tc.function.name === OPEN_SKILL) {
           this.openGroupCallIds.add(tc.id);
-          const group = extractOpenGroupName(parsedArgs);
+          const group =
+            tc.function.name === OPEN_SKILL
+              ? extractOpenSkillLabel(parsedArgs)
+              : extractOpenGroupName(parsedArgs);
           if (group && !openedSet.has(group)) {
             openedSet.add(group);
             opened.push(group);
@@ -1069,8 +1090,11 @@ export function hydrateTurnsFromThread(
 
       for (const tc of assistant.toolCalls) {
         const parsedArgs = parseJsonObject(tc.function.arguments);
-        if (tc.function.name === OPEN_TOOL_GROUP) {
-          const group = extractOpenGroupName(parsedArgs);
+        if (tc.function.name === OPEN_TOOL_GROUP || tc.function.name === OPEN_SKILL) {
+          const group =
+            tc.function.name === OPEN_SKILL
+              ? extractOpenSkillLabel(parsedArgs)
+              : extractOpenGroupName(parsedArgs);
           if (group && !openedSet.has(group)) {
             openedSet.add(group);
             opened.push(group);

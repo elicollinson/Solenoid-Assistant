@@ -26,6 +26,7 @@ import {
 } from "../../../src/db/mutations/chat";
 import { zonedTime } from "../../../src/db/seed/time";
 import type { ChatApproval, ChatListPayload, ChatPayload, ChatTurnRow } from "../../../src/shared/chat";
+import { Composer, filterSlashCommands, type ComposerCommand } from "../kit";
 import { ReasoningAccordion } from "./ChatBlocks";
 import { ChatView } from "./ChatView";
 import { ChatPhone } from "./phone/ChatPhone";
@@ -670,6 +671,166 @@ describe("collapsible thinking accordion", () => {
         summary().click();
       });
       expect(details().open).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+      await win.happyDOM.close();
+      Object.assign(globalThis, prev);
+    }
+  });
+});
+
+describe("slash command skill picker", () => {
+  const sampleSkills: ComposerCommand[] = [
+    {
+      name: "create-skill",
+      title: "Create a skill",
+      description: "Design, refine, and save a new reusable Solenoid skill.",
+      source: "builtin",
+    },
+    {
+      name: "intro",
+      title: "Solenoid capabilities",
+      description: "Explain what Solenoid can do, its tools, workflows, and approvals.",
+      source: "builtin",
+    },
+    {
+      name: "morning-brief",
+      title: "Morning briefing",
+      description: "Summarize calendar, reminders, and overnight updates.",
+      source: "user",
+    },
+  ];
+
+  test("filterSlashCommands matches leading / queries and prioritizes name prefix matches", () => {
+    expect(filterSlashCommands("hello", sampleSkills)).toBeNull();
+    expect(filterSlashCommands("/intro extra args", sampleSkills)).toBeNull();
+
+    const all = filterSlashCommands("/", sampleSkills);
+    expect(all?.matches.map((m) => m.name)).toEqual(["create-skill", "intro", "morning-brief"]);
+
+    const prefix = filterSlashCommands("/in", sampleSkills);
+    // Name prefix match ("intro") sorts ahead of description/title substring matches ("refine", "morning").
+    expect(prefix?.matches.map((m) => m.name)).toEqual(["intro", "create-skill", "morning-brief"]);
+
+    const exact = filterSlashCommands("/create", sampleSkills);
+    expect(exact?.matches.map((m) => m.name)).toEqual(["create-skill"]);
+  });
+
+  test("live opened 'skill:<slug>' renders as 'opened skill <slug>' in ChatBlocks", () => {
+    const live: LiveTurn = {
+      ...EMPTY_LIVE,
+      asked: "help me build a skill",
+      opened: ["skill:create-skill", "skills"],
+    };
+    const markup = desktop(isolatedState({ live }));
+    expect(markup).toContain("opened skill create-skill, skills");
+  });
+
+  test("desktop Composer opens accessible listbox on '/', navigates with arrows, selects via Tab/click, and dismisses on Escape", async () => {
+    const win = new Window({ url: "http://localhost:3000" });
+    const prev = {
+      window: globalThis.window,
+      document: globalThis.document,
+      HTMLElement: globalThis.HTMLElement,
+      HTMLTextAreaElement: globalThis.HTMLTextAreaElement,
+      Event: globalThis.Event,
+      KeyboardEvent: globalThis.KeyboardEvent,
+      IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+        .IS_REACT_ACT_ENVIRONMENT,
+    };
+    Object.assign(globalThis, {
+      window: win,
+      document: win.document,
+      HTMLElement: win.HTMLElement,
+      HTMLTextAreaElement: win.HTMLTextAreaElement,
+      Event: win.Event,
+      KeyboardEvent: win.KeyboardEvent,
+      IS_REACT_ACT_ENVIRONMENT: true,
+    });
+    const host = win.document.createElement("div");
+    win.document.body.append(host);
+    const root = createRoot(host as unknown as Element);
+    const sent: string[] = [];
+
+    const setTextareaValue = async (el: HTMLTextAreaElement, value: string) => {
+      const setter = Object.getOwnPropertyDescriptor(
+        win.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      await act(async () => {
+        el.focus();
+        setter?.call(el, value);
+        el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+        el.dispatchEvent(new win.KeyboardEvent("keyup", { bubbles: true }) as unknown as Event);
+      });
+    };
+
+    try {
+      await act(async () => {
+        root.render(
+          <Composer
+            commands={sampleSkills}
+            onSend={(text) => sent.push(text)}
+          />,
+        );
+      });
+
+      const textarea = () => host.querySelector("textarea") as unknown as HTMLTextAreaElement;
+      expect(host.querySelector('[role="listbox"]')).toBeNull();
+      expect(host.textContent).toContain("/ for skills");
+
+      // Typing `/` opens the listbox with all 3 commands.
+      await setTextareaValue(textarea(), "/");
+      const listbox = host.querySelector('[role="listbox"]');
+      expect(listbox).not.toBeNull();
+      const options = [...host.querySelectorAll('[role="option"]')];
+      expect(options).toHaveLength(3);
+      expect(textarea().getAttribute("aria-expanded")).toBe("true");
+      expect(options[0]?.getAttribute("aria-selected")).toBe("true");
+
+      // ArrowDown advances active option to /intro.
+      await act(async () => {
+        textarea().dispatchEvent(
+          new win.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }) as unknown as Event,
+        );
+      });
+      const afterArrow = [...host.querySelectorAll('[role="option"]')];
+      expect(afterArrow[1]?.getAttribute("aria-selected")).toBe("true");
+      expect(textarea().getAttribute("aria-activedescendant")).toBe(
+        afterArrow[1]?.getAttribute("id") ?? null,
+      );
+
+      // Tab accepts /intro and closes the picker without sending yet.
+      await act(async () => {
+        textarea().dispatchEvent(
+          new win.KeyboardEvent("keydown", { key: "Tab", bubbles: true }) as unknown as Event,
+        );
+      });
+      expect(textarea().value).toBe("/intro ");
+      expect(host.querySelector('[role="listbox"]')).toBeNull();
+      expect(sent).toEqual([]);
+
+      // Typing `/cr` filters to /create-skill, and Escape dismisses it.
+      await setTextareaValue(textarea(), "/cr");
+      expect(host.querySelectorAll('[role="option"]')).toHaveLength(1);
+      await act(async () => {
+        textarea().dispatchEvent(
+          new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event,
+        );
+      });
+      expect(host.querySelector('[role="listbox"]')).toBeNull();
+
+      // Re-typing `/mo` re-opens the picker and clicking picks `/morning-brief `.
+      await setTextareaValue(textarea(), "/mo");
+      const morningOpt = host.querySelector('[role="option"]') as unknown as HTMLButtonElement;
+      expect(morningOpt).not.toBeNull();
+      await act(async () => {
+        morningOpt.dispatchEvent(
+          new win.MouseEvent("mousedown", { bubbles: true }) as unknown as Event,
+        );
+      });
+      expect(textarea().value).toBe("/morning-brief ");
+      expect(host.querySelector('[role="listbox"]')).toBeNull();
     } finally {
       await act(async () => root.unmount());
       await win.happyDOM.close();

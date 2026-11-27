@@ -9,8 +9,9 @@
 // agent's as prose, approvals as one standard bubble — but the bubble goes full
 // width and its buttons stack, because at this width a row of two buttons is
 // two half-buttons.
-import { useId, useState, type KeyboardEvent } from "react";
-import { Button, ConversationRow, RetroWigglyLine } from "../../kit";
+import { useId, useRef, useState, type KeyboardEvent } from "react";
+import { Button, ConversationRow, MonoLabel, RetroWigglyLine, type ComposerCommand } from "../../kit";
+import { filterSlashCommands } from "../../kit/agent/Composer";
 import { hasActiveTurn, modelLabel, useFollowBottom, type ChatState } from "../chat";
 import { LiveSection, StoredTurn } from "../ChatBlocks";
 import type { VoiceModeState } from "../useVoiceMode";
@@ -294,6 +295,7 @@ function ThreadComposer({
         busy={busy}
         voiceActive={voiceActive}
         onToggleVoice={onToggleVoice}
+        commands={chat.skills}
       />
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--sp-3)" }}>
         <span style={{ font: "var(--text-mono)", color: "var(--text-4)" }}>
@@ -303,7 +305,9 @@ function ThreadComposer({
               ? "Working."
               : voiceActive
                 ? "Voice stream open · speak or type"
-                : "Enter sends."}
+                : chat.skills?.length
+                  ? "Enter sends · / for skills."
+                  : "Enter sends."}
         </span>
         {busy && chat.cancel ? (
           <button
@@ -339,20 +343,70 @@ function Bar({
   busy,
   voiceActive,
   onToggleVoice,
+  commands = [],
 }: {
   onSend: (text: string) => void;
   disabled: boolean;
   busy: boolean;
   voiceActive?: boolean;
   onToggleVoice?: () => void;
+  commands?: readonly ComposerCommand[];
 }) {
   const [text, setText] = useState("");
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [dismissed, setDismissed] = useState(false);
+  const fieldRef = useRef<HTMLInputElement>(null);
   const inputId = useId();
+  const listId = useId();
   const canSend = !disabled && !busy && Boolean(text.trim());
+
+  const slash = !disabled && !dismissed ? filterSlashCommands(text, commands) : null;
+  const matches = slash?.matches ?? [];
+  const showPicker = Boolean(slash && matches.length > 0);
+  const activeIndex = showPicker ? Math.min(selectedIndex, matches.length - 1) : 0;
+  const activeCommand = showPicker ? matches[activeIndex] : undefined;
+  const activeOptionId = showPicker ? `${listId}-opt-${activeIndex}` : undefined;
+
+  const pickCommand = (name: string) => {
+    setText(`/${name} `);
+    setSelectedIndex(0);
+    setDismissed(false);
+    fieldRef.current?.focus();
+  };
 
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing || event.keyCode === 229) {
       if (event.key === "Enter") event.preventDefault();
+      return;
+    }
+    if (showPicker && activeCommand) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSelectedIndex((i) => (i + 1) % matches.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSelectedIndex((i) => (i - 1 + matches.length) % matches.length);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setDismissed(true);
+        return;
+      }
+      if (event.key === "Tab") {
+        event.preventDefault();
+        pickCommand(activeCommand.name);
+        return;
+      }
+      if (
+        event.key === "Enter" &&
+        text.trim().toLowerCase() !== `/${activeCommand.name.toLowerCase()}`
+      ) {
+        event.preventDefault();
+        pickCommand(activeCommand.name);
+      }
     }
   };
 
@@ -363,9 +417,12 @@ function Bar({
         const said = text.trim();
         if (!said || disabled || busy) return;
         setText("");
+        setSelectedIndex(0);
+        setDismissed(false);
         onSend(said);
       }}
       style={{
+        position: "relative",
         display: "flex",
         alignItems: "center",
         gap: "var(--sp-2)",
@@ -376,14 +433,111 @@ function Bar({
         background: "var(--surface-raised)",
       }}
     >
+      {showPicker ? (
+        <div
+          id={listId}
+          role="listbox"
+          aria-label="Skills"
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: "calc(100% + var(--sp-2))",
+            zIndex: 20,
+            maxHeight: 240,
+            overflowY: "auto",
+            borderRadius: "var(--radius-card)",
+            border: "var(--border-strong)",
+            background: "var(--surface-raised)",
+            boxShadow: "var(--shadow-float)",
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          <div
+            style={{
+              padding: "var(--sp-2) var(--sp-5)",
+              borderBottom: "var(--border)",
+              background: "var(--surface-panel)",
+            }}
+          >
+            <MonoLabel>Skills</MonoLabel>
+          </div>
+          {matches.map((cmd, index) => {
+            const selected = index === activeIndex;
+            return (
+              <button
+                key={cmd.name}
+                id={`${listId}-opt-${index}`}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  pickCommand(cmd.name);
+                }}
+                style={{
+                  all: "unset",
+                  appearance: "none",
+                  WebkitAppearance: "none",
+                  boxSizing: "border-box",
+                  cursor: "pointer",
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "center",
+                  gap: 2,
+                  width: "100%",
+                  minHeight: "var(--touch)",
+                  padding: "var(--sp-3) var(--sp-5)",
+                  borderTop: index === 0 ? "none" : "var(--border)",
+                  background: selected ? "var(--surface-selected)" : "transparent",
+                }}
+              >
+                <span style={{ display: "flex", alignItems: "baseline", gap: "var(--sp-3)" }}>
+                  <span style={{ font: "var(--text-mono-control)", color: "var(--accent-quiet)" }}>
+                    /{cmd.name}
+                  </span>
+                  {cmd.title ? (
+                    <span style={{ font: "var(--text-ui-sm)", color: "var(--text-1)" }}>
+                      {cmd.title}
+                    </span>
+                  ) : null}
+                </span>
+                <span
+                  style={{
+                    font: "var(--text-phone-note)",
+                    color: "var(--text-3)",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {cmd.description}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
       <label htmlFor={inputId} className="sr-only">
         Message Solenoid
       </label>
       <input
+        ref={fieldRef}
         id={inputId}
         name="say"
         value={text}
-        onChange={(event) => setText(event.target.value)}
+        role={commands.length ? "combobox" : undefined}
+        aria-expanded={commands.length ? showPicker : undefined}
+        aria-controls={showPicker ? listId : undefined}
+        aria-activedescendant={activeOptionId}
+        aria-autocomplete={commands.length ? "list" : undefined}
+        onChange={(event) => {
+          setText(event.target.value);
+          setSelectedIndex(0);
+          setDismissed(false);
+        }}
         onKeyDown={onKeyDown}
         disabled={disabled}
         placeholder={disabled ? "Answer above first" : voiceActive ? "Voice active — speak or type" : "Tell me what to do"}

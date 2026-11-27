@@ -12,6 +12,7 @@ import { type AGUIEvent, EventType, type Message } from "@ag-ui/core";
 import {
   APPROVAL_REASON,
   CUSTOM_EVENTS,
+  OPEN_SKILL,
   OPEN_TOOL_GROUP,
   SOLENOID_METADATA_KEY,
   applyEvent,
@@ -1812,5 +1813,52 @@ describe("Tier 1 — Golden Replay & Checkpoint Equivalence", () => {
 
     const hydrated = hydrateTurnsFromThread(result.thread, { now: FIXED_NOW });
     expect(hydrated[1]?.reasoning).toBe("Step 1 thought.\n\nStep 2 final thought.");
+  });
+
+  test("OPEN_SKILL parity: emits opened 'skill:<slug>', formats 'opened skill <slug>' in note, and excludes open_skill from calls", () => {
+    const steps: TimelineStep[] = [
+      { kind: "agui", event: runStarted("run-skill") },
+      ...openingMessage("u-sk", "user", "Help me create a morning briefing skill.").map(
+        (event): TimelineStep => ({ kind: "agui", event }),
+      ),
+      { kind: "agui", event: stepStarted("turn 1") },
+      ...toolCallStartSeq("tc-sk-1", OPEN_SKILL, "a-sk-1", { skill: "create-skill" }).map(
+        (event): TimelineStep => ({ kind: "agui", event }),
+      ),
+      {
+        kind: "agui",
+        event: toolCallResult("tc-sk-1", "# Skill: create-skill\nFollow these steps.", {
+          durationMs: 4,
+        }),
+      },
+      { kind: "agui", event: stepFinished("turn 1") },
+      { kind: "agui", event: stepStarted("turn 2") },
+      ...toolCallStartSeq("tc-sk-2", "skills_list", "a-sk-2", {}).map(
+        (event): TimelineStep => ({ kind: "agui", event }),
+      ),
+      {
+        kind: "agui",
+        event: toolCallResult("tc-sk-2", '{"skills":[]}', { durationMs: 12 }),
+      },
+      { kind: "agui", event: textStart("a-sk-3", "assistant") },
+      { kind: "agui", event: textDelta("a-sk-3", "Let's design your morning briefing skill.") },
+      { kind: "agui", event: textEnd("a-sk-3") },
+      { kind: "agui", event: stepFinished("turn 2") },
+      { kind: "agui", event: runFinishedSuccess("run-skill") },
+    ];
+
+    const result = replayAndCompare(steps);
+    const openedEvent = result.emitted.find(
+      (e): e is Extract<ChatEvent, { type: "opened" }> => e.type === "opened",
+    );
+    expect(openedEvent).toEqual({ type: "opened", group: "skill:create-skill" });
+
+    expect(result.liveTurns).toEqual(result.hydratedTurns);
+    expect(result.hydratedTurns[1]).toMatchObject({
+      by: "agent",
+      body: "Let's design your morning briefing skill.",
+      note: "opened skill create-skill",
+      calls: [{ name: "skills.list", arg: null, kind: "read", ok: true, duration: "12ms" }],
+    });
   });
 });

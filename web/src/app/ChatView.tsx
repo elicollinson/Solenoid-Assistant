@@ -186,6 +186,7 @@ export function ChatView({ chat, voice }: { chat: ChatState; voice: VoiceModeSta
               waiting={waiting}
               voiceActive={voice.active}
               onToggleVoice={voice.active ? voice.stopVoice : voice.startVoice}
+              commands={chat.skills}
               placeholder={voice.active ? "Voice mode active — speak or type" : "Tell me what to do"}
               style={{ borderTop: "none", padding: 0 }}
             />

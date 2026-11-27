@@ -28,7 +28,7 @@ export { ApprovalBubble, type ApprovalChoice } from "./agent/ApprovalBubble";
 export { CalendarEvent } from "./agent/CalendarEvent";
 export { ChatTurn } from "./agent/ChatTurn";
 export { ConversationRow } from "./agent/ConversationRow";
-export { Composer } from "./agent/Composer";
+export { Composer, filterSlashCommands, type ComposerCommand } from "./agent/Composer";
 export { RetroWigglyLine, type RetroWigglyLineProps } from "./agent/RetroWigglyLine";
 export {
   EvidenceBrief,

@@ -44,6 +44,7 @@ const EXPECTED_CATALOG_GROUPS: readonly ToolGroupName[] = [
   "photos",
   "contacts",
   "pushover",
+  "skills",
 ];
 
 class ScriptedEngineProvider implements ChatProvider {
@@ -80,11 +81,11 @@ afterEach(() => {
 });
 
 describe("tool group catalog compilation", () => {
-  test("compiles all 13 catalog groups in full mode (readOnly: false) as valid solenoid-engine ToolGroups", () => {
+  test("compiles all 14 catalog groups in full mode (readOnly: false) as valid solenoid-engine ToolGroups", () => {
     expect(Object.keys(TOOL_GROUP_CATALOG)).toEqual([...EXPECTED_CATALOG_GROUPS]);
 
     const compiled = compileToolCatalog(context, { readOnly: false });
-    expect(compiled).toHaveLength(13);
+    expect(compiled).toHaveLength(14);
     expect(compiled.map((g) => g.name)).toEqual([...EXPECTED_CATALOG_GROUPS]);
 
     let totalTools = 0;
@@ -151,11 +152,11 @@ describe("tool group catalog compilation", () => {
 });
 
 describe("readOnly enforcement and prose leak prevention", () => {
-  test("readOnly: true strips EVERY write tool from all 13 groups and keeps read tools", () => {
+  test("readOnly: true strips EVERY write tool from all 14 groups and keeps read tools", () => {
     const full = compileToolCatalog(context, { readOnly: false });
     const readOnlyGroups = compileToolCatalog(context, { readOnly: true });
 
-    expect(readOnlyGroups).toHaveLength(13);
+    expect(readOnlyGroups).toHaveLength(14);
     expect(readOnlyGroups.map((g) => g.name)).toEqual([...EXPECTED_CATALOG_GROUPS]);
 
     const fullTotal = full.reduce((sum, g) => sum + g.tools.length, 0);
@@ -250,14 +251,14 @@ describe("readOnly enforcement and prose leak prevention", () => {
 });
 
 describe("mounting onto solenoid-engine Agent with zero tool name collisions", () => {
-  test("mounts all 13 compiled groups via toolGroupOpener alongside built-ins with zero collisions", () => {
+  test("mounts all 14 compiled groups via toolGroupOpener alongside built-ins with zero collisions", () => {
     const compiledFull = compileToolCatalog(context, { readOnly: false });
     const opener = toolGroupOpener(compiledFull);
     expect(opener).toBeDefined();
     expect(toolName(opener!)).toBe(OPEN_TOOL_GROUP);
     expect(opener!.kind).toBe("internal");
 
-    // Verify all tool names across all 13 groups are unique.
+    // Verify all tool names across all 14 groups are unique.
     const seenGroupToolNames = new Set<string>();
     for (const group of compiledFull) {
       for (const tool of group.tools) {

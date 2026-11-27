@@ -472,7 +472,11 @@ export function LiveSection({
         ) : null
       }
       calls={[]}
-      note={live.opened.length ? `opened ${live.opened.join(", ")}` : null}
+      note={
+        live.opened.length
+          ? `opened ${live.opened.map((g) => (g.startsWith("skill:") ? `skill ${g.slice(6)}` : g)).join(", ")}`
+          : null
+      }
       pending={active}
       approval={
         live.calls.length || live.pending ? (

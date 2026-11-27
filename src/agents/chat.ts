@@ -25,6 +25,8 @@ import {
   type ChatMessage,
   type ModelRouteChain,
   type Screener,
+  type Skill,
+  type SkillStore,
   type ToolGroup,
   type ToolSettledInfo,
   type Unlocks,
@@ -38,6 +40,7 @@ import { createModelRoutes } from "../core/providerFactory";
 import { loaderName } from "../core/toolGroups";
 import type { AgentTool as LocalAgentTool } from "../core/tools";
 import { APP_TZ } from "../db/schema/_shared";
+import { DrizzleSkillStore } from "../db/skills";
 import { chatSystemPrompt } from "../prompts";
 import { createSecurityScreener } from "../safety/modelArmor";
 import { compileToolCatalog, type ToolGroupName } from "../tools/groupAdapter";
@@ -131,6 +134,10 @@ export interface CreateChatProfileOptions {
   routes?: ModelRouteChain;
   /** Subset of catalog groups to expose; defaults to all catalog groups. */
   groups?: readonly ToolGroupName[];
+  /** Optional static skills added alongside or instead of the SQLite skill store. */
+  skills?: readonly Skill[];
+  /** Optional skill store override (defaults to live SQLite `DrizzleSkillStore`). */
+  skillStore?: SkillStore;
   /** Override whether subagents can be spawned (defaults to true). */
   canSpawn?: boolean;
   /** Override subagent approval handling (defaults to "defer"). */
@@ -166,6 +173,7 @@ export function createChatProfile(
     context,
     options.groups ? { groups: options.groups } : {},
   );
+  const skillStore = options.skillStore ?? new DrizzleSkillStore(context.db);
   const routes =
     options.routes ?? (options.config ? createModelRoutes(options.config) : undefined);
   const nowFn = options.now ?? (() => new Date());
@@ -174,6 +182,8 @@ export function createChatProfile(
     name: "chat",
     systemPrompt: chatSystemPrompt(),
     toolGroups,
+    skillStore,
+    ...(options.skills ? { skills: options.skills } : {}),
     canSpawn: options.canSpawn ?? true,
     subagentApproval: options.subagentApproval ?? "defer",
     abortOnWriteQuarantine: true,

@@ -18,6 +18,7 @@ import { log } from "../../core/logger";
 import { loadRuntimeConfig } from "../../core/config";
 import { createChatAgent, type ChatAgent } from "../../agents/chat";
 import { loadChat, loadConversations } from "../../db/queries/chat";
+import { DrizzleSkillStore } from "../../db/skills";
 import {
   NoSuchDecisionError,
   blankConversation,
@@ -99,6 +100,15 @@ export function createChatRoutes(
       {
         detail: { summary: "Start a conversation. It names itself from the first thing you say." },
         response: { 201: t.Object({ conversationId: t.String() }) },
+      },
+    )
+    .get(
+      "/api/chat/skills",
+      () => ({
+        skills: new DrizzleSkillStore(resolveDb()).listSlashCommands(),
+      }),
+      {
+        detail: { summary: "Enabled reusable skills invocable as /<slug> commands in chat" },
       },
     )
     .get(

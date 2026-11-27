@@ -69,6 +69,13 @@ export interface ChatApproval {
   subagentName?: string | null;
 }
 
+export interface ChatSkillCommand {
+  name: string;
+  title: string;
+  description: string;
+  source?: "builtin" | "user";
+}
+
 export interface ChatTurnRow {
   id: string;
   /** "user" or "agent" — the two halves of this conversation. Your words are

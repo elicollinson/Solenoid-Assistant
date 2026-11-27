@@ -17,6 +17,7 @@ import type {
   ChatEvent,
   ChatListPayload,
   ChatPayload,
+  ChatSkillCommand,
   ChatToolCall,
   ChatTurnRow,
   LiveTurnSnapshot,
@@ -96,6 +97,8 @@ export interface ChatState {
   restraint: string | null;
   /** How many conversations are waiting on you. */
   waiting: number;
+  /** Enabled reusable skills available via `/<slug>` slash commands in chat. */
+  skills?: readonly ChatSkillCommand[];
   /** The turn in flight, or null between turns. */
   live: LiveTurn | null;
   /** Open one, or pass null to go back to the list. */
@@ -237,6 +240,7 @@ export function useChat(surface: Surface = "desktop"): ChatState {
   const [openId, setOpenId] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [live, setLive] = useState<LiveTurn | null>(null);
+  const [skills, setSkills] = useState<ChatSkillCommand[]>([]);
   const [nonce, setNonce] = useState(0);
   // Guards the composer against a second send, and is checked rather than
   // `live` because state is a render behind and two quick returns would both
@@ -474,6 +478,23 @@ export function useChat(surface: Surface = "desktop"): ChatState {
     void start();
   }, [start]);
 
+  // Keep the `/` skill picker current as skills are created or edited.
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/chat/skills", { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const body = (await response.json()) as { skills?: unknown };
+        if (Array.isArray(body?.skills)) {
+          setSkills(body.skills as ChatSkillCommand[]);
+        }
+      })
+      .catch(() => {
+        // Non-fatal: chat works without the slash-skill catalog.
+      });
+    return () => controller.abort();
+  }, [nonce]);
+
   const send = useCallback(
     (text: string, into?: string) => {
       const said = text.trim();
@@ -606,6 +627,7 @@ export function useChat(surface: Surface = "desktop"): ChatState {
     lede: (currentPayload ?? list)?.lede ?? "",
     restraint: (currentPayload ?? list)?.restraint ?? null,
     waiting: list?.waiting ?? 0,
+    skills,
     live,
     open,
     start,

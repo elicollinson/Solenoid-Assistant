@@ -120,6 +120,13 @@
       "when": 1795614040845,
       "tag": "0016_chat_checkpoints",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1795709000000,
+      "tag": "0017_skills",
+      "breakpoints": true
     }
   ]
 }

@@ -32,6 +32,7 @@ import { logsGroup } from "./logs";
 import { githubGroup } from "./github";
 import { workflowsGroup } from "./workflows";
 import { pushoverGroup } from "./pushover";
+import { skillsGroup } from "./skills";
 
 /**
  * How much of a group an agent may open.
@@ -116,6 +117,7 @@ export const TOOL_GROUP_CATALOG: Readonly<Record<string, ToolGroupFactory>> = {
   photos: photosGroup,
   contacts: contactsGroup,
   pushover: pushoverGroup,
+  skills: skillsGroup,
 };
 
 
